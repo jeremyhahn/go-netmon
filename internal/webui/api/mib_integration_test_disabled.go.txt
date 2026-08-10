@@ -1,0 +1,494 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/gorilla/mux"
+	"github.com/jeremyhahn/go-netmon/internal/config"
+	"github.com/jeremyhahn/go-netmon/internal/mib/loader"
+	"github.com/jeremyhahn/go-netmon/internal/webui/provider"
+	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
+	ws "github.com/jeremyhahn/go-netmon/internal/webui/websocket"
+)
+
+// TestMIBUploadAndRetrieval tests the complete MIB upload and retrieval flow
+func TestMIBUploadAndRetrieval(t *testing.T) {
+	// Create temporary directories
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "db")
+	mibStoragePath := filepath.Join(tmpDir, "mibs")
+	mibDBPath := filepath.Join(tmpDir, "mib.db")
+
+	// Create MIB storage directory
+	if err := os.MkdirAll(filepath.Join(mibStoragePath, "uploaded"), 0755); err != nil {
+		t.Fatalf("Failed to create MIB storage directory: %v", err)
+	}
+
+	// Create a test MIB file
+	testMIBContent := `TEST-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32
+        FROM SNMPv2-SMI
+    MODULE-COMPLIANCE
+        FROM SNMPv2-CONF;
+
+testMIB MODULE-IDENTITY
+    LAST-UPDATED "202501010000Z"
+    ORGANIZATION "Test Organization"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION
+        "A test MIB for integration testing"
+    ::= { 1 3 6 1 4 1 99999 }
+
+testObject OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "A test object"
+    ::= { testMIB 1 }
+
+testCompliance MODULE-COMPLIANCE
+    STATUS current
+    DESCRIPTION
+        "Test compliance"
+    MODULE
+        MANDATORY-GROUPS { testGroup }
+    ::= { testMIB 2 }
+
+testGroup OBJECT-GROUP
+    OBJECTS { testObject }
+    STATUS current
+    DESCRIPTION
+        "Test group"
+    ::= { testMIB 3 }
+
+END`
+
+	testMIBPath := filepath.Join(mibStoragePath, "uploaded", "TEST-MIB.my")
+	if err := os.WriteFile(testMIBPath, []byte(testMIBContent), 0644); err != nil {
+		t.Fatalf("Failed to write test MIB file: %v", err)
+	}
+
+	// Initialize MIB loader
+	cfg := &config.MIBConfig{
+		Paths:       []string{filepath.Join(mibStoragePath, "uploaded")},
+		StoragePath: mibDBPath,
+		AutoLoad:    []string{},
+	}
+
+	mibLoader, err := loader.New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to initialize MIB loader: %v", err)
+	}
+	defer mibLoader.Close()
+
+	// Get MIB storage
+	mibStorageInterface := mibLoader.GetStorage()
+	mibStorage, ok := mibStorageInterface.(*storage.Storage)
+	if !ok || mibStorage == nil {
+		t.Fatal("Failed to get MIB storage from loader")
+	}
+
+	// Create MIB provider
+	mibProvider := provider.NewMIBProvider(mibLoader, mibStorage)
+
+	// Create test server
+	server, err := NewServer(Config{
+		QueryFunc: func(ctx context.Context, query string) ([]ws.MetricValue, error) {
+			return []ws.MetricValue{}, nil
+		},
+		MIBProvider:    mibProvider,
+		MIBLoader:      mibLoader,
+		DBPath:         dbPath,
+		MIBStoragePath: mibStoragePath,
+		PollerClient:   nil, // Not needed for this test
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Close()
+
+	// Step 1: Upload the MIB file
+	t.Run("UploadMIB", func(t *testing.T) {
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+
+		part, err := writer.CreateFormFile("file", "TEST-MIB.my")
+		if err != nil {
+			t.Fatalf("Failed to create form file: %v", err)
+		}
+
+		if _, err := io.WriteString(part, testMIBContent); err != nil {
+			t.Fatalf("Failed to write file content: %v", err)
+		}
+
+		if err := writer.Close(); err != nil {
+			t.Fatalf("Failed to close writer: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/mibs/import", body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+
+		w := httptest.NewRecorder()
+		server.handleImportMIB(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Upload failed with status %d: %s", w.Code, w.Body.String())
+			return
+		}
+
+		// Parse response
+		var response map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+
+		// Verify response contains expected fields
+		if mib, ok := response["mib"].(map[string]interface{}); ok {
+			if mib["name"] != "TEST-MIB" {
+				t.Errorf("Expected MIB name 'TEST-MIB', got %v", mib["name"])
+			}
+			// Note: object_count may vary based on parser behavior
+			if objectCount, ok := mib["object_count"].(float64); ok && objectCount < 1 {
+				t.Errorf("Expected at least 1 object, got %v", objectCount)
+			}
+		} else {
+			t.Error("Response missing 'mib' field")
+		}
+	})
+
+	// Step 2: List stored MIBs
+	t.Run("ListStoredMIBs", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/mibs?stored=true", nil)
+		w := httptest.NewRecorder()
+		server.handleListStoredMIBs(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("List failed with status %d: %s", w.Code, w.Body.String())
+			return
+		}
+
+		var response map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+
+		mibs, ok := response["mibs"].([]interface{})
+		if !ok {
+			t.Fatal("Response missing 'mibs' field")
+		}
+
+		if len(mibs) < 1 {
+			t.Error("Expected at least 1 MIB in list")
+		}
+
+		// Verify TEST-MIB is in the list
+		found := false
+		for _, mib := range mibs {
+			if mibMap, ok := mib.(map[string]interface{}); ok {
+				if mibMap["name"] == "TEST-MIB" {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			t.Error("TEST-MIB not found in MIB list")
+		}
+	})
+
+	// Step 3: Retrieve MIB details
+	t.Run("GetStoredMIB", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/mibs/1", nil)
+		req = mux.SetURLVars(req, map[string]string{"id": "1"})
+		w := httptest.NewRecorder()
+		server.handleGetStoredMIB(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Get MIB failed with status %d: %s", w.Code, w.Body.String())
+			return
+		}
+
+		var response map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+
+		// Verify response contains expected fields
+		if response["name"] != "TEST-MIB" {
+			t.Errorf("Expected MIB name 'TEST-MIB', got %v", response["name"])
+		}
+
+		// Verify objects are included
+		if objects, ok := response["objects"].([]interface{}); ok {
+			if len(objects) < 1 {
+				t.Error("Expected at least 1 object in MIB details")
+			}
+
+			// Verify each object has required fields
+			for i, obj := range objects {
+				objMap, ok := obj.(map[string]interface{})
+				if !ok {
+					t.Errorf("Object %d is not a map", i)
+					continue
+				}
+
+				// Check for required fields
+				if _, hasName := objMap["name"]; !hasName {
+					t.Errorf("Object %d missing 'name' field", i)
+				}
+				if _, hasOID := objMap["oid"]; !hasOID {
+					t.Errorf("Object %d missing 'oid' field", i)
+				}
+			}
+		} else {
+			t.Error("Response missing 'objects' field or not an array")
+		}
+	})
+
+	// Step 4: Delete MIB
+	t.Run("DeleteStoredMIB", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/mibs/1", nil)
+		req = mux.SetURLVars(req, map[string]string{"id": "1"})
+		w := httptest.NewRecorder()
+		server.handleDeleteStoredMIB(w, req)
+
+		if w.Code != http.StatusNoContent {
+			t.Errorf("Delete failed with status %d: %s", w.Code, w.Body.String())
+			return
+		}
+
+		// Verify MIB is deleted
+		req = httptest.NewRequest(http.MethodGet, "/api/mibs/1", nil)
+		req = mux.SetURLVars(req, map[string]string{"id": "1"})
+		w = httptest.NewRecorder()
+		server.handleGetStoredMIB(w, req)
+
+		if w.Code == http.StatusOK {
+			t.Error("MIB still exists after deletion")
+		}
+	})
+}
+
+// TestMIBUploadMultipleObjects tests that all objects are stored and retrieved correctly
+func TestMIBUploadMultipleObjects(t *testing.T) {
+	// Create temporary directories
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "db")
+	mibStoragePath := filepath.Join(tmpDir, "mibs")
+	mibDBPath := filepath.Join(tmpDir, "mib.db")
+
+	// Create MIB storage directory
+	if err := os.MkdirAll(filepath.Join(mibStoragePath, "uploaded"), 0755); err != nil {
+		t.Fatalf("Failed to create MIB storage directory: %v", err)
+	}
+
+	// Create a test MIB file with multiple objects
+	testMIBContent := `MULTI-OBJ-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32, NOTIFICATION-TYPE
+        FROM SNMPv2-SMI
+    MODULE-COMPLIANCE, OBJECT-GROUP, NOTIFICATION-GROUP
+        FROM SNMPv2-CONF;
+
+multiObjMIB MODULE-IDENTITY
+    LAST-UPDATED "202501010000Z"
+    ORGANIZATION "Test Organization"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION
+        "A MIB with multiple objects for testing storage"
+    ::= { 1 3 6 1 4 1 88888 }
+
+obj1 OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Object 1"
+    ::= { multiObjMIB 1 }
+
+obj2 OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-write
+    STATUS      current
+    DESCRIPTION "Object 2"
+    ::= { multiObjMIB 2 }
+
+obj3 OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      deprecated
+    DESCRIPTION "Object 3"
+    ::= { multiObjMIB 3 }
+
+testNotification NOTIFICATION-TYPE
+    STATUS current
+    DESCRIPTION "Test notification"
+    ::= { multiObjMIB 4 }
+
+testGroup1 OBJECT-GROUP
+    OBJECTS { obj1, obj2 }
+    STATUS current
+    DESCRIPTION "Group 1"
+    ::= { multiObjMIB 5 }
+
+testGroup2 OBJECT-GROUP
+    OBJECTS { obj3 }
+    STATUS deprecated
+    DESCRIPTION "Group 2"
+    ::= { multiObjMIB 6 }
+
+testCompliance MODULE-COMPLIANCE
+    STATUS current
+    DESCRIPTION "Test compliance"
+    MODULE
+        MANDATORY-GROUPS { testGroup1 }
+    ::= { multiObjMIB 7 }
+
+END`
+
+	testMIBPath := filepath.Join(mibStoragePath, "uploaded", "MULTI-OBJ-MIB.my")
+	if err := os.WriteFile(testMIBPath, []byte(testMIBContent), 0644); err != nil {
+		t.Fatalf("Failed to write test MIB file: %v", err)
+	}
+
+	// Initialize MIB loader
+	cfg := &config.MIBConfig{
+		Paths:       []string{filepath.Join(mibStoragePath, "uploaded")},
+		StoragePath: mibDBPath,
+		AutoLoad:    []string{},
+	}
+
+	mibLoader, err := loader.New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to initialize MIB loader: %v", err)
+	}
+	defer mibLoader.Close()
+
+	// Get MIB storage
+	mibStorageInterface := mibLoader.GetStorage()
+	mibStorage, ok := mibStorageInterface.(*storage.Storage)
+	if !ok || mibStorage == nil {
+		t.Fatal("Failed to get MIB storage from loader")
+	}
+
+	// Create MIB provider
+	mibProvider := provider.NewMIBProvider(mibLoader, mibStorage)
+
+	// Create test server
+	server, err := NewServer(Config{
+		QueryFunc: func(ctx context.Context, query string) ([]ws.MetricValue, error) {
+			return []ws.MetricValue{}, nil
+		},
+		MIBProvider:    mibProvider,
+		MIBLoader:      mibLoader,
+		DBPath:         dbPath,
+		MIBStoragePath: mibStoragePath,
+		PollerClient:   nil,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Close()
+
+	// Upload the MIB
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, err := writer.CreateFormFile("file", "MULTI-OBJ-MIB.my")
+	if err != nil {
+		t.Fatalf("Failed to create form file: %v", err)
+	}
+
+	if _, err := io.WriteString(part, testMIBContent); err != nil {
+		t.Fatalf("Failed to write file content: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mibs/import", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	w := httptest.NewRecorder()
+	server.handleImportMIB(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Upload failed with status %d: %s", w.Code, w.Body.String())
+	}
+
+	// Parse upload response to get object count
+	var uploadResponse map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &uploadResponse); err != nil {
+		t.Fatalf("Failed to parse upload response: %v", err)
+	}
+
+	expectedObjectCount := 0
+	if mib, ok := uploadResponse["mib"].(map[string]interface{}); ok {
+		if count, ok := mib["object_count"].(float64); ok {
+			expectedObjectCount = int(count)
+		}
+	}
+
+	if expectedObjectCount < 7 {
+		t.Errorf("Expected at least 7 objects (obj1, obj2, obj3, notification, 2 groups, compliance), got %d", expectedObjectCount)
+	}
+
+	// Retrieve MIB details
+	req = httptest.NewRequest(http.MethodGet, "/api/mibs/1", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	w = httptest.NewRecorder()
+	server.handleGetStoredMIB(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Get MIB failed with status %d: %s", w.Code, w.Body.String())
+	}
+
+	var getResponse map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &getResponse); err != nil {
+		t.Fatalf("Failed to parse get response: %v", err)
+	}
+
+	// Verify all objects are returned
+	objects, ok := getResponse["objects"].([]interface{})
+	if !ok {
+		t.Fatal("Response missing 'objects' field")
+	}
+
+	actualObjectCount := len(objects)
+	if actualObjectCount != expectedObjectCount {
+		t.Errorf("Object count mismatch: uploaded %d objects but retrieved %d objects", expectedObjectCount, actualObjectCount)
+	}
+
+	// Verify no duplicate objects (all names should be unique)
+	names := make(map[string]bool)
+	for _, obj := range objects {
+		objMap, ok := obj.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		name, ok := objMap["name"].(string)
+		if !ok {
+			t.Error("Object missing 'name' field")
+			continue
+		}
+
+		if names[name] {
+			t.Errorf("Duplicate object name found: %s", name)
+		}
+		names[name] = true
+	}
+}

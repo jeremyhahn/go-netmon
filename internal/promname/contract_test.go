@@ -1,0 +1,445 @@
+package promname_test
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gosnmp/gosnmp"
+
+	"github.com/jeremyhahn/go-netmon/internal/grafana/builder"
+	"github.com/jeremyhahn/go-netmon/internal/metrics"
+	"github.com/jeremyhahn/go-netmon/internal/mib"
+	"github.com/jeremyhahn/go-netmon/internal/mib/storage"
+	"github.com/jeremyhahn/go-netmon/internal/promname"
+	"github.com/jeremyhahn/go-netmon/internal/snmp"
+	"github.com/jeremyhahn/go-netmon/internal/webui/dashboard"
+)
+
+// The OIDs and objects the contract is checked against: one scalar, one table
+// with a two-column index, and one column that no MIB describes.
+const (
+	testModule = "CONTRACT-TEST-MIB"
+
+	ifNumberOID   = ".1.3.6.1.2.1.2.1"
+	ifTableOID    = ".1.3.6.1.2.1.2.2"
+	ifEntryOID    = ".1.3.6.1.2.1.2.2.1"
+	ifIndexOID    = ".1.3.6.1.2.1.2.2.1.1"
+	ifDescrOID    = ".1.3.6.1.2.1.2.2.1.2"
+	ifInOctetsOID = ".1.3.6.1.2.1.2.2.1.10"
+
+	bgpTableOID  = ".1.3.6.1.4.1.9.9.187.1.2.5"
+	bgpEntryOID  = ".1.3.6.1.4.1.9.9.187.1.2.5.1"
+	bgpTypeOID   = ".1.3.6.1.4.1.9.9.187.1.2.5.1.1"
+	bgpAddrOID   = ".1.3.6.1.4.1.9.9.187.1.2.5.1.3"
+	bgpStateOID  = ".1.3.6.1.4.1.9.9.187.1.2.5.1.12"
+	bgpPrefixOID = ".1.3.6.1.4.1.9.9.187.1.2.5.1.10"
+
+	undescribedOID = ".1.3.6.1.4.1.9.9.999.1.2.3.4"
+)
+
+// contractMIB returns the objects the exporter and every consumer are checked
+// against. It is a real MIB shape: a scalar, an ifTable indexed by one integer
+// column, and a Cisco BGP peer table indexed by two columns, one of them an
+// address whose decoded value is what a dashboard picks a row by.
+func contractMIB() []*mib.OIDMetadata {
+	return []*mib.OIDMetadata{
+		{
+			OID: ifNumberOID, Name: "ifNumber", Module: testModule,
+			Type: "Integer32", Access: "read-only", IsScalar: true, Pollable: true,
+			ObjectClass: mib.ObjectClassScalar, IsChartable: true, IsDisplayable: true,
+		},
+		{
+			OID: ifTableOID, Name: "ifTable", Module: testModule,
+			Access: "not-accessible", IsTable: true, ObjectClass: mib.ObjectClassTableNode,
+		},
+		{
+			OID: ifEntryOID, Name: "ifEntry", Module: testModule, Parent: ifTableOID,
+			Access: "not-accessible", IsTableEntry: true, ObjectClass: mib.ObjectClassEntryNode,
+			Index:        []string{"ifIndex"},
+			IndexColumns: []mib.IndexColumn{{Name: "ifIndex", OID: ifIndexOID, Type: "InterfaceIndex", BaseType: "Integer32"}},
+		},
+		{
+			OID: ifIndexOID, Name: "ifIndex", Module: testModule, Parent: ifEntryOID,
+			Type: "InterfaceIndex", Access: "read-only", IsColumn: true, IsIndex: true,
+			ObjectClass: mib.ObjectClassIndexColumn, TableOID: ifTableOID, EntryOID: ifEntryOID,
+		},
+		{
+			OID: ifDescrOID, Name: "ifDescr", Module: testModule, Parent: ifEntryOID,
+			Type: "DisplayString", Access: "read-only", IsColumn: true, Pollable: true,
+			ObjectClass: mib.ObjectClassStatusColumn, TableOID: ifTableOID, EntryOID: ifEntryOID,
+			IsDisplayable: true,
+		},
+		{
+			OID: ifInOctetsOID, Name: "ifInOctets", Module: testModule, Parent: ifEntryOID,
+			Type: "Counter32", Access: "read-only", IsColumn: true, Pollable: true,
+			ObjectClass: mib.ObjectClassMetricColumn, TableOID: ifTableOID, EntryOID: ifEntryOID,
+			IsChartable: true,
+		},
+		{
+			OID: bgpTableOID, Name: "cbgpPeer2Table", Module: testModule,
+			Access: "not-accessible", IsTable: true, ObjectClass: mib.ObjectClassTableNode,
+		},
+		{
+			OID: bgpEntryOID, Name: "cbgpPeer2Entry", Module: testModule, Parent: bgpTableOID,
+			Access: "not-accessible", IsTableEntry: true, ObjectClass: mib.ObjectClassEntryNode,
+			Index: []string{"cbgpPeer2Type", "cbgpPeer2RemoteAddr"},
+			IndexColumns: []mib.IndexColumn{
+				{Name: "cbgpPeer2Type", OID: bgpTypeOID, Type: "InetAddressType", BaseType: "Integer32"},
+				{Name: "cbgpPeer2RemoteAddr", OID: bgpAddrOID, Type: "InetAddress", BaseType: "OctetString"},
+			},
+		},
+		{
+			OID: bgpTypeOID, Name: "cbgpPeer2Type", Module: testModule, Parent: bgpEntryOID,
+			Type: "InetAddressType", Access: "not-accessible", IsColumn: true, IsIndex: true,
+			ObjectClass: mib.ObjectClassIndexColumn, TableOID: bgpTableOID, EntryOID: bgpEntryOID,
+		},
+		{
+			OID: bgpAddrOID, Name: "cbgpPeer2RemoteAddr", Module: testModule, Parent: bgpEntryOID,
+			Type: "InetAddress", Access: "not-accessible", IsColumn: true, IsIndex: true,
+			ObjectClass: mib.ObjectClassIndexColumn, TableOID: bgpTableOID, EntryOID: bgpEntryOID,
+		},
+		{
+			OID: bgpStateOID, Name: "cbgpPeer2State", Module: testModule, Parent: bgpEntryOID,
+			Type: "INTEGER", Access: "read-only", IsColumn: true, Pollable: true,
+			ObjectClass: mib.ObjectClassStatusColumn, TableOID: bgpTableOID, EntryOID: bgpEntryOID,
+			EnumValues:    map[int64]string{1: "idle", 6: "established"},
+			IsDisplayable: true,
+		},
+		{
+			OID: bgpPrefixOID, Name: "cbgpPeer2FsmEstablishedTransitions", Module: testModule,
+			Parent: bgpEntryOID, Type: "Counter32", Access: "read-only", IsColumn: true, Pollable: true,
+			ObjectClass: mib.ObjectClassMetricColumn, TableOID: bgpTableOID, EntryOID: bgpEntryOID, IsChartable: true,
+		},
+	}
+}
+
+// contractStore returns a MIB store holding contractMIB.
+func contractStore(t *testing.T) *storage.Storage {
+	t.Helper()
+
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("open MIB storage: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := store.Close(); closeErr != nil {
+			t.Errorf("close MIB storage: %v", closeErr)
+		}
+	})
+
+	if err := store.StoreModule(&mib.ModuleInfo{Name: testModule}); err != nil {
+		t.Fatalf("store module: %v", err)
+	}
+	for _, object := range contractMIB() {
+		if err := store.StoreOID(object); err != nil {
+			t.Fatalf("store OID %s: %v", object.OID, err)
+		}
+	}
+	return store
+}
+
+// exported runs the real export path over instanceOIDs and returns the samples
+// it produced, keyed by instance OID. This is the exporter's own answer -- not a
+// reimplementation of it -- which is what makes it usable as the fixed point
+// every consumer is compared against.
+func exported(t *testing.T, store *storage.Storage, instanceOIDs ...string) map[string]*metrics.Sample {
+	t.Helper()
+
+	results := make([]*snmp.Result, 0, len(instanceOIDs))
+	for _, oid := range instanceOIDs {
+		results = append(results, &snmp.Result{
+			OID:       oid,
+			Type:      gosnmp.Counter32,
+			Value:     uint(1),
+			Timestamp: time.Unix(0, 0),
+		})
+	}
+
+	samples := metrics.ConvertSNMPResultsWithTableIndexes(
+		"contract-device", results, nil, metrics.NewTableIndexCache(store), nil)
+
+	byOID := make(map[string]*metrics.Sample, len(samples))
+	for _, sample := range samples {
+		if oid := sample.Labels[promname.OIDLabel]; oid != "" {
+			byOID[oid] = sample
+		}
+	}
+
+	for _, oid := range instanceOIDs {
+		if byOID[oid] == nil {
+			t.Fatalf("exporter produced no sample for instance OID %s", oid)
+		}
+	}
+	return byOID
+}
+
+// TestMetricNameMatchesExporter is the drift gate between the exporter and
+// every consumer that has to name a series it did not produce.
+//
+// Each case names an object through promname -- the single derivation the
+// dashboard generators, query builders and CLI all go through -- and compares
+// it with the name the exporter actually gave a live sample of that object.
+// Both sides have to change together or this fails, which is exactly what the
+// previous arrangement could not do: every consumer asserted against its own
+// local "snmp__" helper, so all of them stayed green while the exporter stopped
+// emitting those names and every dashboard panel went blank.
+func TestMetricNameMatchesExporter(t *testing.T) {
+	store := contractStore(t)
+
+	tests := []struct {
+		name       string
+		instance   string // instance OID as the poller reports it
+		objectName string // the MIB object that instance instantiates
+	}{
+		{"scalar", ifNumberOID + ".0", "ifNumber"},
+		{"table column", ifInOctetsOID + ".10", "ifInOctets"},
+		{"same column, another row", ifInOctetsOID + ".20178", "ifInOctets"},
+		{"mixed case object name", bgpPrefixOID + ".1.4.203.0.113.202", "cbgpPeer2FsmEstablishedTransitions"},
+	}
+
+	instances := make([]string, 0, len(tests))
+	for _, tt := range tests {
+		instances = append(instances, tt.instance)
+	}
+	samples := exported(t, store, instances...)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := samples[tt.instance].Name
+
+			if got := promname.MetricName(tt.objectName); got != want {
+				t.Errorf("promname.MetricName(%q) = %q, exporter emitted %q",
+					tt.objectName, got, want)
+			}
+			if !strings.HasPrefix(want, promname.Prefix) {
+				t.Errorf("exporter name %q does not start with promname.Prefix %q", want, promname.Prefix)
+			}
+		})
+	}
+}
+
+// TestQueryBuilderNamesMatchExporter pins the Grafana query builder's output to
+// the exporter. A panel whose selector names a metric the exporter never emits
+// draws nothing, and nothing else in the suite notices.
+func TestQueryBuilderNamesMatchExporter(t *testing.T) {
+	store := contractStore(t)
+	samples := exported(t, store, ifNumberOID+".0", ifInOctetsOID+".10")
+
+	qb := builder.NewQueryBuilder("")
+
+	tests := []struct {
+		name     string
+		object   *mib.OIDMetadata
+		instance string
+	}{
+		{
+			name:     "scalar",
+			object:   &mib.OIDMetadata{OID: ifNumberOID, Name: "ifNumber", Type: "Integer32", IsScalar: true},
+			instance: ifNumberOID + ".0",
+		},
+		{
+			name:     "counter column",
+			object:   &mib.OIDMetadata{OID: ifInOctetsOID, Name: "ifInOctets", Type: "Counter32", IsColumn: true},
+			instance: ifInOctetsOID + ".10",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := samples[tt.instance].Name
+
+			for label, query := range map[string]string{
+				"BuildQuery":            qb.BuildQuery(tt.object),
+				"BuildTableColumnQuery": qb.BuildTableColumnQuery(tt.object),
+				"BuildRateQuery":        qb.BuildRateQuery(tt.object, "5m"),
+				"BuildColumnQuery":      qb.BuildColumnQuery(tt.object, true, true).Expr,
+			} {
+				if !strings.Contains(query, want+"{") {
+					t.Errorf("%s = %q, does not select the exporter's metric %q", label, query, want)
+				}
+				if strings.Contains(query, "__name__") {
+					t.Errorf("%s = %q, still selects on __name__; the row index is a label now", label, query)
+				}
+			}
+		})
+	}
+}
+
+// TestDashboardWidgetsNameExporterMetrics pins the web UI dashboard spec to the
+// exporter. The browser queries whatever metric name the spec hands it, so a
+// widget naming a metric that does not exist is six cards reading "Waiting for
+// data..." forever.
+func TestDashboardWidgetsNameExporterMetrics(t *testing.T) {
+	store := contractStore(t)
+	samples := exported(t, store, ifNumberOID+".0", ifInOctetsOID+".10", bgpPrefixOID+".1.4.203.0.113.202")
+
+	spec, err := dashboard.GenerateDashboard(store, testModule)
+	if err != nil {
+		t.Fatalf("generate dashboard: %v", err)
+	}
+
+	wantByObject := map[string]string{
+		"ifNumber":                           samples[ifNumberOID+".0"].Name,
+		"ifInOctets":                         samples[ifInOctetsOID+".10"].Name,
+		"cbgpPeer2FsmEstablishedTransitions": samples[bgpPrefixOID+".1.4.203.0.113.202"].Name,
+	}
+
+	seen := make(map[string]bool, len(wantByObject))
+	check := func(objectName, metric string) {
+		want, tracked := wantByObject[objectName]
+		if !tracked {
+			return
+		}
+		seen[objectName] = true
+		if metric != want {
+			t.Errorf("widget %s carries metric %q, exporter emitted %q", objectName, metric, want)
+		}
+	}
+
+	for _, widget := range spec.ScalarWidgets {
+		check(widget.Name, widget.Metric)
+	}
+	for _, table := range spec.TableWidgets {
+		for _, chart := range table.MetricCharts {
+			check(chart.Name, chart.Metric)
+		}
+		for _, field := range table.StatusFields {
+			check(field.Name, field.Metric)
+		}
+	}
+
+	for objectName := range wantByObject {
+		if !seen[objectName] {
+			t.Errorf("dashboard spec has no widget for %s, so its naming is unchecked", objectName)
+		}
+	}
+}
+
+// TestIndexLabelsMatchExporter pins the label names a consumer selects a table
+// row by to the labels the exporter actually attaches.
+//
+// This is the other half of the contract: naming the metric right and then
+// filtering on a label that does not exist selects nothing, which is
+// indistinguishable from the device not reporting the object at all.
+func TestIndexLabelsMatchExporter(t *testing.T) {
+	store := contractStore(t)
+	samples := exported(t, store, ifInOctetsOID+".10", bgpPrefixOID+".1.4.203.0.113.202")
+
+	tests := []struct {
+		name        string
+		instance    string
+		indexColumn string
+		wantValue   string
+	}{
+		{"integer index", ifInOctetsOID + ".10", "ifIndex", "10"},
+		{"address index", bgpPrefixOID + ".1.4.203.0.113.202", "cbgpPeer2RemoteAddr", "203.0.113.202"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			label := promname.IndexLabel(tt.indexColumn)
+
+			value, found := samples[tt.instance].Labels[label]
+			if !found {
+				t.Fatalf("exporter attached no %q label to a sample of %s; it emitted %v",
+					label, tt.instance, samples[tt.instance].Labels)
+			}
+			if value != tt.wantValue {
+				t.Errorf("label %s = %q, want %q", label, value, tt.wantValue)
+			}
+		})
+	}
+}
+
+// TestDashboardInstanceSelectorMatchesExporter pins the label a dashboard picks
+// a table row by -- the one the browser puts in its query -- to the labels the
+// exporter attaches to that table's samples.
+func TestDashboardInstanceSelectorMatchesExporter(t *testing.T) {
+	store := contractStore(t)
+	samples := exported(t, store, ifInOctetsOID+".10", bgpPrefixOID+".1.4.203.0.113.202")
+
+	spec, err := dashboard.GenerateDashboard(store, testModule)
+	if err != nil {
+		t.Fatalf("generate dashboard: %v", err)
+	}
+	if len(spec.TableWidgets) == 0 {
+		t.Fatal("dashboard spec has no table widgets, so no selector is checked")
+	}
+
+	// One representative sample per table, keyed by the table's name.
+	sampleForTable := map[string]*metrics.Sample{
+		"ifTable":        samples[ifInOctetsOID+".10"],
+		"cbgpPeer2Table": samples[bgpPrefixOID+".1.4.203.0.113.202"],
+	}
+
+	for _, widget := range spec.TableWidgets {
+		sample, known := sampleForTable[widget.TableName]
+		if !known {
+			t.Fatalf("unexpected table widget %q; the test's sample map needs updating", widget.TableName)
+		}
+
+		if _, found := sample.Labels[widget.InstanceSelector.LabelName]; !found {
+			t.Errorf("table %s selects rows by label %q, which the exporter does not attach; it emitted %v",
+				widget.TableName, widget.InstanceSelector.LabelName, sample.Labels)
+		}
+		for _, label := range widget.InstanceSelector.IndexLabels {
+			if _, found := sample.Labels[label]; !found {
+				t.Errorf("table %s lists index label %q, which the exporter does not attach; it emitted %v",
+					widget.TableName, label, sample.Labels)
+			}
+		}
+	}
+}
+
+// TestRawOIDNameMatchesExporterFallback pins the one case that still carries an
+// OID in its metric name: an instance no loaded MIB describes. The CLI decodes
+// these back to an OID, so the two have to agree.
+func TestRawOIDNameMatchesExporterFallback(t *testing.T) {
+	store := contractStore(t)
+	instance := undescribedOID + ".7"
+	samples := exported(t, store, instance)
+
+	want := samples[instance].Name
+	if got := promname.RawOIDMetricName(instance); got != want {
+		t.Errorf("promname.RawOIDMetricName(%q) = %q, exporter emitted %q", instance, got, want)
+	}
+	if !strings.HasPrefix(want, promname.Prefix+"_") {
+		t.Errorf("exporter fallback name %q is not the raw-OID form", want)
+	}
+}
+
+// TestInfoMetricNameMatchesExporter pins the other name the exporter emits: a
+// status column's value is not a number, so it is published as a label on a
+// constant-1 series named after the column.
+func TestInfoMetricNameMatchesExporter(t *testing.T) {
+	store := contractStore(t)
+
+	samples := metrics.ConvertSNMPResultsWithTableIndexes(
+		"contract-device",
+		[]*snmp.Result{{
+			OID:       bgpStateOID + ".1.4.203.0.113.202",
+			Type:      gosnmp.Integer,
+			Value:     6,
+			Timestamp: time.Unix(0, 0),
+		}},
+		nil, metrics.NewTableIndexCache(store), nil)
+
+	var info *metrics.Sample
+	for _, sample := range samples {
+		if strings.HasSuffix(sample.Name, "_info") {
+			info = sample
+			break
+		}
+	}
+	if info == nil {
+		t.Fatalf("exporter emitted no info metric for a status column; it emitted %v", samples)
+	}
+
+	if got := promname.InfoMetricName("cbgpPeer2State"); got != info.Name {
+		t.Errorf("promname.InfoMetricName(\"cbgpPeer2State\") = %q, exporter emitted %q", got, info.Name)
+	}
+	if got, want := info.Labels["value"], "established"; got != want {
+		t.Errorf("info metric value label = %q, want %q", got, want)
+	}
+}

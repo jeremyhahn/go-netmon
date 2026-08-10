@@ -1,0 +1,145 @@
+services:
+  go-netmon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: go-netmon:latest
+    container_name: go-netmon
+    hostname: go-netmon
+    restart: unless-stopped
+    ports:
+      - "9080:9080"  # API/Web UI
+      - "9100:9100"  # Metrics endpoint (metrics.listen_address in config.yaml,
+                     # scraped as go-netmon:9100 by prometheus.yml)
+    volumes:
+      - ./config.yaml:/app/config/config.yaml:ro
+      - ./mibs:/app/mibs:ro
+      - go-netmon-data:/app/data
+      - ./grafana/provisioning/dashboards/_generated:/app/dashboards:rw
+    environment:
+      - CONFIG_PATH=/app/config/config.yaml
+      - LOG_LEVEL=info
+      - WEBUI_URL=http://webui:8080
+    depends_on:
+      - prometheus
+    networks:
+      - netmon-network
+      # NOTE: the trusted0 macvlan network is deliberately NOT attached here.
+      # Attaching it gives the container an address on 198.51.100.0/24, so its
+      # replies to the host (198.51.100.91) leave via the macvlan interface,
+      # which by design cannot reach its own parent — published ports then time
+      # out on that address. Monitored devices are reached through the bridge
+      # network via the host's routing table, which needs no macvlan.
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"  # Prometheus UI (mapped to 9091 to avoid conflict)
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - netmon-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    hostname: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # Grafana UI
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_INSTALL_PLUGINS=
+    depends_on:
+      - prometheus
+    networks:
+      - netmon-network
+
+  webui:
+    build:
+      context: .
+      dockerfile: Dockerfile.webui
+    image: go-netmon-webui:latest
+    container_name: go-netmon-webui
+    hostname: webui
+    restart: unless-stopped
+    ports:
+      - "8082:8080"  # Web UI (8081 is taken by sysmon-server on this host)
+    volumes:
+      - ./mibs:/app/mibs:ro
+      # The same config the poller reads. Without it the web UI falls back to
+      # the code defaults, and global.default_poll_interval differs between the
+      # two (file 30, code 60) — so the UI reported a device polling every 60s
+      # while the poller polled it every 30s. Sharing the file makes one source
+      # of truth. Safe despite mib.storage_path pointing at the poller's Pebble
+      # store, which is single-writer: configureMIB() in cmd/webui always
+      # overrides StoragePath from -mib-catalog.
+      - ./config.yaml:/app/config/config.yaml:ro
+      - webui-data:/app/data/webui     # WebUI records and MIB catalog (Pebble)
+      - go-netmon-data:/app/data/mibs  # SHARED MIB storage with go-netmon
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - CONFIG_PATH=/app/config/config.yaml
+    command:
+      - "-listen=:8080"
+      - "-prometheus=http://prometheus:9090"
+      - "-poller=http://go-netmon:9080"
+      - "-db=/app/data/webui/webui.db"
+      - "-mib-storage=/app/data/mibs"
+      # The parsed MIB catalog. It must sit on a mounted volume: left at its
+      # default it lands on the container's writable layer and every rebuild
+      # or recreate destroys the whole catalog. It must also stay out of
+      # /app/data/mibs, which is the poller's Pebble store directory and
+      # admits only one writer.
+      - "-mib-catalog=/app/data/webui/mib.db"
+    depends_on:
+      - prometheus
+    networks:
+      - netmon-network
+      # See the note on the go-netmon service: attaching the trusted0 macvlan
+      # network breaks published-port access from 198.51.100.91.
+
+networks:
+  netmon-network:
+    driver: bridge
+  # trusted0 (macvlan over the trusted0 OVS bridge) is retained for reference.
+  # Re-attach it only for devices that genuinely require a layer-2 presence on
+  # 198.51.100.0/24, and expect published ports to become unreachable from the
+  # host's own address on that subnet when you do.
+  #
+  # trusted0:
+  #   driver: macvlan
+  #   driver_opts:
+  #     parent: trusted0
+  #   ipam:
+  #     config:
+  #       - subnet: 198.51.100.0/24
+  #         gateway: 198.51.100.1
+
+volumes:
+  go-netmon-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  webui-data:
+    driver: local

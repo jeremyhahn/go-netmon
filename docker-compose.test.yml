@@ -1,0 +1,71 @@
+services:
+  # Prometheus for receiving metrics
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: go-netmon-test-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./test/integration/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-remote-write-receiver'
+      - '--web.enable-lifecycle'
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Mock SNMP agent for testing
+  snmp-simulator:
+    image: tandrup/snmpsim:latest
+    container_name: go-netmon-test-snmp
+    ports:
+      - "1161:161/udp"
+    environment:
+      - SNMPSIM_AGENT_UDPV4_ENDPOINT=0.0.0.0:161
+    volumes:
+      - ./test/integration/snmp-data/public.snmprec:/usr/local/snmpsim/data/public.snmprec
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "test", "-f", "/usr/local/snmpsim/data/public.snmprec"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+      start_period: 5s
+
+  # Integration test runner
+  integration-test:
+    build:
+      context: .
+      dockerfile: test/integration/Dockerfile.test
+    container_name: go-netmon-integration-test
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      snmp-simulator:
+        condition: service_healthy
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - SNMP_HOST=snmp-simulator
+      - SNMP_PORT=161
+    volumes:
+      - .:/app
+    networks:
+      - test-network
+    command: go test -v -tags=integration ./test/integration/...
+
+networks:
+  test-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:

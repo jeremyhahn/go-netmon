@@ -1,0 +1,62 @@
+# Build stage
+FROM golang:1.25-alpine AS builder
+
+# Install build dependencies including libsmi for gosmi MIB parsing
+RUN apk add --no-cache git make gcc musl-dev libsmi libsmi-dev
+
+# Set working directory
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the Web UI application with CGO enabled for gosmi
+RUN CGO_ENABLED=1 go build -o ./bin/webui ./cmd/webui
+
+# Runtime stage
+FROM alpine:latest
+
+# Install runtime dependencies including libsmi and standard MIBs for MIB parsing
+RUN apk add --no-cache ca-certificates tzdata curl libsmi net-snmp-libs
+
+# Set SMIPATH environment variable to include our MIB directories
+ENV SMIPATH=/app/data/mibs/uploaded:/app/mibs/standard:/app/mibs/vendor:/usr/share/snmp/mibs
+
+# Create non-root user
+RUN addgroup -g 1000 netmon && \
+    adduser -D -u 1000 -G netmon netmon
+
+# Set working directory
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/bin/webui /app/webui
+
+# Copy static files
+COPY --from=builder /build/internal/webui/static /app/internal/webui/static
+
+# Copy MIBs directory (for MIB loader initialization)
+COPY --from=builder /build/mibs /app/mibs
+
+# Create directories for config and data (including webui subdirectory for volume mount)
+RUN mkdir -p /app/config /app/data /app/data/mibs /app/data/webui && \
+    chown -R netmon:netmon /app
+
+# Switch to non-root user
+USER netmon
+
+# Expose Web UI port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/ || exit 1
+
+# Run the Web UI application
+ENTRYPOINT ["/app/webui"]

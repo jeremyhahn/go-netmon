@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Monitor</title>
+    <meta name="color-scheme" content="dark light">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/css/style.css?v=20260810-006">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script>
+        // Apply the stored theme before first paint so the page never flashes
+        // the wrong surface.
+        (function () {
+            try {
+                var stored = localStorage.getItem('netmon-theme');
+                if (stored === 'light' || stored === 'dark') {
+                    document.documentElement.setAttribute('data-theme', stored);
+                }
+            } catch (e) { /* private mode: fall back to the OS setting */ }
+        })();
+    </script>
+</head>
+<body>
+    <a class="skip-link" href="#mainContent">Skip to content</a>
+
+    <header class="appbar">
+        <div class="appbar-inner">
+            <div class="brand">
+                <span class="brand-mark" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M2 14.5 6.2 8.2l3.3 3.6L13 5l5 9.5" stroke="currentColor"
+                              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </span>
+                <span class="brand-name">Network Monitor</span>
+            </div>
+
+            <nav class="nav" aria-label="Primary">
+                <button id="dashboardBtn" class="active">Dashboard</button>
+                <button id="devicesBtn">Devices</button>
+                <button id="profilesBtn">Profiles</button>
+                <button id="mibManagerBtn">MIBs</button>
+                <button id="mibBrowserBtn">Browser</button>
+                <button id="settingsBtn">Settings</button>
+            </nav>
+
+            <div class="appbar-actions">
+                <span class="conn" title="Live metric stream">
+                    <span id="statusIndicator" class="status-dot offline"></span>
+                    <span id="statusText">Disconnected</span>
+                </span>
+                <button id="themeToggle" class="icon-btn" type="button"
+                        aria-label="Switch between light and dark theme" title="Toggle theme">
+                    <svg class="icon-sun" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.5"/>
+                        <path d="M8 1v1.8M8 13.2V15M15 8h-1.8M2.8 8H1M12.9 3.1l-1.3 1.3M4.4 11.6l-1.3 1.3M12.9 12.9l-1.3-1.3M4.4 4.4 3.1 3.1"
+                              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                    <svg class="icon-moon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"
+                              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="container" id="mainContent">
+        <!-- Dashboard View -->
+        <div id="dashboardView" class="view active">
+            <div class="dashboard-header">
+                <div class="dashboard-controls">
+                    <div class="filter-group">
+                        <label for="dashboardDeviceSelect">Device</label>
+                        <select id="dashboardDeviceSelect">
+                            <option value="">All devices — fleet overview</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="dashboardTimeRange">Time range</label>
+                        <select id="dashboardTimeRange">
+                            <option value="6h">Last 6 hours</option>
+                            <option value="1d">Last 24 hours</option>
+                            <option value="7d">Last 7 days</option>
+                            <option value="30d">Last 30 days</option>
+                            <option value="1y">Last year</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Device Status Banner (shown when there are errors) -->
+            <div id="deviceStatusBanner" class="device-status-banner" style="display: none;"></div>
+
+            <!-- Landing surface: the fleet overview, built by renderFleetOverview()
+                 so the shell has one definition. Selecting a device hides this
+                 container and shows the module rail below it. -->
+            <div id="dashboardContent" class="dashboard-content"></div>
+
+            <!-- MIB module navigation + panes (populated dynamically).
+
+                 A vertical rail rather than a strip of tabs: a device can carry
+                 hundreds of modules and a horizontal row has only one screen of
+                 room, whereas a column has a scrollbar and a filter box. -->
+            <div id="mibTabsContainer" class="mib-tabs-container" style="display: none;">
+                <div class="mib-nav-layout">
+                    <div class="mib-nav">
+                        <div class="mib-nav-controls">
+                            <input type="search" id="mibTabSearch" class="mib-nav-search"
+                                   placeholder="Filter modules…" autocomplete="off"
+                                   aria-label="Filter MIB modules" aria-controls="mibTabList">
+                            <p class="mib-nav-count" id="mibTabCount" role="status" aria-live="polite"></p>
+                        </div>
+                        <div class="mib-tab-list" id="mibTabList" role="tablist"
+                             aria-orientation="vertical" aria-label="MIB modules"></div>
+                        <p class="mib-nav-empty" id="mibTabNoMatch" hidden>No module matches that filter.</p>
+                    </div>
+                    <div class="tab-content" id="mibTabContent"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Devices View -->
+        <div id="devicesView" class="view">
+            <div class="toolbar">
+                <div class="toolbar-heading">
+                    <h2>Devices</h2>
+                    <p class="toolbar-sub">SNMP targets this instance polls.</p>
+                </div>
+                <button id="addDeviceBtn" class="primary-btn">Add device</button>
+            </div>
+            <div id="devicesList" class="table-container"></div>
+        </div>
+
+        <!-- Device Details View -->
+        <div id="deviceDetailsView" class="view">
+            <div class="toolbar">
+                <div class="toolbar-heading">
+                    <button id="backToDevicesBtn" class="secondary-btn btn-back">Back</button>
+                    <h2 id="deviceDetailsTitle"></h2>
+                </div>
+                <div class="toolbar-actions">
+                    <button id="testSnmpBtn" class="secondary-btn">Test connection</button>
+                    <button id="editDeviceBtn" class="primary-btn">Edit device</button>
+                </div>
+            </div>
+
+            <!-- SNMP Test Results Banner -->
+            <div id="snmpTestResults" class="snmp-test-results" style="display: none;"></div>
+
+            <div class="details-grid">
+                <div class="card">
+                    <h3>Device information</h3>
+                    <div id="deviceInfo"></div>
+                </div>
+                <div class="card">
+                    <h3>Assigned profiles</h3>
+                    <div id="deviceProfiles"></div>
+                    <div class="card-actions">
+                        <button id="assignProfileBtn" class="secondary-btn">Assign profile</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Direct MIB assignments</h3>
+                    <div id="deviceDirectMibs"></div>
+                    <div class="card-actions">
+                        <button id="assignMibBtn" class="secondary-btn">Assign MIB</button>
+                        <button id="bulkAssignMibBtn" class="secondary-btn">Assign multiple</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>All applied MIBs</h3>
+                    <div id="deviceAllMibs"></div>
+                    <div class="card-actions">
+                        <button id="generateDashboardBtn" class="primary-btn">Generate dashboard</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Profiles View -->
+        <div id="profilesView" class="view">
+            <div class="toolbar">
+                <div class="toolbar-heading">
+                    <h2>Profiles</h2>
+                    <p class="toolbar-sub">Reusable MIB bundles you can apply to many devices.</p>
+                </div>
+                <button id="addProfileBtn" class="primary-btn">Add profile</button>
+            </div>
+            <div id="profilesList" class="table-container"></div>
+        </div>
+
+        <!-- Profile Details View -->
+        <div id="profileDetailsView" class="view">
+            <div class="toolbar">
+                <div class="toolbar-heading">
+                    <button id="backToProfilesBtn" class="secondary-btn btn-back">Back</button>
+                    <h2 id="profileDetailsTitle"></h2>
+                </div>
+                <button id="editProfileBtn" class="primary-btn">Edit profile</button>
+            </div>
+            <div class="details-grid">
+                <div class="card">
+                    <h3>Profile information</h3>
+                    <div id="profileInfo"></div>
+                </div>
+                <div class="card">
+                    <h3>Assigned MIBs</h3>
+                    <div id="profileMibs"></div>
+                    <div class="card-actions">
+                        <button id="assignMibToProfileBtn" class="secondary-btn">Assign MIB</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Devices using this profile</h3>
+                    <div id="profileDevices"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MIB Manager View -->
+        <div id="mibManagerView" class="view">
+            <div class="toolbar">
+                <div class="toolbar-heading">
+                    <h2>MIB library</h2>
+                    <p class="toolbar-sub">Imported modules available to assign.</p>
+                </div>
+                <div class="upload-area">
+                    <input type="file" id="mibFileInput" accept=".mib,.txt,.my" multiple style="display:none">
+                    <button id="uploadMibBtn" class="primary-btn">Import MIBs</button>
+                </div>
+            </div>
+            <!-- Totals derived from the /api/mibs payload the table already fetches. -->
+            <div id="mibSummaryCards" class="summary-grid" aria-live="polite"></div>
+            <div id="storedMibsList" class="table-container"></div>
+        </div>
+
+        <!-- MIB Browser View -->
+        <div id="mibBrowserView" class="view">
+            <div class="toolbar mib-browser-header">
+                <div class="toolbar-heading">
+                    <h2>MIB browser</h2>
+                    <p class="toolbar-sub" id="mibBrowserSummary">Expand a module to load the objects the parser resolved.</p>
+                </div>
+                <div class="mib-browser-controls">
+                    <input type="text" id="mibSearchInput" placeholder="Filter modules by name…" class="mib-search-input">
+                    <button id="expandAllMibs" class="secondary-btn">Expand all</button>
+                    <button id="collapseAllMibs" class="secondary-btn">Collapse all</button>
+                </div>
+            </div>
+            <div id="mibAccordion" class="mib-accordion"></div>
+        </div>
+
+        <!-- Settings View -->
+        <div id="settingsView" class="view">
+            <div class="toolbar">
+                <div class="toolbar-heading">
+                    <h2>Settings</h2>
+                    <p class="toolbar-sub">Connection and refresh behaviour for this browser.</p>
+                </div>
+            </div>
+            <div class="card settings-card">
+                <div class="settings-form">
+                    <label>
+                        <span>Prometheus URL</span>
+                        <input type="text" id="prometheusUrl" value="http://localhost:9091">
+                    </label>
+                    <label>
+                        <span>Update interval (seconds)</span>
+                        <input type="number" id="updateInterval" value="5" min="1" max="60">
+                    </label>
+                    <div class="form-actions">
+                        <button id="saveSettings" class="primary-btn">Save settings</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modals -->
+    <div id="deviceModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="deviceModalTitle">Add device</h3>
+                <button class="close-modal" aria-label="Close">&times;</button>
+            </div>
+            <form id="deviceForm">
+                <input type="hidden" name="id">
+                <label>
+                    <span>Name <em>required</em></span>
+                    <input name="name" placeholder="core-01" required>
+                </label>
+                <label>
+                    <span>Address <em>required</em></span>
+                    <input name="address" placeholder="198.51.100.252" required>
+                </label>
+                <label>
+                    <span>SNMP version</span>
+                    <select name="snmp_version">
+                        <option value="v2c">SNMPv2c</option>
+                        <option value="v3">SNMPv3</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Community string</span>
+                    <input name="community" placeholder="public" value="public">
+                </label>
+                <label>
+                    <span>Port</span>
+                    <input name="port" type="number" value="161">
+                </label>
+                <div class="modal-actions">
+                    <button type="button" class="cancel-btn secondary-btn">Cancel</button>
+                    <button type="submit" class="primary-btn">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="profileModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="profileModalTitle">Add profile</h3>
+                <button class="close-modal" aria-label="Close">&times;</button>
+            </div>
+            <form id="profileForm">
+                <input type="hidden" name="id">
+                <label>
+                    <span>Name <em>required</em></span>
+                    <input name="name" placeholder="core-routers" required>
+                </label>
+                <label>
+                    <span>Description</span>
+                    <textarea name="description" placeholder="What this profile is for" rows="3"></textarea>
+                </label>
+                <div class="modal-actions">
+                    <button type="button" class="cancel-btn secondary-btn">Cancel</button>
+                    <button type="submit" class="primary-btn">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="assignModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="assignModalTitle">Assign</h3>
+                <button class="close-modal" aria-label="Close">&times;</button>
+            </div>
+            <div id="assignModalBody"></div>
+        </div>
+    </div>
+
+    <div id="modalOverlay" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalOverlayTitle">Modal</h3>
+                <button class="close-modal" aria-label="Close"
+                        onclick="document.getElementById('modalOverlay').style.display='none'">&times;</button>
+            </div>
+            <div id="modalOverlayBody"></div>
+        </div>
+    </div>
+
+    <!-- MIB Import Modal -->
+    <div id="mibImportModal" class="modal">
+        <div class="modal-content modal-wide">
+            <div class="modal-header">
+                <h3>Import MIB files</h3>
+                <button class="close-modal" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="import-section">
+                    <label class="file-drop-zone" id="mibDropZone">
+                        <input type="file" id="mibImportFileInput" accept=".mib,.txt,.my" multiple>
+                        <div class="drop-zone-content">
+                            <span class="drop-icon" aria-hidden="true">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                                    <path d="M12 15V4m0 0L8 8m4-4 4 4M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"
+                                          stroke="currentColor" stroke-width="1.7"
+                                          stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </span>
+                            <span class="drop-text">Drop MIB files here, or click to browse</span>
+                            <span class="drop-hint">.mib, .txt and .my — select as many as you like</span>
+                        </div>
+                    </label>
+                </div>
+                <div id="selectedFilesContainer" class="selected-files-container" style="display: none;">
+                    <h4>Selected files <span class="count-pill" id="selectedFileCount">0</span></h4>
+                    <div id="selectedFilesList" class="selected-files-list"></div>
+                </div>
+                <div class="tags-section">
+                    <label>
+                        <span>Tags</span>
+                        <input type="text" id="mibImportTags" placeholder="cisco, asr1000, infrastructure">
+                    </label>
+                    <div class="tags-preview" id="tagsPreview"></div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="cancel-btn secondary-btn">Cancel</button>
+                    <button type="button" id="importMibSubmit" class="primary-btn" disabled>Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Description sheet.
+
+         MIB DESCRIPTIONs run to whole paragraphs and every list that shows one
+         has to clip it to keep its rows aligned. This is where the clipped text
+         is read in full: one panel, opened from any truncated description, with
+         the wording as selectable text rather than a tooltip. It is deliberately
+         non-modal, so a reader can keep clicking down a list of objects and
+         watch the panel follow. -->
+    <aside id="descSheet" class="desc-sheet" hidden tabindex="-1"
+           role="dialog" aria-modal="false" aria-labelledby="descSheetTitle">
+        <div class="desc-sheet-head">
+            <div class="desc-sheet-heading">
+                <p class="desc-sheet-eyebrow" id="descSheetEyebrow"></p>
+                <h3 id="descSheetTitle"></h3>
+            </div>
+            <button type="button" class="close-modal" id="descSheetClose"
+                    aria-label="Close description">&times;</button>
+        </div>
+        <dl class="desc-sheet-meta" id="descSheetMeta"></dl>
+        <div class="desc-sheet-body" id="descSheetBody"></div>
+        <p class="desc-sheet-hint">Press Esc to close.</p>
+    </aside>
+
+    <div id="notificationContainer"></div>
+
+    <script>
+        // Theme toggle. Kept here rather than in app.js so the control works
+        // even if the application bundle fails to load.
+        (function () {
+            var btn = document.getElementById('themeToggle');
+            if (!btn) return;
+            btn.addEventListener('click', function () {
+                var root = document.documentElement;
+                var current = root.getAttribute('data-theme');
+                if (!current) {
+                    current = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+                }
+                var next = current === 'dark' ? 'light' : 'dark';
+                root.setAttribute('data-theme', next);
+                try { localStorage.setItem('netmon-theme', next); } catch (e) { /* ignore */ }
+                window.dispatchEvent(new CustomEvent('netmon:themechange', { detail: { theme: next } }));
+            });
+        })();
+    </script>
+    <script src="/js/chart-theme.js?v=20260810-006"></script>
+    <script src="/js/app.js?v=20260810-006"></script>
+</body>
+</html>

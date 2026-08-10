@@ -1,0 +1,232 @@
+package poller
+
+import (
+	"sync/atomic"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/jeremyhahn/go-netmon/internal/snmp"
+)
+
+// The unreachable-device policy.
+//
+// A device that has stopped answering SNMP costs one full retry budget per
+// operation — snmp_timeout × (snmp_retries + 1), 40s with the shipped
+// configuration — and a worker used to pay that for every one of the device's
+// selected objects, every cycle. Sixty-three objects is forty-two minutes for a
+// poll on a sixty-second interval, so the cycle never finished, no result was
+// ever produced, and the device reported "last poll never" forever while
+// burning a goroutine and a socket.
+//
+// Two rules fix that, and both are about the device rather than the object:
+//
+//  1. Abandon the rest of a cycle once the device has left silenceThreshold
+//     operations in a row unanswered and answered nothing at all so far. The
+//     remaining objects live on the same agent; it is not going to answer them.
+//
+//  2. Back off between cycles, doubling from the device's own poll interval up
+//     to maxBackoff, and drop straight back to the interval the moment the
+//     device answers anything.
+//
+// What is deliberately *not* here is any per-object judgement. A device that
+// answers some objects and errors on others — a PDU with half its sensor table
+// unimplemented, say — is healthy, and it stays on its normal interval and
+// keeps every object it does answer. See cycle.
+const (
+	// silenceThreshold is how many operations in a row a device may leave
+	// unanswered, having answered nothing else in the cycle, before the worker
+	// stops asking for the rest of it.
+	//
+	// Three is one packet-loss burst too many. Each operation is already a
+	// whole retry sequence, so this is snmp_retries+1 attempts three times
+	// over — twelve unanswered requests spread across two minutes on the
+	// shipped configuration — with not one reply of any kind in between. Two
+	// would abandon a cycle sooner and cost less; three is the margin for a
+	// device whose agent is briefly wedged rather than gone.
+	silenceThreshold = 3
+
+	// maxBackoff caps how long an unreachable device is left alone. Long
+	// enough that a dead device costs almost nothing, short enough that a
+	// device fixed by hand is polling again before the operator has finished
+	// writing the ticket.
+	maxBackoff = 15 * time.Minute
+
+	// maxBackoffShift bounds the doubling so a device that has been down for
+	// weeks cannot shift a duration past the width of an int64.
+	maxBackoffShift = 32
+)
+
+// sysUpTimeOID is sysUpTime.0: the object every SNMP agent implements, and so
+// the cheapest possible question to ask one. See worker.abandon.
+const sysUpTimeOID = "1.3.6.1.2.1.1.3.0"
+
+// deviceUnreachable is 1 while a device answers nothing at all, and 0 while it
+// answers.
+//
+// A gauge rather than a counter, unlike gonetmon_mib_module_load_failures_total
+// next door, because the question is "is this device down *now*" and that is
+// not something a counter can answer without a rate window. How often it has
+// happened is already recorded: an abandoned cycle reports a failed poll, so
+// gonetmon_polls_total{status="error"} counts them, and before this existed a
+// device that never finished a cycle contributed to neither series — which is
+// exactly why "unreachable" was indistinguishable from "still starting up".
+//
+// It is published at 0 when a device is registered so that alerts can be
+// written against a series that exists from the start, and deleted when the
+// device is removed so a decommissioned box does not stay on a dashboard.
+var deviceUnreachable = prometheus.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "gonetmon_device_unreachable",
+		Help: "1 while a device answers no SNMP at all and is being retried on a backoff, 0 while it answers.",
+	},
+	[]string{"device"},
+)
+
+func init() {
+	prometheus.MustRegister(deviceUnreachable)
+}
+
+// cycle accumulates what one poll learned about whether the device is talking
+// at all, which is a different question from whether every object came back.
+//
+// Anything that arrives from the agent counts as an answer, including a refusal
+// and including a table that broke off part-way (see snmp.Unanswered). That is
+// what keeps a partially answering device — one that serves its system group
+// and times out on a subtree it half implements — on its normal schedule with
+// its working objects still collected. Only a device that produced nothing at
+// all is judged unreachable.
+type cycle struct {
+	answered int
+	silent   int  // consecutive unanswered operations
+	probed   bool // the device has already been asked directly whether it is there
+}
+
+// record files the outcome of one SNMP operation — a chunk of scalar GETs, or
+// one table walk — and reports whether the rest of the cycle is now pointless.
+func (c *cycle) record(err error) bool {
+	if err == nil || !snmp.Unanswered(err) {
+		c.answered++
+		c.silent = 0
+		return false
+	}
+
+	c.silent++
+	return c.abandoned()
+}
+
+// abandoned reports that the device has been silent long enough for the
+// remaining operations to be a waste of the poll interval.
+func (c *cycle) abandoned() bool {
+	return c.answered == 0 && c.silent >= silenceThreshold
+}
+
+// unreachable reports a cycle the device answered no part of. It is broader
+// than abandoned: a device with only one or two objects selected never reaches
+// the threshold, but a cycle in which everything attempted went unanswered is
+// still a device that is not there.
+func (c *cycle) unreachable() bool {
+	return c.answered == 0 && c.silent > 0
+}
+
+// reachability is a worker's memory of whether its device is answering and when
+// it should be tried again.
+//
+// The worker writes it from its polling goroutine while the control API reads
+// it to answer a status request, so it is atomic rather than locked: a status
+// lookup must never queue behind a poll, which is the failure this whole change
+// exists to stop.
+type reachability struct {
+	device   string
+	interval time.Duration
+	ceiling  time.Duration
+
+	consecutive atomic.Uint32
+	nextPoll    atomic.Int64 // unix nanoseconds
+}
+
+// newReachability starts a device out reachable, and publishes it as such so
+// that an alert on gonetmon_device_unreachable has a series to watch from the
+// moment the device is registered.
+func newReachability(device string, interval time.Duration) *reachability {
+	deviceUnreachable.WithLabelValues(device).Set(0)
+
+	return &reachability{
+		device:   device,
+		interval: interval,
+		ceiling:  maxBackoff,
+	}
+}
+
+// answered records a cycle the device took part in, which clears any backoff
+// immediately: one reply is enough to prove the device is back, and making it
+// serve a whole penalty interval first would leave a recovered device dark for
+// up to maxBackoff.
+func (r *reachability) answered() {
+	if r.consecutive.Swap(0) != 0 {
+		deviceUnreachable.WithLabelValues(r.device).Set(0)
+	}
+}
+
+// silent records a cycle the device answered no part of.
+func (r *reachability) silent() {
+	if r.consecutive.Add(1) == 1 {
+		deviceUnreachable.WithLabelValues(r.device).Set(1)
+	}
+}
+
+// unreachable reports whether the device answered nothing in its last cycle.
+func (r *reachability) unreachable() bool { return r.consecutive.Load() > 0 }
+
+// failures reports how many cycles in a row the device has answered nothing.
+func (r *reachability) failures() int { return int(r.consecutive.Load()) }
+
+// due reports when the next poll is scheduled, or the zero time before the
+// first one has been scheduled.
+func (r *reachability) due() time.Time {
+	at := r.nextPoll.Load()
+	if at == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, at)
+}
+
+// schedule returns how long the worker should wait before polling again, and
+// records when that poll comes due so the control API can tell an operator when
+// a backed-off device will next be tried.
+func (r *reachability) schedule() time.Duration {
+	delay := backoff(r.interval, r.ceiling, r.consecutive.Load())
+	r.nextPoll.Store(time.Now().Add(delay).UnixNano())
+	return delay
+}
+
+// forget drops a device's published reachability, so a removed device leaves no
+// series behind.
+func (r *reachability) forget() {
+	deviceUnreachable.DeleteLabelValues(r.device)
+}
+
+// backoff returns the wait after n consecutive cycles in which the device
+// answered nothing: its own poll interval while it is answering, then a
+// doubling of that interval, never longer than ceiling.
+//
+// A device polled less often than the ceiling keeps its own interval, because
+// backing off to something shorter than the schedule it was given would poll a
+// dead device more often than a live one.
+func backoff(interval, ceiling time.Duration, n uint32) time.Duration {
+	switch {
+	case n == 0:
+		return interval
+	case interval >= ceiling:
+		return interval
+	case n > maxBackoffShift:
+		return ceiling
+	}
+
+	delay := interval << (n - 1)
+	if delay <= 0 || delay > ceiling {
+		// delay <= 0 is the shift having run off the end of an int64.
+		return ceiling
+	}
+	return delay
+}

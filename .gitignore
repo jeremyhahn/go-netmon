@@ -1,0 +1,75 @@
+# Build output
+go-netmon
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+/vendor/
+/bin/
+/dist/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local configuration.
+#
+# config.yaml is this deployment's own settings and is bind-mounted into the
+# containers. config.example.yaml is the committed template; copy it to
+# config.yaml on a fresh checkout. Device credentials (SNMP communities, v3
+# auth) are held in the web UI's store, not here, but this file still describes
+# one host's deployment rather than the project.
+config.yaml
+*.local.yaml
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Coverage and profiling output.
+#
+# Scoped to the coverage artifacts by name. An unqualified "*.html" was here
+# before and silently excluded internal/webui/static/index.html — the entire web
+# UI page the server serves — from the repository.
+*.coverprofile
+*.out
+coverage.html
+coverage-*.html
+/coverage/
+
+# Runtime state, not source.
+#
+# data/ holds the local (non-Docker) run's Pebble stores; backups/ holds
+# netmon-backup archives, which are hundreds of megabytes of compressed volume
+# copies and are themselves the disaster-recovery artifact, not source.
+/data/
+/backups/
+
+# Node dependencies for the Playwright e2e suite, restored by npm ci.
+node_modules/
+/tests/e2e/test-results/
+/tests/e2e/playwright-report/
+
+# Scraped vendor support lists. These are saved HTML pages from Cisco's site
+# used to check which objects a platform implements; they are reference
+# material, not project source, and are large.
+mibs/*/support-list/
+missing-mibs.txt
+
+# Device-specific MIB trees are opt-in: everything under mibs/ is excluded and
+# the trees the project actually needs are named back in. See mibs/README.md.
+mibs/*/
+!mibs/standard/
+!mibs/cisco/
+!mibs/vendor/
+!mibs/README.md

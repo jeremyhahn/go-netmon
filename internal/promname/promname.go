@@ -1,0 +1,81 @@
+// Package promname builds the Prometheus identifiers the SNMP exporter emits.
+//
+// The exporter names a sample after the MIB object it instantiates and puts the
+// row index in labels (internal/metrics/name_index.go). Every consumer that has
+// to name a series it did not produce — a dashboard generator, a query builder,
+// a CLI renderer — has to arrive at exactly the same string, and each one
+// deriving it independently is what let 36,654 raw-OID metric names survive in
+// four packages after the exporter stopped emitting them.
+//
+// This package is that single derivation. It is deliberately thin: it composes
+// the exporter's own metrics.SanitizeMetricName so the character rules cannot
+// drift, and internal/promname/contract_test.go pins its output to what the
+// exporter actually emits for a live sample, so a change on either side fails
+// the build rather than silently emptying every dashboard panel.
+package promname
+
+import (
+	"strings"
+
+	"github.com/jeremyhahn/go-netmon/internal/metrics"
+)
+
+// Prefix is prepended to the name of every metric derived from an SNMP object.
+// It matches metrics.metricNamePrefix.
+const Prefix = "snmp_"
+
+// DeviceLabel carries the configured name of the polled device.
+const DeviceLabel = "device"
+
+// OIDLabel carries the full instance OID a sample was read from: the object's
+// OID followed by ".0" for a scalar or by the row index for a table column. It
+// is the only label that identifies a sample's instance exactly, which is what
+// makes it the right thing to resolve a series back to a MIB object with.
+const OIDLabel = "oid"
+
+// NameLabel is the label Prometheus keeps a metric's name in.
+const NameLabel = "__name__"
+
+// MetricName returns the metric name the exporter gives every instance of the
+// MIB object called objectName. The row index is not part of it: it is carried
+// in labels, so one object is one metric name however many rows its table has.
+func MetricName(objectName string) string {
+	return NameWithPrefix(Prefix, objectName)
+}
+
+// NameWithPrefix is MetricName with a caller-chosen prefix, for the dashboard
+// builder's configurable MetricPrefix. An empty prefix means the default.
+func NameWithPrefix(prefix, objectName string) string {
+	if prefix == "" {
+		prefix = Prefix
+	}
+	return prefix + metrics.SanitizeMetricName(objectName)
+}
+
+// InfoMetricName returns the name of the info metric the exporter emits for a
+// status column: the column's value is not a number, so it is published as a
+// label on a constant-1 series named after the column, lowercased
+// (internal/metrics/table_index_cache.go).
+//
+// The exporter lowercases the column name and nothing else, so this does the
+// same. Matching it exactly is the whole point -- a consumer that sanitized
+// where the exporter does not would query a name no series has.
+func InfoMetricName(columnName string) string {
+	return Prefix + strings.ToLower(columnName) + "_info"
+}
+
+// IndexLabel returns the label the exporter puts an index column's decoded
+// value in. Index and status column names reach Prometheus lowercased and
+// otherwise untouched, so ifIndex is read back as "ifindex" and
+// cbgpPeer2RemoteAddr as "cbgppeer2remoteaddr".
+func IndexLabel(columnName string) string {
+	return strings.ToLower(columnName)
+}
+
+// RawOIDMetricName returns the name the exporter falls back to for an instance
+// OID that no loaded MIB describes. It is the only case in which a metric name
+// still carries an OID, and the only case in which one metric name means one
+// table row.
+func RawOIDMetricName(instanceOID string) string {
+	return metrics.SanitizeMetricName(Prefix + instanceOID)
+}

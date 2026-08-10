@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # Prometheus for storing metrics
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: go-netmon-prometheus
+    ports:
+      - "9090:9090"  # Prometheus UI
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-remote-write-receiver'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=30d'  # Keep data for 30 days
+    networks:
+      - netmon
+    restart: unless-stopped
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: go-netmon-grafana
+    ports:
+      - "3000:3000"  # Grafana UI
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin  # Change this!
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - netmon
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  # go-netmon SNMP collector
+  go-netmon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: go-netmon
+    network_mode: host  # Use host network to access routers directly
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./mibs:/app/mibs
+    restart: unless-stopped
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+
+networks:
+  netmon:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

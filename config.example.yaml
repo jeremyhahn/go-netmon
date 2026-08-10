@@ -1,0 +1,69 @@
+# go-netmon Configuration for Cisco Routers
+# Copy this to config.yaml and update with your router details
+
+global:
+  default_poll_interval: 30  # Poll every 30 seconds
+  max_workers: 10
+  snmp_timeout: 10
+  snmp_retries: 3
+
+prometheus:
+  remote_write_url: "http://prometheus:9090/api/v1/write"
+  batch_size: 1000
+  flush_interval: 10
+
+api:
+  listen_address: ":8080"
+  enabled: true
+
+metrics:
+  # Must match the port published for the go-netmon service in
+  # docker-compose.yml and the go-netmon scrape target in prometheus.yml.
+  listen_address: ":9100"
+  enabled: true
+
+mib:
+  paths:
+    - "./mibs/standard"
+  storage_path: "./data/mib-storage"
+  # A bootstrap list, not a limit: modules assigned to a device through the web
+  # UI are parsed on demand from the paths above when that device is registered.
+  auto_load:
+    - "SNMPv2-MIB"
+    - "IF-MIB"
+
+logging:
+  # debug turns on per-OID and per-query tracing; info keeps it silent.
+  level: "info"
+  format: "json"   # json | text
+  output: "stdout" # stdout | file
+  # file: "/app/data/netmon.log"  # required when output is "file"
+
+# Configure your Cisco routers here
+devices:
+  # Example 1: SNMPv2c Cisco Router
+  - name: "cisco-router-1"
+    address: "203.0.113.1:161"  # Replace with your router IP
+    snmp_version: "2c"
+    community: "public"          # Replace with your SNMP community string
+    profile: "cisco"
+    poll_interval: 30
+    enabled: true
+    tags:
+      location: "datacenter"
+      device_type: "router"
+
+  # Example 2: SNMPv3 Cisco Router (more secure)
+  - name: "cisco-router-2"
+    address: "203.0.113.2:161"  # Replace with your router IP
+    snmp_version: "3"
+    username: "snmpuser"         # Replace with your SNMPv3 username
+    auth_protocol: "SHA"
+    auth_password: "authpass123" # Replace with your auth password
+    priv_protocol: "AES"
+    priv_password: "privpass123" # Replace with your priv password
+    profile: "cisco"
+    poll_interval: 30
+    enabled: true
+    tags:
+      location: "branch-office"

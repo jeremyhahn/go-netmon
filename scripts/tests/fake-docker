@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# A stub Docker CLI backed by a directory tree, used by scripts/tests/run-tests.sh.
+#
+# The backup and restore scripts route every Docker call through $DOCKER, so
+# pointing that at this stub exercises their real logic - argument handling,
+# ownership checks, manifest generation, integrity verification, the restore
+# gates - with no Docker daemon and, critically, no possibility of touching a
+# live stack.
+#
+# State lives under $FAKE_DOCKER_ROOT:
+#
+#   volumes/<name>/data/...   volume contents
+#   volumes/<name>/project    compose project label (absent = unlabelled)
+#   running                   services currently "running"
+#   foreign                   container ids reported as foreign to the project
+#   compose-volumes           logical volume names the compose file defines
+#   services.json             compose service -> image mapping
+#   log                       every invocation, for assertions about behaviour
+
+set -euo pipefail
+
+root="${FAKE_DOCKER_ROOT:?FAKE_DOCKER_ROOT must be set}"
+mkdir -p "$root"
+printf '%s\n' "$*" >>"$root/log"
+
+vol_dir() { printf '%s/volumes/%s/data' "$root" "$1"; }
+
+die() {
+    printf 'fake-docker: %s\n' "$*" >&2
+    exit 1
+}
+
+# resolve_mount extracts the volume name from the first "-v NAME:PATH[:opts]"
+# argument in the remaining argv.
+resolve_mount() {
+    local prev="" a
+    for a in "$@"; do
+        if [ "$prev" = "-v" ]; then
+            printf '%s' "${a%%:*}"
+            return 0
+        fi
+        prev="$a"
+    done
+    return 1
+}
+
+# --- docker compose -------------------------------------------------------
+
+cmd_compose() {
+    local project="" file="" args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        -p)
+            project="$2"
+            shift 2
+            ;;
+        -f)
+            file="$2"
+            shift 2
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+        esac
+    done
+    : "$project" "$file"
+
+    case "${args[0]:-}" in
+    version)
+        if [ "${args[1]:-}" = "--short" ]; then
+            printf '2.40.3\n'
+        else
+            printf 'Docker Compose version 2.40.3\n'
+        fi
+        ;;
+    config)
+        case "${args[1]:-}" in
+        --volumes) cat "$root/compose-volumes" ;;
+        --format) cat "$root/services.json" ;;
+        *) die "unsupported compose config: ${args[*]}" ;;
+        esac
+        ;;
+    ps)
+        # Only "--services --filter status=running" is used by the tooling.
+        cat "$root/running" 2>/dev/null || true
+        ;;
+    stop)
+        : >"$root/running"
+        printf 'stopped\n' >>"$root/actions"
+        ;;
+    start)
+        shift_services=("${args[@]:1}")
+        printf '%s\n' "${shift_services[@]}" >"$root/running"
+        printf 'started\n' >>"$root/actions"
+        ;;
+    up)
+        # "up --no-start" materialises volumes; "up -d" starts everything.
+        local name
+        while read -r name; do
+            [ -z "$name" ] && continue
+            mkdir -p "$(vol_dir "${project}_${name}")"
+            printf '%s' "$project" >"$root/volumes/${project}_${name}/project"
+        done <"$root/compose-volumes"
+        if [ "${args[1]:-}" != "--no-start" ]; then
+            jq -r '.services | keys[]' "$root/services.json" >"$root/running"
+            printf 'up\n' >>"$root/actions"
+        fi
+        ;;
+    *) die "unsupported compose command: ${args[*]}" ;;
+    esac
+}
+
+# --- docker run -----------------------------------------------------------
+
+cmd_run() {
+    local vol dir script
+    vol="$(resolve_mount "$@")" || die "no -v mount in: $*"
+    dir="$(vol_dir "$vol")"
+    [ -d "$dir" ] || die "no such volume: $vol"
+
+    # Everything after the image name is the container command. The tooling
+    # issues exactly three shapes, matched explicitly rather than by guesswork.
+    script="$*"
+
+    if [[ "$script" == *"du -sb"* ]]; then
+        du -sb "$dir" | cut -f1
+        return 0
+    fi
+    if [[ "$script" == *"find /dst -mindepth 1 -delete"* ]]; then
+        find "$dir" -mindepth 1 -delete
+        tar -C "$dir" --numeric-owner -xf -
+        return 0
+    fi
+    if [[ "$script" == *"tar -C /src"* ]]; then
+        tar -C "$dir" --numeric-owner -cf - .
+        return 0
+    fi
+    die "unsupported run command: $script"
+}
+
+# --- docker volume --------------------------------------------------------
+
+cmd_volume() {
+    case "${1:-}" in
+    inspect)
+        shift
+        local fmt="" names=()
+        while [ $# -gt 0 ]; do
+            case "$1" in
+            --format)
+                fmt="$2"
+                shift 2
+                ;;
+            *)
+                names+=("$1")
+                shift
+                ;;
+            esac
+        done
+        local n
+        for n in "${names[@]}"; do
+            [ -d "$(vol_dir "$n")" ] || die "no such volume: $n"
+            if [ -n "$fmt" ]; then
+                cat "$root/volumes/$n/project" 2>/dev/null || true
+                printf '\n'
+            fi
+        done
+        ;;
+    ls)
+        ls -1 "$root/volumes" 2>/dev/null || true
+        ;;
+    *) die "unsupported volume command: $*" ;;
+    esac
+}
+
+# --- entry point ----------------------------------------------------------
+
+case "${1:-}" in
+compose)
+    shift
+    cmd_compose "$@"
+    ;;
+run)
+    shift
+    cmd_run "$@"
+    ;;
+volume)
+    shift
+    cmd_volume "$@"
+    ;;
+ps)
+    # The ownership check asks for foreign container ids, then for a listing.
+    if [[ "$*" == *"-aq"* ]]; then
+        cat "$root/foreign" 2>/dev/null || true
+    else
+        sed 's/^/  /' "$root/foreign" 2>/dev/null || true
+    fi
+    ;;
+image)
+    printf 'sha256:%s\n' "$(printf '%s' "$*" | sha256sum | cut -c1-64)"
+    ;;
+version)
+    printf '27.0.0\n'
+    ;;
+*) die "unsupported command: $*" ;;
+esac
