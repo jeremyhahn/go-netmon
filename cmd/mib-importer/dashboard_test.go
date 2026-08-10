@@ -346,9 +346,15 @@ func TestDashboardList(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "list with invalid storage",
+			// A regular file used as a parent directory: the kernel refuses it
+			// with ENOTDIR whoever asks. "/nonexistent/path" relied on the
+			// process lacking permission to create it, which is true for a
+			// developer and false for the root user CI runs as - where the
+			// store was created, the case failed, and the run wrote to the
+			// host filesystem.
+			name: "list with a storage path that cannot be opened",
 			args: []string{
-				"--storage-path", "/nonexistent/path",
+				"--storage-path", filepath.Join(notADirectory(t), "db"),
 			},
 			wantErr: true,
 		},
@@ -428,4 +434,16 @@ func TestDashboardClean(t *testing.T) {
 func TestPrintDashboardUsage(t *testing.T) {
 	// Should not panic
 	printDashboardUsage()
+}
+
+// notADirectory returns the path of a regular file, for use where a test needs
+// a location no process can open a directory under.
+func notADirectory(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed the blocking file: %v", err)
+	}
+	return path
 }
