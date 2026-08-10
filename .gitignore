@@ -1,5 +1,10 @@
-# Build output
-go-netmon
+# Build output.
+#
+# The binary name is anchored with a leading slash so it matches only the built
+# artifact at the repository root. Unanchored, "go-netmon" also matched the
+# directory cmd/go-netmon/ and silently kept the poller's own main package out
+# of the repository - CI caught it as "directory not found" on the first build.
+/go-netmon
 *.exe
 *.dll
 *.so
