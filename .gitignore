@@ -71,10 +71,15 @@ node_modules/
 mibs/*/support-list/
 missing-mibs.txt
 
-# Device-specific MIB trees are opt-in: everything under mibs/ is excluded and
-# the trees the project actually needs are named back in. See mibs/README.md.
-mibs/*/
-!mibs/standard/
-!mibs/cisco/
-!mibs/vendor/
-!mibs/README.md
+# The MIB trees under mibs/ are testdata and are committed.
+#
+# They were briefly excluded as "operational, belongs with the infrastructure
+# config" and that was wrong: the parser and dashboard suites read them
+# directly through internal/testsupport.MIBDir, so a clean checkout could not
+# run its own tests. They are also the project's only multi-vendor parser
+# coverage - mibs/asr1001 is Cisco IOS-XE and mibs/r640 is Dell OpenManage, and
+# the Dell modules (10892.mib, dcstorag.mib) exercise SMIv2 constructs the
+# Cisco set does not.
+#
+# Only the scraped support-list pages above are excluded; they are reference
+# material no test reads.
