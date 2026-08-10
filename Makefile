@@ -1,4 +1,4 @@
-.PHONY: test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
+.PHONY: ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
 
 # Variables
 BINARY_NAME=go-netmon
@@ -27,6 +27,10 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 GOCOVER=$(GOCMD) tool cover
+
+# Directories holding first-party Go source. Scoped rather than "." so a
+# formatting check does not descend into tests/e2e/node_modules.
+GOFMT_PATHS=cmd internal pkg test
 
 # Build flags
 LDFLAGS=-ldflags "-s -w"
@@ -76,7 +80,7 @@ install-cli: build-cli ## Install the netmon CLI to /usr/local/bin
 	@install -m 0755 $(BUILD_DIR)/$(CLI) /usr/local/bin/$(CLI)
 	@echo "Installed: /usr/local/bin/$(CLI)"
 
-build-all: build build-mib-importer build-webui build-cli ## Build all binaries
+build-all: build build-mib-importer build-webui build-cli build-backup ## Build all binaries
 
 test: ## Run unit tests only (fast, no Docker required)
 	@echo "Running unit tests..."
@@ -91,6 +95,27 @@ test-integration: ## Run integration tests in Docker environment
 # per-package targets already use that order (integration-test-parser). Both
 # names now work rather than one of them being a documented command that fails.
 integration-test: test-integration ## Alias for test-integration (documented name)
+
+test-e2e: ## Run the Playwright browser suite against a running stack
+	@echo "Running end-to-end browser tests..."
+	@cd tests/e2e && npm ci && npx playwright test
+
+security: ## Scan dependencies and the linked standard library for known vulnerabilities
+	@echo "Running govulncheck..."
+	@command -v govulncheck >/dev/null 2>&1 || \
+		(echo "govulncheck not installed. Run: make install-tools" && exit 1)
+	govulncheck ./...
+
+# --- CI entry points ------------------------------------------------------
+#
+# CI runs these same targets. A check that exists only in a workflow file
+# cannot be reproduced locally and ends up debugged by pushing commits.
+
+ci-fast: fmt-check vet lint test build-all ## Everything that does not need Docker
+	@echo "ci-fast: passed"
+
+ci: ci-fast integration-test ## Everything a pull request must pass
+	@echo "ci: passed"
 
 test-config: ## Run config package tests
 	@echo "Running config tests..."
@@ -205,6 +230,17 @@ lint: ## Run linters
 fmt: ## Format code
 	@echo "Formatting code..."
 	$(GOCMD) fmt ./...
+
+fmt-check: ## Fail if any file is not gofmt-clean (CI runs this, not fmt)
+	@echo "Checking formatting..."
+	@unformatted="$$(gofmt -l $(GOFMT_PATHS))"; \
+	if [ -n "$$unformatted" ]; then \
+		echo "These files are not gofmt-clean:"; \
+		echo "$$unformatted"; \
+		echo "Run: make fmt"; \
+		exit 1; \
+	fi
+	@echo "All files are gofmt-clean."
 
 vet: ## Run go vet
 	@echo "Running go vet..."
