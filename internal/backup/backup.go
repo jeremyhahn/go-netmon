@@ -156,18 +156,37 @@ func (s *Service) planBackup(ctx context.Context, opts Options) (*backupPlan, er
 
 	if containsComponent(components, ComponentMIBs) {
 		loc, resolveErr := s.treeResolver().resolve(ctx, opts.MIBTree)
-		if resolveErr != nil {
+		switch {
+		case resolveErr == nil:
+			state, inspectErr := inspectTree(loc)
+			if inspectErr != nil {
+				return nil, inspectErr
+			}
+			if state.Files == 0 {
+				return nil, &EmptyTreeError{Dir: loc.Dir}
+			}
+			plan.tree, plan.treeState = &loc, state
+			s.info("mib tree:   %s (%d files, %s)", loc.Dir, state.Files, loc.Origin)
+
+		case isTreeNotMounted(resolveErr):
+			// A deployment that mounts no MIB tree keeps its modules inside the
+			// volume the poller writes them to, and that volume is already
+			// backed up as a volume. There is nothing separate to copy, so the
+			// component is dropped rather than treated as a missing dependency
+			// — which is what it was before imports were stored internally.
+			//
+			// An ambiguous mount stays fatal: two services naming different
+			// host directories at the same target means the deployment does not
+			// agree with itself about where its MIBs are, and guessing would
+			// pick one of them to empty on a restore.
+			s.info("mib tree:   not mounted; MIB sources live in the %s volume and are covered by it",
+				ComponentPoller.Volume())
+			components = withoutComponent(components, ComponentMIBs)
+			plan.components = components
+
+		default:
 			return nil, resolveErr
 		}
-		state, inspectErr := inspectTree(loc)
-		if inspectErr != nil {
-			return nil, inspectErr
-		}
-		if state.Files == 0 {
-			return nil, &EmptyTreeError{Dir: loc.Dir}
-		}
-		plan.tree, plan.treeState = &loc, state
-		s.info("mib tree:   %s (%d files, %s)", loc.Dir, state.Files, loc.Origin)
 	}
 
 	plan.name = opts.Name

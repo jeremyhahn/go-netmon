@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
@@ -46,17 +47,24 @@ func TestConfigureMIBAddsTheSearchPaths(t *testing.T) {
 	configureMIB(mibCfg, "data/mib.db", "/app/data/mibs")
 
 	// The uploaded directory is the one that matters: it is the shared volume
-	// through which a MIB imported in the web UI reaches the poller.
+	// through which a MIB imported in the web UI reaches the poller, and since
+	// imports are copied into it, it is the whole source.
 	for _, want := range []string{
 		"/app/data/mibs/uploaded",
-		"/app/mibs/standard",
-		"/app/mibs/vendor",
-		"/app/mibs/cisco",
-		"/app/mibs/asr1001",
 		"/usr/share/snmp/mibs",
 	} {
 		if !slices.Contains(mibCfg.Paths, want) {
 			t.Errorf("search paths %v are missing %q", mibCfg.Paths, want)
+		}
+	}
+
+	// Nothing under /app/mibs may be added back. That directory was a bind
+	// mount of the repository working copy: a module resolved from there looked
+	// imported while living in a place no backup covered and no other host had,
+	// which is precisely the coupling removing the mount was meant to end.
+	for _, path := range mibCfg.Paths {
+		if strings.HasPrefix(path, "/app/mibs") {
+			t.Errorf("search path %q reintroduces the bind-mounted repository tree", path)
 		}
 	}
 }

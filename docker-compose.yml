@@ -13,7 +13,6 @@ services:
                      # scraped as go-netmon:9100 by prometheus.yml)
     volumes:
       - ./config.yaml:/app/config/config.yaml:ro
-      - ./mibs:/app/mibs:ro
       - go-netmon-data:/app/data
       - ./grafana/provisioning/dashboards/_generated:/app/dashboards:rw
     environment:
@@ -84,7 +83,6 @@ services:
     ports:
       - "8082:8080"  # Web UI (8081 is taken by sysmon-server on this host)
     volumes:
-      - ./mibs:/app/mibs:ro
       # The same config the poller reads. Without it the web UI falls back to
       # the code defaults, and global.default_poll_interval differs between the
       # two (file 30, code 60) — so the UI reported a device polling every 60s

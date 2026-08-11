@@ -166,3 +166,15 @@ func containsComponent(list []Component, want Component) bool {
 	}
 	return false
 }
+
+// withoutComponent returns the list with one component removed, leaving the
+// order of the rest alone so the plan reads the same as it is written.
+func withoutComponent(list []Component, drop Component) []Component {
+	out := make([]Component, 0, len(list))
+	for _, c := range list {
+		if c != drop {
+			out = append(out, c)
+		}
+	}
+	return out
+}

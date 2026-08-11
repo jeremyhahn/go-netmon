@@ -1,4 +1,4 @@
-.PHONY: check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
+.PHONY: validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
 
 # Variables
 BINARY_NAME=go-netmon
@@ -128,7 +128,13 @@ check-tracked: ## Fail if anything the build needs is untracked or ignored by gi
 	fi
 	@echo "All build inputs are tracked."
 
-ci-fast: check-tracked fmt-check vet lint test build-all ## Everything that does not need Docker
+validate-mibs: build-cli ## Check that each bundled MIB tree parses and resolves on its own
+	@echo "Validating the Cisco tree..."
+	@$(BUILD_DIR)/$(CLI) mib validate --quiet mibs/asr1001 mibs/standard mibs/cisco mibs/vendor
+	@echo "Validating the Dell tree..."
+	@$(BUILD_DIR)/$(CLI) mib validate --quiet mibs/r640 mibs/standard
+
+ci-fast: check-tracked fmt-check vet lint test build-all validate-mibs ## Everything that does not need Docker
 	@echo "ci-fast: passed"
 
 ci: ci-fast integration-test ## Everything a pull request must pass

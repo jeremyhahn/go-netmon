@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 )
@@ -146,4 +147,16 @@ func inspectTree(loc TreeLocation) (treeState, error) {
 		return treeState{}, err
 	}
 	return treeState{Files: files, Bytes: size}, nil
+}
+
+// isTreeNotMounted reports whether a resolve failure was simply the absence of
+// a MIB bind mount, as opposed to an ambiguous or unusable one.
+//
+// Absence became the normal case when imports started being copied into the
+// poller's own volume: there is then no host directory to copy separately, and
+// the deployment is the better for it. Ambiguity is a different thing entirely
+// and must still stop the backup.
+func isTreeNotMounted(err error) bool {
+	var resolve *TreeResolveError
+	return errors.As(err, &resolve) && len(resolve.Sources) == 0
 }

@@ -242,12 +242,14 @@ func configureMIB(mibCfg *config.MIBConfig, catalogPath, mibFilesPath string) {
 		known[path] = true
 	}
 
+	// The imported-MIB store, plus whatever the base image ships. The
+	// "/app/mibs/*" entries that used to be here named a directory bind-mounted
+	// from the repository working copy: the deployment could not be moved to a
+	// host without that checkout, and a module resolved from there rather than
+	// from the store looked imported while living nowhere the backup covered.
+	// Imports are copied into the store, so the store is the whole source.
 	for _, path := range []string{
 		filepath.Join(mibFilesPath, "uploaded"),
-		"/app/mibs/standard",
-		"/app/mibs/vendor",
-		"/app/mibs/cisco",
-		"/app/mibs/asr1001",
 		"/usr/share/snmp/mibs",
 	} {
 		if known[path] {

@@ -33,6 +33,7 @@ func newMIBCommand(env *Env) *cobra.Command {
 		newMIBImportCommand(env),
 		newMIBTagsCommand(env),
 		newMIBDeleteCommand(env),
+		newMIBValidateCommand(env),
 	)
 	return cmd
 }

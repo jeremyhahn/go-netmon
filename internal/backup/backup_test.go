@@ -230,7 +230,15 @@ func TestBackupRefusesAnEmptyMIBTree(t *testing.T) {
 	}
 }
 
-func TestBackupRefusesAnUnresolvableMIBTree(t *testing.T) {
+// TestBackupSkipsAnUnmountedMIBTree covers a deployment that bind-mounts no MIB
+// tree at all.
+//
+// That used to be fatal, and was right while imports were resolved out of a
+// directory in someone's working copy. Once imports are copied into the
+// poller's own volume there is no separate host tree to copy and the volume
+// carries the sources, so refusing to run would be refusing over the absence of
+// something the deployment no longer needs.
+func TestBackupSkipsAnUnmountedMIBTree(t *testing.T) {
 	h := newHarness(t)
 	svc, err := backup.New(backup.Config{
 		RepoRoot:       h.repo,
@@ -245,15 +253,57 @@ func TestBackupRefusesAnUnresolvableMIBTree(t *testing.T) {
 		t.Fatalf("new service: %v", err)
 	}
 
+	result, err := svc.Backup(context.Background(), backup.Options{})
+	if err != nil {
+		t.Fatalf("a deployment with no MIB mount could not be backed up: %v", err)
+	}
+
+	// The component is dropped, not silently recorded as present-and-empty: a
+	// manifest claiming a MIB tree it does not hold would send a restore
+	// looking for one.
+	if _, ok := result.Manifest.Tree(backup.ComponentMIBs); ok {
+		t.Error("the manifest claims a MIB tree the backup never copied")
+	}
+	for _, c := range result.Manifest.Components {
+		if c == backup.ComponentMIBs {
+			t.Error("the mibs component is listed although no tree was copied")
+		}
+	}
+	if !strings.Contains(h.out.String(), "not mounted") {
+		t.Errorf("the operator was not told the tree was skipped:\n%s", h.out.String())
+	}
+}
+
+// TestBackupRefusesAnAmbiguousMIBTree is the half that must stay fatal.
+//
+// Two services naming different host directories at the same mount target means
+// the deployment does not agree with itself about where its MIBs are. A restore
+// empties the tree before extracting into it, so picking one would be picking
+// which of two directories to destroy.
+func TestBackupRefusesAnAmbiguousMIBTree(t *testing.T) {
+	h := newHarness(t)
+	h.engine.AddService("odd-one-out", "alpine", false,
+		backup.Bind{Source: h.repo + "/somewhere-else", Target: backup.DefaultMIBMountTarget})
+
+	svc, err := backup.New(backup.Config{
+		RepoRoot:    h.repo,
+		ComposeFile: h.repo + "/docker-compose.yml",
+		Project:     testProject,
+		Docker:      h.engine,
+		Out:         h.out,
+		Now:         h.now,
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
 	_, err = svc.Backup(context.Background(), backup.Options{})
 	var resolve *backup.TreeResolveError
 	if !errors.As(err, &resolve) {
-		t.Fatalf("want *backup.TreeResolveError, got %T: %v", err, err)
+		t.Fatalf("want *backup.TreeResolveError for two conflicting mounts, got %T: %v", err, err)
 	}
-
-	// Skipping the component is the documented way out, and it must work.
-	if _, err := svc.Backup(context.Background(), backup.Options{Skip: []backup.Component{backup.ComponentMIBs}}); err != nil {
-		t.Fatalf("--skip mibs should sidestep the unresolvable tree: %v", err)
+	if len(resolve.Sources) < 2 {
+		t.Errorf("the error names %d sources, want both of the conflicting ones", len(resolve.Sources))
 	}
 }
 
