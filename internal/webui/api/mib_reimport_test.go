@@ -796,7 +796,10 @@ func TestUploadRollbackRestoresWhatItDisplaced(t *testing.T) {
 		if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		upload := &mibUpload{path: path, previous: []byte("original"), existed: true}
+		upload := &mibUpload{
+			root: uploadRoot(t, dir), name: "existing.my", path: path,
+			previous: []byte("original"), existed: true,
+		}
 
 		if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
 			t.Fatalf("overwrite: %v", err)
@@ -819,7 +822,7 @@ func TestUploadRollbackRestoresWhatItDisplaced(t *testing.T) {
 		if err := os.WriteFile(path, []byte("rejected"), 0o600); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		upload := &mibUpload{path: path}
+		upload := &mibUpload{root: uploadRoot(t, dir), name: "fresh.my", path: path}
 
 		if err := upload.restore(); err != nil {
 			t.Fatalf("restore: %v", err)
@@ -835,7 +838,13 @@ func TestUploadRollbackRestoresWhatItDisplaced(t *testing.T) {
 	})
 
 	t.Run("reports a restore it cannot perform", func(t *testing.T) {
+		// A name under a directory that does not exist inside the root. The
+		// kernel refuses it, which is the same class of refusal an escaping
+		// name gets, so the caller still sees a typed error rather than a
+		// silent no-op.
 		upload := &mibUpload{
+			root:     uploadRoot(t, dir),
+			name:     "no-such-directory/x.my",
 			path:     filepath.Join(dir, "no-such-directory", "x.my"),
 			previous: []byte("original"),
 			existed:  true,
@@ -846,4 +855,77 @@ func TestUploadRollbackRestoresWhatItDisplaced(t *testing.T) {
 			t.Fatalf("error = %v, want a *MIBUploadError", err)
 		}
 	})
+}
+
+// uploadRoot opens a directory the way saveUploadedMIB does, so a rollback in a
+// test is resolved by the kernel against that directory exactly as it is in the
+// server.
+func uploadRoot(t *testing.T, dir string) *os.Root {
+	t.Helper()
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open the upload directory: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return root
+}
+
+// TestUploadCannotWriteThroughASymlink is the reason the upload directory is
+// held open as an os.Root rather than addressed by path.
+//
+// filepath.Base stops "../" and was the whole of the previous defense, with
+// #nosec annotations asserting it was enough. It is not: a base name is still
+// followed through a symbolic link, so a link planted in the upload directory
+// would have had os.Create write through it to wherever it pointed. Resolving
+// the name against the open directory makes the kernel refuse it.
+//
+// The test asserts on the target being untouched as well as on the error. An
+// implementation that wrote the file and then complained would satisfy an
+// error-only check.
+func TestUploadCannotWriteThroughASymlink(t *testing.T) {
+	uploadDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	target := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(target, []byte("do not touch"), 0o600); err != nil {
+		t.Fatalf("seed the target: %v", err)
+	}
+
+	// os.Symlink, not the root's: creating an escaping link is what the root
+	// refuses, and building the hostile condition has to go around it.
+	link := filepath.Join(uploadDir, "planted.my")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("plant the symlink: %v", err)
+	}
+
+	root := uploadRoot(t, uploadDir)
+
+	if _, err := root.Create("planted.my"); err == nil {
+		t.Error("creating a file through an escaping symlink was allowed")
+	}
+	if err := root.WriteFile("planted.my", []byte("overwritten"), 0o644); err == nil {
+		t.Error("writing through an escaping symlink was allowed")
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("the file outside the upload directory is gone: %v", err)
+	}
+	if string(got) != "do not touch" {
+		t.Errorf("the file outside the upload directory was modified: %q", got)
+	}
+}
+
+// TestUploadRefusesATraversingName covers the case filepath.Base already
+// handled, so removing that reduction cannot pass unnoticed.
+func TestUploadRefusesATraversingName(t *testing.T) {
+	uploadDir := t.TempDir()
+	root := uploadRoot(t, uploadDir)
+
+	for _, name := range []string{"../escape.my", "sub/../../escape.my", "/etc/passwd"} {
+		if _, err := root.Create(name); err == nil {
+			t.Errorf("Create(%q) was allowed", name)
+		}
+	}
 }

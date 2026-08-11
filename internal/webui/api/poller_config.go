@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	mibStorage "github.com/jeremyhahn/go-netmon/internal/mib/storage"
@@ -181,11 +180,20 @@ func (s *Server) buildPollerDeviceConfig(ctx context.Context, device *storage.De
 	// Format address with port
 	address := formatDeviceAddress(device.Address, device.Port)
 
-	// Build tags
+	// Tags become Prometheus labels on every sample this device produces, so
+	// only values that are stable for as long as the device means the same
+	// thing belong here.
+	//
+	// device_id and created_at were both here and both change when a device is
+	// deleted and added back under the same name — a routine thing to do after
+	// fixing an address or a community string. Prometheus identifies a series
+	// by its full label set, so either one changing forks every series the
+	// device has: the old ones go stale, the new ones start empty, and a graph
+	// that should be continuous shows a gap and then a second line. Neither
+	// value was read by anything; the device's name identifies it, and the API
+	// is where its id and creation time belong.
 	tags := make(map[string]string)
 	tags["source"] = "webui"
-	tags["device_id"] = strconv.FormatInt(device.ID, 10)
-	tags["created_at"] = device.CreatedAt.Format(time.RFC3339)
 
 	return &PollerDeviceConfig{
 		Name:          device.Name,

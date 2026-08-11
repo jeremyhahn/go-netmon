@@ -99,24 +99,37 @@ func (e *MIBLoaderError) Error() string { return e.Reason }
 // means a file that turns out not to parse can be undone, instead of leaving
 // the record pointing at something unparseable until someone notices.
 type mibUpload struct {
+	// root is the uploaded-MIB directory, held open. Every operation below
+	// names a file relative to it and is resolved by the kernel against that
+	// open directory, so a name that would leave it cannot be followed.
+	root *os.Root
+	// name is the file's name within root, never a path.
+	name     string
 	path     string
 	previous []byte
 	existed  bool
+}
+
+// close releases the directory handle. It is separate from restore because a
+// successful upload also has to release it.
+func (u *mibUpload) close() {
+	if u.root != nil {
+		// A directory handle; closing it cannot affect what was written
+		// through it.
+		_ = u.root.Close()
+	}
 }
 
 // restore puts back whatever the upload displaced, removing the uploaded file
 // when it displaced nothing.
 func (u *mibUpload) restore() error {
 	if !u.existed {
-		// u.path was built by saveUploadedMIB from filepath.Base of the upload
-		// name joined to the server's own MIB directory, so it cannot name a
-		// file outside it.
-		if err := os.Remove(u.path); err != nil && !errors.Is(err, os.ErrNotExist) { // #nosec G703 -- confined to the MIB directory by filepath.Base
+		if err := u.root.Remove(u.name); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return &MIBUploadError{Op: "remove", Path: u.path, Err: err}
 		}
 		return nil
 	}
-	if err := os.WriteFile(u.path, u.previous, 0o644); err != nil { // #nosec G703 -- confined to the MIB directory by filepath.Base
+	if err := u.root.WriteFile(u.name, u.previous, 0o644); err != nil {
 		return &MIBUploadError{Op: "restore", Path: u.path, Err: err}
 	}
 	return nil
@@ -271,6 +284,9 @@ func (s *Server) importMIBSource(
 	if err != nil {
 		return nil, err
 	}
+	// The directory handle is only needed while the upload can still be undone;
+	// every path below is past that point once this returns.
+	defer upload.close()
 
 	moduleInfo, err := loaderParser.LoadModuleFromFile(upload.path)
 	if err != nil {
@@ -295,24 +311,51 @@ func (s *Server) importMIBSource(
 // bytes it displaced so the write can be undone.
 func (s *Server) saveUploadedMIB(name string, content io.Reader) (*mibUpload, error) {
 	mibDir := filepath.Join(s.mibStoragePath, "uploaded")
-	if err := os.MkdirAll(mibDir, 0o755); err != nil { // #nosec G703 -- mibDir is the server's configured MIB directory
-		return nil, &MIBUploadError{Op: "create directory", Path: mibDir, Err: err}
+
+	// The MIB store is opened once and everything below is named relative to
+	// it, so no path built from an upload is ever handed to the os package.
+	//
+	// The caller has already reduced name to its base, which stops "../" — but
+	// a base name is still followed through a symbolic link, so a link planted
+	// in the upload directory would have had os.Create write through it to
+	// anywhere this process can reach. A name resolved against an open
+	// directory is refused by the kernel instead.
+	//
+	// #nosec G703 -- mibStoragePath is this server's own configured storage
+	// directory, not anything a request supplies. It is the one path here that
+	// names a location to the os package, which is what makes every path after
+	// it relative to an open handle.
+	store, err := os.OpenRoot(s.mibStoragePath)
+	if err != nil {
+		return nil, &MIBUploadError{Op: "open storage", Path: s.mibStoragePath, Err: err}
+	}
+	// The store handle exists only to reach the uploaded/ directory below.
+	defer func() { _ = store.Close() }()
+
+	if mkdirErr := store.MkdirAll("uploaded", 0o755); mkdirErr != nil {
+		return nil, &MIBUploadError{Op: "create directory", Path: mibDir, Err: mkdirErr}
 	}
 
-	// name has already been reduced to its base, so path cannot escape mibDir.
-	path := filepath.Join(mibDir, name)
+	root, err := store.OpenRoot("uploaded")
+	if err != nil {
+		return nil, &MIBUploadError{Op: "open directory", Path: mibDir, Err: err}
+	}
 
-	upload := &mibUpload{path: path}
-	previous, err := os.ReadFile(path) // #nosec G304,G703 -- confined to mibDir by filepath.Base
+	path := filepath.Join(mibDir, name)
+	upload := &mibUpload{root: root, name: name, path: path}
+
+	previous, err := root.ReadFile(name)
 	switch {
 	case err == nil:
 		upload.previous, upload.existed = previous, true
 	case !errors.Is(err, os.ErrNotExist):
+		upload.close()
 		return nil, &MIBUploadError{Op: "read existing", Path: path, Err: err}
 	}
 
-	dst, err := os.Create(path) // #nosec G304,G703 -- confined to mibDir by filepath.Base
+	dst, err := root.Create(name)
 	if err != nil {
+		upload.close()
 		return nil, &MIBUploadError{Op: "create", Path: path, Err: err}
 	}
 

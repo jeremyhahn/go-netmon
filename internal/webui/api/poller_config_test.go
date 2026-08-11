@@ -690,3 +690,84 @@ func TestHandleGetPollerConfigSerializesModuleFilters(t *testing.T) {
 		t.Errorf("filter = %+v, want the exclude pattern to survive the round trip", filter)
 	}
 }
+
+// TestDeviceTagsAreStableAcrossReCreation is the guard on which device
+// attributes become Prometheus labels.
+//
+// A label is part of a series' identity, so a label whose value changes when a
+// device is deleted and added back under the same name forks every series that
+// device has: the old ones go stale and a graph that should be continuous shows
+// a gap and then a second line. device_id and created_at both did that, and
+// deleting a device to correct an address or a community string is routine.
+//
+// The test re-creates the device rather than asserting on a list of forbidden
+// names, so any future tag with the same defect fails here too.
+func TestDeviceTagsAreStableAcrossReCreation(t *testing.T) {
+	store, err := storage.New(t.TempDir() + "/webui.db")
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	server := &Server{storage: store}
+
+	tagsFor := func(name string) map[string]string {
+		t.Helper()
+
+		device := &storage.Device{
+			Name: name, Address: "203.0.113.1", SNMPVersion: "v2c",
+			Community: "public", Port: 161,
+		}
+		if createErr := store.CreateDevice(ctx, device); createErr != nil {
+			t.Fatalf("create device: %v", createErr)
+		}
+		config, buildErr := server.buildPollerDeviceConfig(ctx, device)
+		if buildErr != nil {
+			t.Fatalf("buildPollerDeviceConfig: %v", buildErr)
+		}
+		if deleteErr := store.DeleteDevice(ctx, device.ID); deleteErr != nil {
+			t.Fatalf("delete device: %v", deleteErr)
+		}
+		return config.Tags
+	}
+
+	// The same device, removed and added back. Its id differs and it was
+	// created at a different instant.
+	first := tagsFor("core-01")
+	second := tagsFor("core-01")
+
+	for key, firstValue := range first {
+		secondValue, present := second[key]
+		if !present {
+			t.Errorf("tag %q disappeared on re-creation", key)
+			continue
+		}
+		if firstValue != secondValue {
+			t.Errorf("tag %q = %q then %q; a tag that changes on re-creation forks every series this device has",
+				key, firstValue, secondValue)
+		}
+	}
+	for key := range second {
+		if _, present := first[key]; !present {
+			t.Errorf("tag %q appeared only on re-creation", key)
+		}
+	}
+
+	// The comparison above catches a value that visibly changes, but not one
+	// that merely can: created_at is formatted to the second, so two devices
+	// created in the same second render identically here while differing in
+	// production. An allowlist is the part that actually holds, because it
+	// fails on any new tag until someone states why it is stable.
+	stable := map[string]string{
+		"source": "identifies which component configured the device; a constant",
+	}
+	for key := range second {
+		if _, allowed := stable[key]; !allowed {
+			t.Errorf("tag %q is not on the stable list. A device tag becomes a "+
+				"Prometheus label, so it must not change when a device is deleted "+
+				"and added back under the same name. If it cannot change, add it "+
+				"to the list with the reason.", key)
+		}
+	}
+}
