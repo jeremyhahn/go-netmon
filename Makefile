@@ -1,4 +1,4 @@
-.PHONY: ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
+.PHONY: check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
 
 # Variables
 BINARY_NAME=go-netmon
@@ -111,7 +111,24 @@ security: ## Scan dependencies and the linked standard library for known vulnera
 # CI runs these same targets. A check that exists only in a workflow file
 # cannot be reproduced locally and ends up debugged by pushing commits.
 
-ci-fast: fmt-check vet lint test build-all ## Everything that does not need Docker
+check-tracked: ## Fail if anything the build needs is untracked or ignored by git
+	@echo "Checking that the build's inputs are in the repository..."
+	@missing=""; \
+	for f in $$(grep -hoE 'dockerfile:[[:space:]]*[^[:space:]]+' docker-compose*.yml 2>/dev/null | awk '{print $$2}' | sort -u); do \
+		git ls-files --error-unmatch "$$f" >/dev/null 2>&1 || missing="$$missing $$f"; \
+	done; \
+	for d in cmd/*/; do \
+		git ls-files --error-unmatch "$$d" >/dev/null 2>&1 || missing="$$missing $$d"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "These are required to build but are not tracked by git:"; \
+		for f in $$missing; do echo "  $$f  ($$(git check-ignore -v "$$f" 2>/dev/null || echo 'untracked'))"; done; \
+		echo "A clean checkout cannot build. Add them, or narrow the .gitignore rule."; \
+		exit 1; \
+	fi
+	@echo "All build inputs are tracked."
+
+ci-fast: check-tracked fmt-check vet lint test build-all ## Everything that does not need Docker
 	@echo "ci-fast: passed"
 
 ci: ci-fast integration-test ## Everything a pull request must pass

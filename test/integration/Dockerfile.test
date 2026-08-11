@@ -1,0 +1,22 @@
+FROM golang:1.26-alpine
+
+# Install dependencies including net-snmp for snmptranslate
+RUN apk add --no-cache git make bash curl net-snmp net-snmp-tools
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy go mod files first for better caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy the entire project
+COPY . .
+
+# Build the test binary. The integration build tag is required: integration_test.go
+# carries it, so without the tag the package compiles to the tests that need no
+# services at all and the end-to-end test is silently left out.
+RUN go test -c -tags=integration ./test/integration -o /integration-test
+
+# Default command runs all integration tests
+CMD ["go", "test", "-v", "-tags=integration", "./test/integration"]

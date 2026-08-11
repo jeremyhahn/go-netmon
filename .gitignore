@@ -9,7 +9,15 @@
 *.dll
 *.so
 *.dylib
+
+# Compiled test binaries from "go test -c". The negation matters: this pattern
+# also matches any file whose name ends in ".test", and it was excluding
+# test/integration/Dockerfile.test — so CI checked out a tree with no dockerfile
+# for the integration runner and failed with "open Dockerfile.test: no such file
+# or directory" while every local run worked from the untracked copy on disk.
 *.test
+!Dockerfile.test
+!**/Dockerfile.test
 /vendor/
 /bin/
 /dist/
