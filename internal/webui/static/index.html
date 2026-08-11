@@ -6,7 +6,7 @@
     <title>Network Monitor</title>
     <meta name="color-scheme" content="dark light">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/css/style.css?v=20260810-006">
+    <link rel="stylesheet" href="/css/style.css?v=20260811-011">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <script>
         // Apply the stored theme before first paint so the page never flashes
@@ -273,6 +273,105 @@
                     <div class="form-actions">
                         <button id="saveSettings" class="primary-btn">Save settings</button>
                     </div>
+                </div>
+            </div>
+
+            <!-- Backup and configuration.
+                 Two different jobs that are easy to confuse, so the page says
+                 which is which rather than offering two buttons and leaving the
+                 reader to guess. -->
+            <div class="card settings-card" id="backupCard">
+                <div class="settings-section-head">
+                    <h3>Configuration export and import</h3>
+                    <p class="settings-sub">
+                        Moves this instance's configuration between deployments. It does
+                        <strong>not</strong> carry metric history — see below.
+                    </p>
+                </div>
+
+                <div class="settings-body">
+                    <dl class="fact-list">
+                        <dt>What it holds</dt>
+                        <dd>
+                            Devices and their SNMP settings, profiles, MIB assignments and per-assignment
+                            OID filters, poll intervals, and the MIB source files the configuration refers
+                            to — so it restores onto a fresh instance without importing MIBs by hand first.
+                        </dd>
+                        <dt>What it does not hold</dt>
+                        <dd>
+                            Metric history, Grafana dashboards, and anything else living in Prometheus.
+                            An import replaces configuration only.
+                        </dd>
+                        <dt>Use it to</dt>
+                        <dd>
+                            Move a configuration to another host, keep a reviewable copy before a change,
+                            or seed a new deployment.
+                        </dd>
+                    </dl>
+
+                    <p class="settings-warning" role="note">
+                        <strong>An export is a credential.</strong> It contains SNMP community strings in
+                        clear text. Store it as you would store a password.
+                    </p>
+
+                    <div class="form-actions">
+                        <button id="exportConfigBtn" class="primary-btn" type="button">Export configuration</button>
+                        <button id="importConfigBtn" class="secondary-btn" type="button">Import configuration…</button>
+                        <input type="file" id="importConfigFile" accept=".tar.gz,.tgz,.json,application/gzip,application/json" hidden>
+                    </div>
+                    <p class="settings-status" id="configTransferStatus" role="status" aria-live="polite"></p>
+                </div>
+            </div>
+
+            <div class="card settings-card" id="fullBackupCard">
+                <div class="settings-section-head">
+                    <h3>Full backup and restore</h3>
+                    <p class="settings-sub">
+                        Everything the stack holds, including metric history. Run from a terminal on the
+                        host — not from this page.
+                    </p>
+                </div>
+
+                <div class="settings-body">
+                    <dl class="fact-list">
+                        <dt>What it holds</dt>
+                        <dd>
+                            Every Docker volume: the web UI store, the poller's MIB store and imported MIB
+                            sources, the whole Prometheus metric history, and Grafana's database and
+                            dashboards. Plus <code>config.yaml</code> and <code>prometheus.yml</code>.
+                        </dd>
+                        <dt>Consistency</dt>
+                        <dd>
+                            Backups are <strong>cold</strong>. Every service is stopped, the data is copied
+                            at rest, and exactly the services that were running are started again — about
+                            12 seconds of downtime for this deployment. The stores are PebbleDB and
+                            Prometheus TSDB; neither can be copied safely while running.
+                        </dd>
+                        <dt>Why not a button here</dt>
+                        <dd>
+                            A backup stops every container in the project, including the web UI serving
+                            this page. It cannot stop itself mid-request and then tell you how it went.
+                        </dd>
+                    </dl>
+
+                    <h4 class="settings-subhead">Commands</h4>
+                    <pre class="settings-code"><code># Back up everything. Stops the stack, copies, restarts it.
+make backup
+
+# Check an archive end to end. Reads only, changes nothing.
+make backup-verify FROM=backups/netmon-20260811T173450Z
+
+# Print the restore plan and change nothing.
+make restore FROM=backups/netmon-20260811T173450Z
+
+# Apply it.
+make restore FROM=backups/netmon-20260811T173450Z YES=1</code></pre>
+
+                    <p class="settings-note">
+                        The same tool is the binary <code>bin/netmon-backup</code>, which needs only Docker
+                        — copy it alongside your backups and a restore needs no toolchain and no checkout.
+                        Full detail in <code>docs/operations/backup-restore.md</code>.
+                    </p>
                 </div>
             </div>
         </div>

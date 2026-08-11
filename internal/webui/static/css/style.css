@@ -512,6 +512,9 @@ form label > span em {
 }
 
 .settings-card { max-width: 520px; }
+/* The two backup cards hold prose and a command block rather than a short
+   form, so they take the width the text needs to stay readable. */
+#backupCard, #fullBackupCard { max-width: 860px; }
 .settings-form { display: flex; flex-direction: column; }
 .settings-form .form-actions { margin-top: var(--s-2); }
 
@@ -2014,6 +2017,97 @@ input.paged-list-search { width: 100%; max-width: 400px; min-width: 0; }
 }
 
 /* ==========================================================================
+   Sortable table headers
+
+   The header is a button inside the th rather than a click handler on the th,
+   so it is reachable and operable from the keyboard and announced as a
+   control. aria-sort on the th carries the direction for assistive technology;
+   the arrow below is the same fact for the eye.
+   ========================================================================== */
+
+.sort-header {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+    width: 100%;
+    padding: 0;
+    background: none;
+    border: 0;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    /* The button has to look exactly like the header text it replaced. The
+       font shorthand does not carry letter-spacing or text-transform, and a
+       button does not inherit them from the th on its own, so a sortable
+       header rendered in sentence case beside an unsortable one still in
+       small caps. Each is named rather than relying on the shorthand. */
+    font: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    color: inherit;
+    text-align: inherit;
+}
+.sort-header:hover { color: var(--text-primary); }
+.sort-header:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+.sort-header.is-sorted { color: var(--text-primary); font-weight: 600; }
+
+/* The arrow keeps its width whether or not it holds a glyph, so a column does
+   not jump sideways as the sort moves onto it. */
+.sort-arrow {
+    flex: none;
+    width: 0.75em;
+    font-size: 0.75em;
+    line-height: 1;
+    color: var(--accent);
+}
+
+/* Only the sorted column's arrow is painted, but an unsorted header still
+   hints on hover that it can be. */
+.sort-header:not(.is-sorted):hover .sort-arrow::after {
+    content: '\2195';
+    color: var(--text-muted);
+}
+
+/* Sorting for a surface that is not a table. The MIB browser is a stack of
+   accordions with no header row, so its columns are offered as a row of chips
+   that reads as one control. */
+.mib-accordion-sort {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex-wrap: wrap;
+    padding-bottom: var(--s-3);
+}
+.sort-chips-label {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+}
+.sort-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+    padding: var(--s-1) var(--s-3);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill, 999px);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.sort-chip:hover { color: var(--text-primary); border-color: var(--border-strong, var(--border)); }
+.sort-chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sort-chip.is-sorted {
+    background: var(--accent-soft, var(--surface-3, var(--surface-2)));
+    border-color: var(--accent);
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* ==========================================================================
    Pagination
 
    Previous, a strip of numbered pages, next, and — once the strip can no
@@ -2327,3 +2421,74 @@ select.pager-size-select { width: auto; min-width: 0; }
         to   { opacity: 1; transform: none; }
     }
 }
+
+
+/* ==========================================================================
+   Settings: backup and configuration
+
+   Two cards for two jobs that are easy to confuse. The prose carries the
+   distinction, so it is styled to be read rather than skimmed past.
+   ========================================================================== */
+
+.settings-section-head { margin-bottom: var(--s-4); }
+.settings-section-head h3 { margin: 0 0 var(--s-2); }
+.settings-sub { margin: 0; color: var(--text-secondary); font-size: var(--t-sm); }
+.settings-body { display: flex; flex-direction: column; gap: var(--s-4); }
+.settings-subhead { margin: 0; font-size: var(--t-sm); color: var(--text-secondary); }
+
+/* A term and its answer, rather than a paragraph the reader has to mine. */
+.fact-list { margin: 0; display: grid; gap: var(--s-2) var(--s-4); }
+.fact-list dt {
+    font-size: var(--t-xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.fact-list dd {
+    margin: 0 0 var(--s-3);
+    color: var(--text-secondary);
+    font-size: var(--t-sm);
+    line-height: 1.55;
+}
+.fact-list dd:last-child { margin-bottom: 0; }
+
+@media (min-width: 720px) {
+    .fact-list { grid-template-columns: 10rem 1fr; align-items: baseline; }
+    .fact-list dd { margin-bottom: 0; }
+}
+
+.settings-warning {
+    margin: 0;
+    padding: var(--s-3) var(--s-4);
+    border-left: 3px solid var(--warning, var(--accent));
+    background: var(--surface-inset);
+    border-radius: var(--radius-sm);
+    font-size: var(--t-sm);
+    color: var(--text-secondary);
+}
+
+.settings-code {
+    margin: 0;
+    padding: var(--s-4);
+    background: var(--surface-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+    font-size: var(--t-sm);
+    line-height: 1.6;
+}
+.settings-code code { background: none; padding: 0; }
+
+.settings-note { margin: 0; font-size: var(--t-sm); color: var(--text-muted); }
+
+/* The status line is empty until something has happened, so it takes no room
+   and does not leave a gap under the buttons. */
+.settings-status:empty { display: none; }
+.settings-status {
+    margin: 0;
+    font-size: var(--t-sm);
+    color: var(--text-secondary);
+}
+.settings-status.is-ok { color: var(--success, var(--text-primary)); }
+.settings-status.is-error { color: var(--danger, var(--text-primary)); }

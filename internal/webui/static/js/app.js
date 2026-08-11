@@ -19,6 +19,11 @@ const MIB_EXPAND_ALL_CONCURRENCY = 4;
 const LIST_PAGE = 50;
 const LIST_CONTROLS_MIN = 8;
 
+// The MIB browser pages smaller than the other lists. Each of its rows is an
+// accordion that expands into a table of objects, so a screenful of them is far
+// more than a screenful of ordinary rows.
+const MIB_ACCORDION_PAGE = 25;
+
 // Pagination sizing, shared by every paged surface.
 //
 // PAGER_WINDOW numbered buttons sit around the current page, with the first and
@@ -68,6 +73,11 @@ const FLEET_STATES = {
 // itself keeps the order the server sent, which is already deterministic.
 const FLEET_STATE_ORDER = ['ok', 'failing', 'unreachable', 'never_polled', 'not_registered', 'unknown'];
 
+// Severity, worst first. This is what the State column sorts by: triage order,
+// not the alphabet. It is deliberately separate from FLEET_STATE_ORDER above,
+// which lays out the chips and reads best healthy-first.
+const FLEET_SEVERITY = ['unreachable', 'failing', 'not_registered', 'never_polled', 'unknown', 'ok'];
+
 // last_poll_time and next_poll_time are Go time.Time values whose omitempty
 // never fires, so a device that has never been polled sends the zero time
 // rather than nothing at all. Anything this old is that zero value, not a poll
@@ -98,6 +108,9 @@ class MonitoringApp {
         this.mibDetails = new Map();        // mibId -> detail payload
         this.mibDetailRequests = new Map(); // mibId -> in-flight promise
         this.mibAccordionBound = false;
+        // Search boxes that live outside the list they drive, so their listener
+        // is registered once rather than on every rebuild of that list.
+        this.externalSearchBound = new Set();
 
         // Dashboard module rail: one set of listeners for the search box and
         // the arrow keys, installed the first time a device is rendered.
@@ -240,7 +253,6 @@ class MonitoringApp {
         });
 
         // MIB Browser controls
-        document.getElementById('mibSearchInput').addEventListener('input', (e) => this.filterMIBAccordion(e.target.value));
         document.getElementById('expandAllMibs').addEventListener('click', () => this.expandAllMIBAccordion());
         document.getElementById('collapseAllMibs').addEventListener('click', () => this.collapseAllMIBAccordion());
         document.getElementById('settingsBtn').addEventListener('click', () => this.switchView('settings'));
@@ -656,6 +668,165 @@ class MonitoringApp {
     }
 
     // ========================================
+    // Sorting
+    // ========================================
+
+    // Column sorting for the paged surfaces. A table's headers are the obvious
+    // place to ask "which device has not been polled longest", and answering it
+    // by reading down an unordered column does not scale past a screenful.
+    //
+    // Sorting happens after the filter and the search and before the page is
+    // cut, so the reader sorts the set they can see rather than the page they
+    // happen to be on — sorting a single page would reorder ten rows and leave
+    // the largest value stranded on page four.
+
+    // sortCompare orders two values of the same column.
+    //
+    // Missing values always sink, in both directions. A device that has never
+    // been polled has no last-poll time, and the question behind the sort is
+    // "which polled longest ago" — an absent value is not the answer to that in
+    // either direction, so it belongs at the end rather than winning ascending.
+    sortCompare(a, b, dir) {
+        const aMissing = a === null || a === undefined || a === '';
+        const bMissing = b === null || b === undefined || b === '';
+        if (aMissing || bMissing) {
+            if (aMissing && bMissing) return 0;
+            return aMissing ? 1 : -1;
+        }
+
+        let order;
+        if (typeof a === 'number' && typeof b === 'number') {
+            order = a - b;
+        } else {
+            // numeric:true so eth10 sorts after eth9 rather than after eth1.
+            order = String(a).localeCompare(String(b), undefined, {
+                numeric: true, sensitivity: 'base'
+            });
+        }
+        return dir === 'desc' ? -order : order;
+    }
+
+    // sortItems returns a sorted copy. The input is left alone because it is the
+    // caller's array — the fleet's device list is replaced wholesale by every
+    // refresh, and sorting in place would fight that.
+    //
+    // Ties are broken by the position the server sent, so a column of equal
+    // values does not reshuffle on every repaint.
+    sortItems(items, state) {
+        const column = (state.sortColumns || []).find(c => c.key === state.sortKey);
+        if (!column || !column.get) return items;
+
+        return items
+            .map((item, index) => ({ item, index }))
+            .sort((a, b) => {
+                const order = this.sortCompare(column.get(a.item), column.get(b.item), state.sortDir);
+                return order !== 0 ? order : a.index - b.index;
+            })
+            .map(entry => entry.item);
+    }
+
+    // sortHeaderHtml renders one header cell as a button.
+    //
+    // It is a real button inside the th rather than a click handler on the th:
+    // that is what makes it reachable by keyboard and announced as something
+    // operable. aria-sort on the th is what tells a screen reader which column
+    // the table is ordered by and in which direction.
+    sortHeaderHtml(mountId, column, state) {
+        const active = state.sortKey === column.key;
+        const dir = active ? state.sortDir : null;
+        const aria = active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none';
+        // The arrow is decoration; the accessible name says the same thing in
+        // words, including what the next click will do.
+        const arrow = active ? (dir === 'asc' ? '▲' : '▼') : '';
+        const next = active && dir === 'asc' ? 'descending' : 'ascending';
+        const className = column.className ? ` class="${this.escapeAttr(column.className)}"` : '';
+
+        return `<th${className} aria-sort="${aria}" data-sort-cell="${this.escapeAttr(column.key)}">
+            <button type="button" class="sort-header${active ? ' is-sorted' : ''}"
+                    data-sort-key="${this.escapeAttr(column.key)}"
+                    aria-label="${this.escapeAttr(column.label)}, sort ${next}">
+                <span>${this.escapeHtml(column.label)}</span>
+                <span class="sort-arrow" aria-hidden="true">${arrow}</span>
+            </button>
+        </th>`;
+    }
+
+    // sortHeadersHtml renders a whole header row, for a wrap() to drop into its
+    // thead. Columns without a get() are rendered as plain headers, so a column
+    // holding a control or a free-text reason is not offered as sortable.
+    sortHeadersHtml(mountId) {
+        const state = this.pagedLists.get(mountId);
+        if (!state) return '';
+
+        return (state.sortColumns || []).map(column => {
+            if (!column.get) {
+                const className = column.className ? ` class="${this.escapeAttr(column.className)}"` : '';
+                return `<th${className}>${this.escapeHtml(column.label)}</th>`;
+            }
+            return this.sortHeaderHtml(mountId, column, state);
+        }).join('');
+    }
+
+    // sortControlsHtml is sortHeadersHtml for a surface that is not a table.
+    // The MIB browser is a stack of accordions with no header row to hang a th
+    // on, so the same columns are offered as a row of buttons that reads as one
+    // control rather than as scattered links.
+    sortControlsHtml(mountId) {
+        const state = this.pagedLists.get(mountId);
+        if (!state || !state.sortColumns) return '';
+
+        const buttons = state.sortColumns.filter(column => column.get).map(column => {
+            const active = state.sortKey === column.key;
+            const dir = active ? state.sortDir : null;
+            const arrow = active ? (dir === 'asc' ? '▲' : '▼') : '';
+            const next = active && dir === 'asc' ? 'descending' : 'ascending';
+            return `
+                <button type="button" class="sort-chip${active ? ' is-sorted' : ''}"
+                        data-sort-key="${this.escapeAttr(column.key)}"
+                        ${active ? 'aria-pressed="true"' : 'aria-pressed="false"'}
+                        aria-label="Sort by ${this.escapeAttr(column.label)}, ${next}">
+                    ${this.escapeHtml(column.label)}
+                    <span class="sort-arrow" aria-hidden="true">${arrow}</span>
+                </button>`;
+        }).join('');
+
+        return `<span class="sort-chips-label">Sort by</span>${buttons}`;
+    }
+
+    // sortPagedList applies a header click. Clicking the sorted column reverses
+    // it; clicking another takes that column in its natural first direction —
+    // ascending for names, descending for counts and times, because "most
+    // metrics" and "longest ago" are what a reader wants first from those.
+    sortPagedList(mountId, key) {
+        const state = this.pagedLists.get(mountId);
+        if (!state) return;
+
+        const column = (state.sortColumns || []).find(c => c.key === key);
+        if (!column || !column.get) return;
+
+        if (state.sortKey === key) {
+            state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            state.sortKey = key;
+            state.sortDir = column.firstDir || 'asc';
+        }
+        // A reorder is a different set in a different order: read from its
+        // start, exactly as a new search term is.
+        state.page = 0;
+        this.paintPagedList(mountId);
+        this.restoreSortFocus(mountId, key);
+    }
+
+    // The header that was clicked is replaced by the repaint, so focus moves to
+    // its replacement rather than being dropped at the top of the document.
+    restoreSortFocus(mountId, key) {
+        const mount = document.getElementById(mountId);
+        if (!mount) return;
+        const button = mount.querySelector(`[data-sort-key="${CSS.escape(key)}"]`);
+        if (button) button.focus({ preventScroll: true });
+    }
+
+    // ========================================
     // Paged list surfaces
     // ========================================
 
@@ -703,7 +874,15 @@ class MonitoringApp {
             sizeKey,
             size: this.pagerSize(sizeKey, base),
             search: '',
-            page: 0
+            page: 0,
+            // Sorting is opt-in. A surface that declares no columns keeps the
+            // order the server sent, which is already deterministic.
+            sortColumns: options.sortColumns || null,
+            sortKey: options.sortKey || null,
+            sortDir: options.sortDir || 'asc',
+            // Rows whose behaviour is bound rather than delegated need to be
+            // rebound after each repaint, because the repaint replaced them.
+            afterPaint: options.afterPaint || null
         };
         this.pagedLists.set(mountId, state);
 
@@ -712,7 +891,17 @@ class MonitoringApp {
             return;
         }
 
-        const search = items.length >= LIST_CONTROLS_MIN
+        // LIST_CONTROLS_MIN keeps a search box off a list of three rows, where
+        // it is chrome offering to narrow something already entirely visible.
+        // A surface can override that when the box is a destination rather than
+        // a convenience — see the fleet overview.
+        // A surface whose search box already exists in its own toolbar passes
+        // searchInput and the component binds to that instead of rendering a
+        // second one. The behaviour is identical either way — the box drives
+        // the same state — so the two do not drift apart.
+        const wantsControls = !options.searchInput
+            && (options.alwaysControls || items.length >= LIST_CONTROLS_MIN);
+        const search = wantsControls
             ? `<input type="search" class="paged-list-search" id="${mountId}Search"
                       placeholder="${this.escapeAttr(options.placeholder || 'Search…')}"
                       aria-label="${this.escapeAttr(options.placeholder || 'Search')}"
@@ -743,8 +932,29 @@ class MonitoringApp {
         // The shell is built once and only the body, the pager and the status
         // are repainted, so typing in the search box never costs the caret its
         // place and the status stays the same live region across a page change.
-        const searchBox = mount.querySelector('.paged-list-search');
+        // Header clicks are bound on the mount because the body — and with it
+        // every header — is rebuilt on each repaint.
+        if (state.sortColumns) {
+            mount.addEventListener('click', (event) => {
+                const header = event.target.closest('[data-sort-key]');
+                if (header) this.sortPagedList(mountId, header.dataset.sortKey);
+            });
+        }
+
+        const searchBox = options.searchInput
+            ? document.getElementById(options.searchInput)
+            : mount.querySelector('.paged-list-search');
         if (searchBox) {
+            // An external box outlives the list it drives, so its listener is
+            // registered once and remembered; re-registering on every rebuild
+            // would stack handlers and repaint once per past render.
+            if (options.searchInput) {
+                if (this.externalSearchBound.has(options.searchInput)) {
+                    state.search = searchBox.value || '';
+                } else {
+                    this.externalSearchBound.add(options.searchInput);
+                }
+            }
             searchBox.addEventListener('input', () => {
                 state.search = searchBox.value;
                 // A narrower set is a different set: it is read from its start.
@@ -790,19 +1000,23 @@ class MonitoringApp {
         const scoped = state.filter ? state.items.filter(state.filter) : state.items;
         const matched = term ? scoped.filter(item => state.matches(item, term)) : scoped;
 
-        const slice = this.pagerSlice(matched.length, state.page, state.size);
+        const ordered = state.sortKey ? this.sortItems(matched, state) : matched;
+
+        const slice = this.pagerSlice(ordered.length, state.page, state.size);
         state.page = slice.page;
 
-        body.innerHTML = matched.length === 0
+        body.innerHTML = ordered.length === 0
             ? `<p class="empty-state">No ${this.escapeHtml(state.noun)} match “${this.escapeHtml(state.search.trim())}”</p>`
-            : state.wrap(state.renderRows(matched.slice(slice.from, slice.to)));
+            : state.wrap(state.renderRows(ordered.slice(slice.from, slice.to)), mountId);
 
         // A list that fits on one page and is not being filtered has no
         // position to report and nowhere to step to, so it gets no footer.
-        footer.hidden = slice.pages <= 1 && matched.length === state.items.length;
+        if (state.afterPaint) state.afterPaint();
+
+        footer.hidden = slice.pages <= 1 && ordered.length === state.items.length;
         this.paintPager(`${mountId}Pager`, `${mountId}Status`, {
             slice,
-            matched: matched.length,
+            matched: ordered.length,
             total: state.items.length,
             noun: state.noun,
             label: state.label
@@ -1113,17 +1327,16 @@ class MonitoringApp {
             filter: device => !this.fleet.stateFilter
                 || this.fleetStateMeta(device.state).key === this.fleet.stateFilter,
             matches: (device, term) => this.fleetSearchText(device).includes(term),
-            wrap: rows => `<table class="fleet-table">
-                    <thead>
-                        <tr>
-                            <th>Device</th>
-                            <th>State</th>
-                            <th>Last poll</th>
-                            <th class="fleet-col-next">Next poll</th>
-                            <th class="fleet-col-metrics">Metrics</th>
-                            <th>Detail</th>
-                        </tr>
-                    </thead>
+            // The search box is always offered here, unlike the other lists.
+            // This is the surface the app opens on and the one a reader arrives
+            // at knowing the device they want, so the box is a destination
+            // rather than chrome — and a fleet only ever grows.
+            alwaysControls: true,
+            sortColumns: this.fleetSortColumns(),
+            sortKey: 'state',
+            sortDir: 'asc',
+            wrap: (rows, mountId) => `<table class="fleet-table">
+                    <thead><tr>${this.sortHeadersHtml(mountId)}</tr></thead>
                     <tbody>${rows}</tbody>
                 </table>`,
             renderRows: items => items.map(device => this.renderFleetRow(device)).join(''),
@@ -1139,6 +1352,51 @@ class MonitoringApp {
                        <p>Add a device on the Devices tab and it will start appearing here.</p>
                    </div>`
         });
+    }
+
+    // The fleet table's columns. Order here is the order on screen.
+    //
+    // State sorts by severity rather than by its label, because the reason to
+    // sort that column is triage: "show me what is broken" must not be answered
+    // with an alphabetical list that puts Failing above Healthy above
+    // Unreachable. Times and counts open descending, since "polled longest ago"
+    // and "most series" are what is wanted first from them.
+    fleetSortColumns() {
+        return [
+            {
+                key: 'device', label: 'Device', firstDir: 'asc',
+                get: device => device.name || ''
+            },
+            {
+                key: 'state', label: 'State', firstDir: 'asc',
+                get: device => {
+                    const key = this.fleetStateMeta(device.state).key;
+                    const rank = FLEET_SEVERITY.indexOf(key);
+                    // An unrecognised state sorts with the other unknowns
+                    // rather than ahead of everything as -1 would put it.
+                    return rank === -1 ? FLEET_SEVERITY.length : rank;
+                }
+            },
+            {
+                key: 'last_poll', label: 'Last poll', firstDir: 'desc',
+                get: device => this.fleetTime((device.status || {}).last_poll_time)
+            },
+            {
+                key: 'next_poll', label: 'Next poll', firstDir: 'asc',
+                className: 'fleet-col-next',
+                get: device => this.fleetTime((device.status || {}).next_poll_time)
+            },
+            {
+                key: 'metrics', label: 'Metrics', firstDir: 'desc',
+                className: 'fleet-col-metrics',
+                get: device => {
+                    const value = (device.status || {}).metrics_collected;
+                    return typeof value === 'number' ? value : null;
+                }
+            },
+            // Detail is a sentence and a control, not a value to order by.
+            { key: 'detail', label: 'Detail' }
+        ];
     }
 
     fleetSearchText(device) {
@@ -5529,16 +5787,37 @@ class MonitoringApp {
                         <p>Import modules from the MIBs view and they will appear here.</p>
                     </div>
                 `;
-                this.updateMIBBrowserSummary(0, '');
+                this.updateMIBBrowserSummary();
                 return;
             }
 
-            accordion.innerHTML = mibs.map(mib => this.renderMIBAccordionItem(mib)).join('');
-            this.bindMIBAccordion(accordion);
-
-            // Re-apply whatever the filter box currently holds.
-            const search = document.getElementById('mibSearchInput');
-            this.filterMIBAccordion(search ? search.value : '');
+            // Paged rather than painted whole. The library is 170 modules
+            // here and grows with every import; rendering all of them built an
+            // accordion whose every item was in the document at once and hid
+            // the ones that did not match, so the cost of a search was paid on
+            // every keystroke against the entire library.
+            this.pagedLists.delete('mibAccordion');
+            this.renderPagedList('mibAccordion', {
+                items: mibs,
+                noun: 'modules',
+                pageSize: MIB_ACCORDION_PAGE,
+                sizeKey: 'mibAccordion',
+                // The browser's own toolbar already holds a filter box beside
+                // Expand and Collapse, which is where a reader looks for it.
+                searchInput: 'mibSearchInput',
+                matches: (mib, term) => String(mib.name || '').toLowerCase().includes(term),
+                sortColumns: this.mibAccordionSortColumns(),
+                sortKey: 'name',
+                sortDir: 'asc',
+                wrap: (rows, mountId) => `
+                    <div class="mib-accordion-sort">${this.sortControlsHtml(mountId)}</div>
+                    <div class="mib-accordion-items">${rows}</div>`,
+                renderRows: items => items.map(mib => this.renderMIBAccordionItem(mib)).join(''),
+                afterPaint: () => {
+                    this.bindMIBAccordion(document.getElementById('mibAccordion'));
+                    this.updateMIBBrowserSummary();
+                }
+            });
         } catch (error) {
             console.error('Error loading MIBs:', error);
             this.mibsData = null;
@@ -5740,34 +6019,52 @@ class MonitoringApp {
 
     // Filters the collapsed list by module name. Nothing is expanded and no
     // request is issued.
-    filterMIBAccordion(searchTerm) {
-        const accordion = document.getElementById('mibAccordion');
-        if (!accordion) return;
-
-        const term = (searchTerm || '').toLowerCase().trim();
-        let visible = 0;
-
-        accordion.querySelectorAll('.mib-accordion-item').forEach(item => {
-            const match = term === '' || (item.dataset.mibName || '').includes(term);
-            item.classList.toggle('hidden', !match);
-            if (match) visible++;
-        });
-
-        this.updateMIBBrowserSummary(visible, term);
+    // What the MIB browser can be ordered by. Name is the default because it is
+    // how a reader looks a module up; object count answers "which of these is
+    // worth expanding", and imported date answers "what did I just add".
+    mibAccordionSortColumns() {
+        return [
+            { key: 'name', label: 'Name', firstDir: 'asc', get: mib => mib.name || '' },
+            {
+                key: 'objects', label: 'Objects', firstDir: 'desc',
+                get: mib => typeof mib.object_count === 'number' ? mib.object_count : null
+            },
+            {
+                key: 'imported', label: 'Imported', firstDir: 'desc',
+                get: mib => {
+                    const at = Date.parse(mib.imported_at || '');
+                    return Number.isFinite(at) ? at : null;
+                }
+            }
+        ];
     }
 
-    updateMIBBrowserSummary(visible, term) {
+
+    // The summary reads the list's own state rather than being handed counts,
+    // so it cannot disagree with the pager beneath it about how many matched.
+    // The pager states position within the matches; this states what the
+    // library holds and what the filter did to it.
+    updateMIBBrowserSummary() {
         const summary = document.getElementById('mibBrowserSummary');
         if (!summary) return;
 
         const mibs = this.mibsData || [];
         const objects = mibs.reduce((sum, mib) => sum + (mib.object_count || 0), 0);
+        const state = this.pagedLists.get('mibAccordion');
+        const term = state ? state.search.trim() : '';
 
         // textContent, so a search term cannot inject markup.
-        summary.textContent = term
-            ? `${visible.toLocaleString()} of ${mibs.length.toLocaleString()} modules match “${term}”.`
-            : `${mibs.length.toLocaleString()} modules · ${objects.toLocaleString()} objects. ` +
-              'Expand a module to load its objects.';
+        if (!term) {
+            summary.textContent =
+                `${mibs.length.toLocaleString()} modules · ${objects.toLocaleString()} objects. ` +
+                'Expand a module to load its objects.';
+            return;
+        }
+
+        const lowered = term.toLowerCase();
+        const visible = mibs.filter(mib => String(mib.name || '').toLowerCase().includes(lowered)).length;
+        summary.textContent =
+            `${visible.toLocaleString()} of ${mibs.length.toLocaleString()} modules match “${term}”.`;
     }
 
     // Expanding is one request per module, so this works on the filtered list,
@@ -5776,14 +6073,19 @@ class MonitoringApp {
         const accordion = document.getElementById('mibAccordion');
         if (!accordion) return;
 
+        // Only the current page is in the document, so this expands the page
+        // the reader is looking at. That is the bound: expanding is one request
+        // per module, and a page is a screenful by construction. Before the
+        // list was paged this could be aimed at the whole library at once,
+        // which is why the ceiling below exists at all.
         const targets = Array.from(
-            accordion.querySelectorAll('.mib-accordion-item:not(.hidden):not(.expanded)'));
+            accordion.querySelectorAll('.mib-accordion-item:not(.expanded)'));
         if (targets.length === 0) return;
 
         if (targets.length > MIB_EXPAND_ALL_LIMIT) {
             this.showNotification(
-                `Expand all covers up to ${MIB_EXPAND_ALL_LIMIT} modules and ${targets.length} are listed. ` +
-                'Filter the list first.', 'warning');
+                `Expand all covers up to ${MIB_EXPAND_ALL_LIMIT} modules and this page lists ` +
+                `${targets.length}. Choose a smaller page size or filter the list first.`, 'warning');
             return;
         }
 
@@ -5991,6 +6293,203 @@ class MonitoringApp {
                 this.showNotification('Settings saved!', 'success');
             });
         }
+
+        this.bindConfigTransfer();
+    }
+
+    // ========================================
+    // Configuration export and import
+    // ========================================
+
+    // The endpoints have existed since the CLI was built; this is the same two
+    // operations offered where an operator is already looking. The full backup
+    // is deliberately not here — it stops the container serving this page.
+
+    bindConfigTransfer() {
+        const exportBtn = document.getElementById('exportConfigBtn');
+        if (exportBtn) {
+            exportBtn.addEventListener('click', () => this.exportConfiguration(exportBtn));
+        }
+
+        const importBtn = document.getElementById('importConfigBtn');
+        const file = document.getElementById('importConfigFile');
+        if (importBtn && file) {
+            importBtn.addEventListener('click', () => file.click());
+            file.addEventListener('change', () => {
+                const chosen = file.files && file.files[0];
+                // The picker is reset first: choosing the same file twice in a
+                // row fires no change event otherwise, so a retry after a
+                // failure would appear to do nothing.
+                file.value = '';
+                if (chosen) this.importConfiguration(chosen, importBtn);
+            });
+        }
+    }
+
+    // Sizes are quoted so an export that came back suspiciously small is
+    // visible as such. Binary units, matching what the backup tool reports.
+    formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes < 0) return 'unknown size';
+        if (bytes < 1024) return `${bytes} B`;
+
+        const units = ['KB', 'MB', 'GB'];
+        let value = bytes / 1024;
+        let unit = 0;
+        while (value >= 1024 && unit < units.length - 1) {
+            value /= 1024;
+            unit++;
+        }
+        return `${value.toFixed(1)} ${units[unit]}`;
+    }
+
+    configTransferStatus(message, tone) {
+        const status = document.getElementById('configTransferStatus');
+        if (!status) return;
+        status.textContent = message;
+        status.className = `settings-status${tone ? ` is-${tone}` : ''}`;
+    }
+
+    // The download is driven from fetch rather than by pointing the browser at
+    // the endpoint, so a failure is reported on this page instead of replacing
+    // it with the server's error text.
+    async exportConfiguration(button) {
+        button.disabled = true;
+        this.configTransferStatus('Building the export…', null);
+
+        try {
+            const response = await fetch('/api/config/export');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const blob = await response.blob();
+            // The server names the file with the instant it was taken; keeping
+            // that name is what makes two exports distinguishable on disk.
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const match = /filename="?([^"]+)"?/.exec(disposition);
+            const name = match ? match[1] : 'netmon-config.tar.gz';
+
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = name;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+
+            this.configTransferStatus(
+                `Exported ${name} (${this.formatBytes(blob.size)}). It contains SNMP community strings — store it as a credential.`,
+                'ok');
+        } catch (error) {
+            this.configTransferStatus(`Export failed: ${error.message}`, 'error');
+            this.showNotification('Configuration export failed', 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    // An import runs twice: once to plan and once to apply.
+    //
+    // The endpoint defaults to a dry run and only applies with ?apply=true,
+    // which is what makes this possible — the confirmation quotes what the
+    // server said it would do to this instance rather than asking the operator
+    // to agree to a file name. A bundle that matches what is already here
+    // reports no changes and never reaches the second call.
+    async importConfiguration(file, button) {
+        button.disabled = true;
+        this.configTransferStatus(`Checking ${file.name}…`, null);
+
+        try {
+            const plan = await this.postConfigBundle(file, false);
+
+            // report.changed counts devices and profiles only, so a bundle
+            // whose devices already match but which carries modules this
+            // instance does not have still has work to do. Refreshing modules
+            // that are already present is the one genuinely empty case.
+            const newMIBs = (plan.counts || {}).mibs_imported || 0;
+            if (!plan.changed && newMIBs === 0) {
+                this.configTransferStatus(
+                    `${file.name} matches the configuration already here. Nothing to import.`, 'ok');
+                return;
+            }
+
+            if (!window.confirm(`Import ${file.name}?\n\n${this.describeImportPlan(plan)}\n\n` +
+                    'Metric history is not affected. The configuration being replaced is ' +
+                    'exported first, so a wrong import can be undone.')) {
+                this.configTransferStatus('Import cancelled. Nothing was changed.', null);
+                return;
+            }
+
+            this.configTransferStatus(`Importing ${file.name}…`, null);
+            const applied = await this.postConfigBundle(file, true);
+
+            const undo = applied.safety_export
+                ? ` The previous configuration was saved to ${applied.safety_export}.`
+                : '';
+            this.configTransferStatus(
+                `Imported ${file.name}. ${this.describeImportPlan(applied)}${undo}`, 'ok');
+            this.showNotification('Configuration imported', 'success');
+
+            // Everything on screen was built from the configuration that has
+            // just been replaced, so it is reloaded rather than left showing
+            // the previous instance's devices.
+            await this.loadDevices();
+            await this.loadProfiles();
+            await this.loadStoredMIBs();
+            this.showFleetOverview();
+        } catch (error) {
+            this.configTransferStatus(`Import failed: ${error.message}`, 'error');
+            this.showNotification('Configuration import failed', 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    // postConfigBundle sends the file, planning or applying. The server reports
+    // its refusals as JSON with an error field, so that is preferred over the
+    // status code when there is one to quote.
+    async postConfigBundle(file, apply) {
+        const body = new FormData();
+        body.append('file', file);
+
+        const response = await fetch(`/api/config/import?apply=${apply}`, { method: 'POST', body });
+        const text = await response.text();
+
+        let payload = null;
+        try {
+            payload = JSON.parse(text);
+        } catch (error) {
+            payload = null;
+        }
+
+        if (!response.ok) {
+            const reason = payload && (payload.error || payload.message);
+            throw new Error(reason || text.trim() || `HTTP ${response.status}`);
+        }
+        if (!payload) throw new Error('the server did not answer with a report');
+        return payload;
+    }
+
+    // describeImportPlan turns the report into the sentence the operator has to
+    // read before agreeing. Only what actually moves is mentioned, so a bundle
+    // that touches one device does not present a wall of zeroes.
+    describeImportPlan(report) {
+        const counts = report.counts || {};
+        const parts = [];
+
+        const add = (n, singular, plural) => {
+            if (n > 0) parts.push(`${n.toLocaleString()} ${n === 1 ? singular : plural}`);
+        };
+        add(counts.devices_created, 'device added', 'devices added');
+        add(counts.devices_updated, 'device changed', 'devices changed');
+        add(counts.devices_deleted, 'device removed', 'devices removed');
+        add(counts.profiles_created, 'profile added', 'profiles added');
+        add(counts.profiles_updated, 'profile changed', 'profiles changed');
+        add(counts.profiles_deleted, 'profile removed', 'profiles removed');
+        add(counts.mibs_imported, 'MIB imported', 'MIBs imported');
+        add(counts.mibs_refreshed, 'MIB refreshed', 'MIBs refreshed');
+
+        if (parts.length === 0) return 'No devices or profiles change.';
+        return parts.join(', ') + '.';
     }
 
     // ========================================
