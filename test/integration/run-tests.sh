@@ -103,13 +103,22 @@ echo "Compose file:    $COMPOSE_FILE"
 echo "Building and starting services..."
 compose up -d --build --wait --remove-orphans "${SERVICES[@]}"
 
-# The test image bakes the source in at build time (the compose bind mount
-# lands on /app, which is not the image's working directory), so it has to be
-# rebuilt or the run executes whatever the tests looked like when the image was
-# last built. "compose run" only builds when no image exists yet, which makes a
-# stale image indistinguishable from a passing change.
-echo "Building test runner image..."
-compose build integration-test
+# The test image bakes the source in at build time, so it has to be rebuilt on
+# every run or the suite executes whatever the tests looked like when the image
+# was last built. Plain "compose run" only builds when no image exists yet,
+# which makes a stale image indistinguishable from a passing change, so the
+# build is requested explicitly with --build below.
+#
+# --build on "run" rather than a separate "compose build integration-test":
+# under CI the standalone build resolved the context against the wrong
+# directory and failed with
+#
+#   #2 [internal] load build definition from Dockerfile.test
+#   #2 transferring dockerfile: 2B done
+#   failed to solve: failed to read dockerfile: open Dockerfile.test: ...
+#
+# having transferred an empty context, while the "up --build" above built its
+# services correctly in the same job. This uses that working path.
 
 TEST_ARGS=(go test -v -tags=integration ./test/integration/...)
 if [ -n "${1:-}" ]; then
@@ -120,7 +129,7 @@ else
 fi
 
 TEST_EXIT_CODE=0
-compose run --rm integration-test "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+compose run --rm --build integration-test "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
 
 echo "Tests completed with exit code: $TEST_EXIT_CODE"
 
