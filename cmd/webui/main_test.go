@@ -58,13 +58,17 @@ func TestConfigureMIBAddsTheSearchPaths(t *testing.T) {
 		}
 	}
 
-	// Nothing under /app/mibs may be added back. That directory was a bind
-	// mount of the repository working copy: a module resolved from there looked
-	// imported while living in a place no backup covered and no other host had,
-	// which is precisely the coupling removing the mount was meant to end.
+	// /app/mibs/standard is the IETF base set baked into the image so a fresh
+	// deployment can bootstrap from an empty volume. The device-specific trees
+	// are a different matter: they used to arrive as a bind mount of the
+	// repository working copy, and a module resolved from one of them looked
+	// imported while living in a place no backup covered and no other host had.
+	// They come from an import or a restore now, and must not reappear here.
 	for _, path := range mibCfg.Paths {
-		if strings.HasPrefix(path, "/app/mibs") {
-			t.Errorf("search path %q reintroduces the bind-mounted repository tree", path)
+		for _, banned := range []string{"asr1001", "cisco", "r640", "vendor"} {
+			if strings.HasPrefix(path, "/app/mibs/"+banned) {
+				t.Errorf("search path %q reintroduces a device-specific tree from the repository", path)
+			}
 		}
 	}
 }

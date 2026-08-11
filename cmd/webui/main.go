@@ -250,6 +250,7 @@ func configureMIB(mibCfg *config.MIBConfig, catalogPath, mibFilesPath string) {
 	// Imports are copied into the store, so the store is the whole source.
 	for _, path := range []string{
 		filepath.Join(mibFilesPath, "uploaded"),
+		"/app/mibs/standard",
 		"/usr/share/snmp/mibs",
 	} {
 		if known[path] {

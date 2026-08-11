@@ -37,7 +37,16 @@ COPY --from=builder /build/bin/go-netmon /app/go-netmon
 COPY --from=builder /build/bin/mib-importer /app/mib-importer
 
 # Copy MIBs directory
-COPY --from=builder /build/mibs /app/mibs
+# Only the IETF standard modules are baked in. They are the base every SNMP
+# deployment needs before it can parse anything, so a fresh container can
+# bootstrap with an empty volume.
+#
+# The device-specific trees (asr1001, cisco, r640, vendor) are NOT shipped: they
+# are 20 MB of one site's equipment, they are testdata for the parser rather
+# than a runtime dependency, and baking them in put a module on the search path
+# that no backup covered and no operator had imported. Device MIBs arrive by
+# import or restore, and are then held in the volume.
+COPY --from=builder /build/mibs/standard /app/mibs/standard
 
 # Create directories for config and data
 RUN mkdir -p /app/config /app/data && \
