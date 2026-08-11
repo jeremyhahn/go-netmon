@@ -81,6 +81,12 @@ services:
     hostname: webui
     restart: unless-stopped
     ports:
+      # UNAUTHENTICATED. Every endpoint here is open to whoever reaches the
+      # port, and GET /api/devices returns each device's SNMP community string
+      # in clear text. That is accepted because the port is on an internal
+      # network — so do not publish it, forward it, or put it behind a proxy
+      # that is reachable from anywhere less trusted.
+      # See docs/operations/security-posture.md.
       - "8082:8080"  # Web UI (8081 is taken by sysmon-server on this host)
     volumes:
       # The same config the poller reads. Without it the web UI falls back to
