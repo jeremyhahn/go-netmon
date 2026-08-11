@@ -1,0 +1,12 @@
+# SNMP simulator for the integration stack, with its recording baked in.
+#
+# Same reason as Dockerfile.prometheus: a bind mount of the .snmprec file is
+# resolved by the Docker daemon against its own filesystem, which is not the
+# one holding the checkout when the caller is itself in a container.
+#
+# The image keeps its own healthcheck target: the compose file waits on the
+# recording being present, which is now a property of the image rather than of
+# a mount that may or may not have landed.
+FROM tandrup/snmpsim:latest
+
+COPY test/integration/snmp-data/public.snmprec /usr/local/snmpsim/data/public.snmprec

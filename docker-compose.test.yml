@@ -1,12 +1,13 @@
 services:
   # Prometheus for receiving metrics
   prometheus:
-    image: prom/prometheus:v2.45.0
+    build:
+      context: .
+      dockerfile: test/integration/Dockerfile.prometheus
     container_name: go-netmon-test-prometheus
     ports:
       - "9090:9090"
     volumes:
-      - ./test/integration/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -25,14 +26,14 @@ services:
 
   # Mock SNMP agent for testing
   snmp-simulator:
-    image: tandrup/snmpsim:latest
+    build:
+      context: .
+      dockerfile: test/integration/Dockerfile.snmpsim
     container_name: go-netmon-test-snmp
     ports:
       - "1161:161/udp"
     environment:
       - SNMPSIM_AGENT_UDPV4_ENDPOINT=0.0.0.0:161
-    volumes:
-      - ./test/integration/snmp-data/public.snmprec:/usr/local/snmpsim/data/public.snmprec
     networks:
       - test-network
     healthcheck:
@@ -57,8 +58,6 @@ services:
       - PROMETHEUS_URL=http://prometheus:9090
       - SNMP_HOST=snmp-simulator
       - SNMP_PORT=161
-    volumes:
-      - .:/app
     networks:
       - test-network
     command: go test -v -tags=integration ./test/integration/...

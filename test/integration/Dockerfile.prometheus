@@ -1,0 +1,19 @@
+# Prometheus for the integration stack, with its configuration baked in.
+#
+# The configuration used to arrive as a bind mount of
+# ./test/integration/prometheus.yml. That works only when the process running
+# "docker compose" and the Docker daemon share a filesystem. Under CI they do
+# not: the job runs inside a container where the checkout is at
+# /workspace/<owner>/<repo> and talks to the host's daemon over a mounted
+# socket, and the daemon resolves a bind-mount source against the HOST, where
+# that path does not exist. The failure is
+#
+#   error while creating mount source path
+#   '/workspace/jeremyhahn/go-netmon/test/integration/prometheus.yml':
+#   mkdir /workspace: file exists
+#
+# Copying the file into the image removes the host path from the equation, so
+# the stack comes up identically on a workstation and in CI.
+FROM prom/prometheus:v2.45.0
+
+COPY test/integration/prometheus.yml /etc/prometheus/prometheus.yml
