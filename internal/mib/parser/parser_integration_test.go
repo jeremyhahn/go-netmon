@@ -207,6 +207,59 @@ func TestIntegration_LoadAllASR1001MIBs(t *testing.T) {
 	}
 }
 
+// TestIntegration_ParseEveryASR1001Module walks every module's nodes, which is
+// what the importer and the web UI do and what TestIntegration_LoadAllASR1001MIBs
+// does not.
+//
+// LoadModule only resolves a module; gosmi parses a node's detail lazily, so a
+// construct it cannot handle is not reached until something reads the nodes.
+// ParseModule reads them. That gap shipped a crash-looping web UI: an
+// unintended bump of the indirect participle dependency from v0.4.1 to v0.7.1
+// left every LoadModule test passing while the deployed binary died on
+//
+//	CISCO-DYNAMIC-TEMPLATE-MIB.my:596:26: branch (<ident>)? was accepted but
+//	did not progress the lexer
+//
+// which is the empty bit-string DEFVAL at that line. gosmi pins participle
+// v0.4.1 in its own go.mod for this reason; nothing here may raise it.
+//
+// A parse failure is reported per module rather than aborting, so one bad
+// module names itself instead of hiding the rest.
+func TestIntegration_ParseEveryASR1001Module(t *testing.T) {
+	parser := integrationParser(t)
+
+	files, err := filepath.Glob(filepath.Join(asr1001Dir, "*.my"))
+	if err != nil {
+		t.Fatalf("list MIB files in %s: %v", asr1001Dir, err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no MIB files found in %s", asr1001Dir)
+	}
+
+	for _, file := range files {
+		module := strings.TrimSuffix(filepath.Base(file), ".my")
+
+		t.Run(module, func(t *testing.T) {
+			if _, err := parser.LoadModule(module); err != nil {
+				t.Fatalf("load %s: %v", module, err)
+			}
+
+			// A panic here is the failure mode this test exists for: the
+			// deployed binary had no recover, so the process died and the
+			// container restarted, 53 times before anyone read the log.
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("parsing %s panicked: %v", module, r)
+				}
+			}()
+
+			if _, err := parser.ParseModule(module); err != nil {
+				t.Fatalf("parse %s: %v", module, err)
+			}
+		})
+	}
+}
+
 // TestIntegration_CISCO_BGP4_MIB_NoEmptyOIDs guards the empty-OID regression on
 // the Cisco BGP module, whose deep table nesting is where it first appeared.
 func TestIntegration_CISCO_BGP4_MIB_NoEmptyOIDs(t *testing.T) {
