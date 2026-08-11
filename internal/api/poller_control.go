@@ -358,11 +358,11 @@ func (h *PollerControlHandler) validateRegisterRequest(req *RegisterDeviceReques
 	if req.SNMPVersion == "" {
 		return fmt.Errorf("snmp_version is required")
 	}
-	if req.SNMPVersion != "2c" && req.SNMPVersion != "3" {
-		return fmt.Errorf("snmp_version must be '2c' or '3'")
+	if req.SNMPVersion != "1" && req.SNMPVersion != "2c" && req.SNMPVersion != "3" {
+		return fmt.Errorf("snmp_version must be '1', '2c' or '3'")
 	}
-	if req.SNMPVersion == "2c" && req.Community == "" {
-		return fmt.Errorf("community is required for SNMPv2c")
+	if (req.SNMPVersion == "1" || req.SNMPVersion == "2c") && req.Community == "" {
+		return fmt.Errorf("community is required for SNMPv1 and SNMPv2c")
 	}
 	if req.SNMPVersion == "3" && req.Username == "" {
 		return fmt.Errorf("username is required for SNMPv3")

@@ -31,6 +31,24 @@ type Device struct {
 	// the second does not. A magic zero could not tell them apart, and zero is
 	// not a schedule anyway — see ValidatePollInterval.
 	PollInterval *int `json:"poll_interval,omitempty"`
+
+	// SNMPv3 credentials. Empty on a v1 or v2c device, which authenticates
+	// with Community instead.
+	//
+	// These are stored because the poller cannot ask for them: it reads its
+	// whole device list from this service, and a v3 device without a username
+	// reaches the agent and is refused with "unknown username". Selecting v3
+	// while these could not be recorded produced exactly that — a device the
+	// UI showed as configured and the poller could never authenticate.
+	//
+	// They are as sensitive as Community and are held the same way, which is
+	// to say in clear text in this store. See
+	// docs/operations/security-posture.md.
+	Username     string `json:"username,omitempty"`
+	AuthProtocol string `json:"auth_protocol,omitempty"`
+	AuthPassword string `json:"auth_password,omitempty"`
+	PrivProtocol string `json:"priv_protocol,omitempty"`
+	PrivPassword string `json:"priv_password,omitempty"`
 }
 
 // DeviceWithMIBs represents a device with its associated MIBs

@@ -73,3 +73,15 @@ func (e *WalkError) Error() string {
 }
 
 func (e *WalkError) Unwrap() error { return e.Err }
+
+// UnsupportedVersionError reports an SNMP version this client cannot speak.
+//
+// The set is v1, v2c and v3. v1 is here because a good deal of embedded
+// equipment — KVM switches, PDUs, older UPSs — offers it and nothing else.
+type UnsupportedVersionError struct {
+	Version string
+}
+
+func (e *UnsupportedVersionError) Error() string {
+	return "snmp: unsupported version " + strconv.Quote(e.Version) + `; want "1", "2c" or "3"`
+}

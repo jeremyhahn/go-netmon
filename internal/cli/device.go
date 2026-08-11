@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -256,6 +257,7 @@ func newDeviceAddCommand(env *Env) *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), env.Opts.Timeout)
 			defer cancel()
 
+			readV3Passwords(cmd, &device)
 			applyPollInterval(cmd, &device, pollInterval)
 
 			api, err := env.Client()
@@ -318,6 +320,7 @@ func newDeviceUpdateCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			readV3Passwords(cmd, &device)
 			applyDeviceFlagOverrides(cmd, current, device)
 			applyPollInterval(cmd, current, pollInterval)
 
@@ -352,11 +355,41 @@ func bindDeviceFlags(cmd *cobra.Command, device *client.Device, pollInterval *in
 	f := cmd.Flags()
 	f.StringVar(&device.Name, "name", "", "device name (unique)")
 	f.StringVar(&device.Address, "address", "", "hostname or IP address")
-	f.StringVar(&device.SNMPVersion, "version", "2c", "SNMP version (2c or 3)")
-	f.StringVar(&device.Community, "community", "public", "SNMP v2c community string")
+	f.StringVar(&device.SNMPVersion, "version", "2c", "SNMP version (1, 2c or 3)")
+	f.StringVar(&device.Community, "community", "public", "SNMP v1/v2c community string")
+
+	// SNMPv3. A passphrase on a command line is visible in the shell history
+	// and to anyone reading the process list, so both accept an environment
+	// variable instead - see readV3Passwords.
+	f.StringVar(&device.Username, "username", "", "SNMPv3 user name")
+	f.StringVar(&device.AuthProtocol, "auth-protocol", "", "SNMPv3 authentication protocol (SHA or MD5)")
+	f.StringVar(&device.AuthPassword, "auth-password", "",
+		"SNMPv3 authentication passphrase (prefer NETMON_AUTH_PASSWORD)")
+	f.StringVar(&device.PrivProtocol, "priv-protocol", "", "SNMPv3 privacy protocol (AES or DES)")
+	f.StringVar(&device.PrivPassword, "priv-password", "",
+		"SNMPv3 privacy passphrase (prefer NETMON_PRIV_PASSWORD)")
 	f.IntVar(&device.Port, "port", 161, "SNMP port")
 	f.IntVar(pollInterval, "poll-interval", 0,
 		"seconds between polls of this device; 0 uses the server's global default")
+}
+
+// readV3Passwords fills the v3 passphrases from the environment when the flags
+// were not given.
+//
+// A passphrase passed as a flag is in the shell's history and in the process
+// list for anything on the host to read. The environment is not perfect either,
+// but it keeps the secret off both.
+func readV3Passwords(cmd *cobra.Command, device *client.Device) {
+	if !cmd.Flags().Changed("auth-password") {
+		if value := os.Getenv("NETMON_AUTH_PASSWORD"); value != "" {
+			device.AuthPassword = value
+		}
+	}
+	if !cmd.Flags().Changed("priv-password") {
+		if value := os.Getenv("NETMON_PRIV_PASSWORD"); value != "" {
+			device.PrivPassword = value
+		}
+	}
 }
 
 // applyPollInterval puts an explicitly-given --poll-interval onto a device.
@@ -392,6 +425,27 @@ func applyDeviceFlagOverrides(cmd *cobra.Command, current *client.Device, flags 
 	}
 	if cmd.Flags().Changed("port") {
 		current.Port = flags.Port
+	}
+
+	if cmd.Flags().Changed("username") {
+		current.Username = flags.Username
+	}
+	if cmd.Flags().Changed("auth-protocol") {
+		current.AuthProtocol = flags.AuthProtocol
+	}
+	if cmd.Flags().Changed("priv-protocol") {
+		current.PrivProtocol = flags.PrivProtocol
+	}
+
+	// A passphrase can arrive from the environment as well as from a flag, so
+	// these are overlaid on whether a value is present rather than on whether
+	// the flag was given. A passphrase left out is left alone, which is what
+	// makes "update --address x" on a v3 device keep working.
+	if flags.AuthPassword != "" {
+		current.AuthPassword = flags.AuthPassword
+	}
+	if flags.PrivPassword != "" {
+		current.PrivPassword = flags.PrivPassword
 	}
 }
 

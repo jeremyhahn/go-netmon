@@ -189,14 +189,19 @@ func (d *Device) Validate() error {
 		return &ValidationError{Field: "address", Message: "cannot be empty"}
 	}
 
-	// Validate SNMP version
-	if d.SNMPVersion != "2c" && d.SNMPVersion != "3" {
-		return &ValidationError{Field: "snmp_version", Message: "must be '2c' or '3'"}
+	// Validate SNMP version. v1 is here because plenty of embedded equipment
+	// offers it and some offers nothing else.
+	if d.SNMPVersion != "1" && d.SNMPVersion != "2c" && d.SNMPVersion != "3" {
+		return &ValidationError{Field: "snmp_version", Message: "must be '1', '2c' or '3'"}
 	}
 
-	// Validate version-specific fields
-	if d.SNMPVersion == "2c" && d.Community == "" {
-		return &ValidationError{Field: "community", Message: "required for SNMPv2c"}
+	// Validate version-specific fields. v1 and v2c both authenticate with a
+	// community string and neither has anything else to check.
+	if (d.SNMPVersion == "1" || d.SNMPVersion == "2c") && d.Community == "" {
+		return &ValidationError{
+			Field:   "community",
+			Message: "required for SNMPv1 and SNMPv2c",
+		}
 	}
 
 	if d.SNMPVersion == "3" && d.Username == "" {

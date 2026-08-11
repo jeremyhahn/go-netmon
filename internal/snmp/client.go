@@ -53,6 +53,14 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 
 	// Configure SNMP version and authentication
 	switch device.SNMPVersion {
+	case "1":
+		// SNMPv1 is still what a lot of embedded equipment offers — KVMs, PDUs,
+		// older UPSs — and several of them offer nothing else. It differs from
+		// v2c in ways the poller has to respect: there is no GETBULK, and a
+		// walk that runs off the end of the tree is reported as the
+		// NoSuchName error rather than as an endOfMibView marker.
+		conn.Version = gosnmp.Version1
+		conn.Community = device.Community
 	case "2c":
 		conn.Version = gosnmp.Version2c
 		conn.Community = device.Community
@@ -94,7 +102,7 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 
 		conn.SecurityParameters = secParams
 	default:
-		return nil, fmt.Errorf("unsupported SNMP version: %s", device.SNMPVersion)
+		return nil, &UnsupportedVersionError{Version: device.SNMPVersion}
 	}
 
 	return &Client{
@@ -309,12 +317,31 @@ func (c *Client) Walk(rootOID string, walkFn func(*Result) error) error {
 	return c.streamWalk(c.conn.Walk, "WALK", rootOID, walkFn)
 }
 
-// BulkWalk performs an SNMP BULKWALK (optimized walk using GETBULK)
+// bulkWalker reports the walk to use for a table and what to call it.
+//
+// GETBULK does not exist in SNMPv1: gosnmp refuses it outright with "GETBULK
+// not supported in SNMPv1", so a v1 device would fail every table walk with an
+// error about a protocol feature rather than about anything an operator did.
+// The version is known here and nowhere else that matters, so the choice is
+// made here rather than pushed onto every caller.
+//
+// The fallback is a plain WALK, which is GETNEXT one variable at a time. It is
+// slower — that is the whole reason GETBULK exists — but it is what v1 has.
+func (c *Client) bulkWalker() (walker, string) {
+	if c.conn.Version == gosnmp.Version1 {
+		return c.conn.Walk, "WALK"
+	}
+	return c.conn.BulkWalk, "BULKWALK"
+}
+
+// BulkWalk performs an SNMP BULKWALK (optimized walk using GETBULK), falling
+// back to a plain walk on SNMPv1, which has no GETBULK.
 func (c *Client) BulkWalk(rootOID string, walkFn func(*Result) error) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.streamWalk(c.conn.BulkWalk, "BULKWALK", rootOID, walkFn)
+	walk, op := c.bulkWalker()
+	return c.streamWalk(walk, op, rootOID, walkFn)
 }
 
 // WalkAll performs an SNMP WALK and returns all results
@@ -325,12 +352,14 @@ func (c *Client) WalkAll(rootOID string) ([]*Result, error) {
 	return c.collectWalk(c.conn.Walk, "WALK", rootOID)
 }
 
-// BulkWalkAll performs an SNMP BULKWALK and returns all results
+// BulkWalkAll performs an SNMP BULKWALK and returns all results, falling back
+// to a plain walk on SNMPv1.
 func (c *Client) BulkWalkAll(rootOID string) ([]*Result, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.collectWalk(c.conn.BulkWalk, "BULKWALK", rootOID)
+	walk, op := c.bulkWalker()
+	return c.collectWalk(walk, op, rootOID)
 }
 
 // GetDeviceInfo returns basic device information

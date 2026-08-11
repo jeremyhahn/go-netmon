@@ -250,7 +250,7 @@ func TestValidateRegisterRequest(t *testing.T) {
 		{"no name", valid(func(r *RegisterDeviceRequest) { r.Name = "" }), "name"},
 		{"no address", valid(func(r *RegisterDeviceRequest) { r.Address = "" }), "address"},
 		{"no version", valid(func(r *RegisterDeviceRequest) { r.SNMPVersion = "" }), "snmp_version"},
-		{"a version we do not speak", valid(func(r *RegisterDeviceRequest) { r.SNMPVersion = "1" }), "snmp_version"},
+		{"a version we do not speak", valid(func(r *RegisterDeviceRequest) { r.SNMPVersion = "2" }), "snmp_version"},
 		{"v2c without a community", valid(func(r *RegisterDeviceRequest) { r.Community = "" }), "community"},
 		{
 			"v3 without a username",

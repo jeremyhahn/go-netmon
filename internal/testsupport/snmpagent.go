@@ -196,8 +196,11 @@ func (a *SNMPAgent) serve() {
 
 // respond builds the reply to one decoded request.
 func (a *SNMPAgent) respond(request *gosnmp.SnmpPacket) *gosnmp.SnmpPacket {
+	// The reply speaks whatever the request spoke. A client checks the version
+	// on the response, so answering a v1 request in v2c is not a detail — it
+	// makes the agent unusable for testing v1 at all.
 	response := &gosnmp.SnmpPacket{
-		Version:   gosnmp.Version2c,
+		Version:   request.Version,
 		Community: request.Community,
 		PDUType:   gosnmp.GetResponse,
 		RequestID: request.RequestID,

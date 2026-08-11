@@ -303,9 +303,11 @@ func TestDevice_Validate_AllCases(t *testing.T) {
 		{
 			name: "invalid SNMP version",
 			device: &Device{
-				Name:        "test",
-				Address:     "203.0.113.1",
-				SNMPVersion: "1",
+				Name:    "test",
+				Address: "203.0.113.1",
+				// "2" is not a version anything speaks. This case used to be
+				// "1", which is a real version and is supported now.
+				SNMPVersion: "2",
 				Community:   "public",
 			},
 			expectError: true,

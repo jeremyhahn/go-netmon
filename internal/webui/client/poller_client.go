@@ -29,6 +29,11 @@ type PollerDeviceRequest struct {
 	Address      string            `json:"address"`
 	SNMPVersion  string            `json:"snmp_version"`
 	Community    string            `json:"community,omitempty"`
+	Username     string            `json:"username,omitempty"`
+	AuthProtocol string            `json:"auth_protocol,omitempty"`
+	AuthPassword string            `json:"auth_password,omitempty"`
+	PrivProtocol string            `json:"priv_protocol,omitempty"`
+	PrivPassword string            `json:"priv_password,omitempty"`
 	PollInterval int               `json:"poll_interval"`
 	Enabled      bool              `json:"enabled"`
 	Profile      string            `json:"profile"`
@@ -191,9 +196,13 @@ func (c *PollerClient) deviceToRequest(device *storage.Device, mibNames []string
 	tags := make(map[string]string)
 	tags["source"] = "webui"
 
-	// Normalize SNMP version: "v2c" -> "2c", "v3" -> "3"
+	// Normalize SNMP version: the web UI states it as "v1"/"v2c"/"v3" and the
+	// poller as "1"/"2c"/"3". A version that arrives unnormalized is refused by
+	// the poller's own validation, so all three are handled here.
 	snmpVersion := device.SNMPVersion
 	switch snmpVersion {
+	case "v1":
+		snmpVersion = "1"
 	case "v2c":
 		snmpVersion = "2c"
 	case "v3":
@@ -201,10 +210,20 @@ func (c *PollerClient) deviceToRequest(device *storage.Device, mibNames []string
 	}
 
 	return PollerDeviceRequest{
-		Name:         device.Name,
-		Address:      fmt.Sprintf("%s:%d", device.Address, device.Port),
-		SNMPVersion:  snmpVersion,
-		Community:    device.Community,
+		Name:        device.Name,
+		Address:     fmt.Sprintf("%s:%d", device.Address, device.Port),
+		SNMPVersion: snmpVersion,
+		Community:   device.Community,
+
+		// Without these a v3 device reaches the agent with no username and is
+		// refused with "unknown username" — which is what happened to every v3
+		// device, because nothing carried them this far.
+		Username:     device.Username,
+		AuthProtocol: device.AuthProtocol,
+		AuthPassword: device.AuthPassword,
+		PrivProtocol: device.PrivProtocol,
+		PrivPassword: device.PrivPassword,
+
 		PollInterval: storage.PollIntervalOf(device),
 		Enabled:      true,
 		Profile:      "default",

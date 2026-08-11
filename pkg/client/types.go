@@ -23,6 +23,15 @@ type Device struct {
 	Port        int       `json:"port"`
 	CreatedAt   time.Time `json:"created_at"`
 
+	// SNMPv3 credentials. Empty on a v1 or v2c device, which authenticates with
+	// Community instead. A v3 device without a Username is refused by the agent
+	// with "unknown username".
+	Username     string `json:"username,omitempty"`
+	AuthProtocol string `json:"auth_protocol,omitempty"`
+	AuthPassword string `json:"auth_password,omitempty"`
+	PrivProtocol string `json:"priv_protocol,omitempty"`
+	PrivPassword string `json:"priv_password,omitempty"`
+
 	// PollInterval is how often this device is polled, in seconds. It is nil on
 	// a device that inherits the server's global default, which is the state
 	// every device starts in.

@@ -1869,6 +1869,7 @@ class MonitoringApp {
         document.querySelector('#deviceForm input[name="id"]').value = '';
         // Enable name field for new devices
         document.querySelector('#deviceForm input[name="name"]').disabled = false;
+        this.syncDeviceVersionFields();
         this.showModal('deviceModal');
     }
 
@@ -1886,6 +1887,16 @@ class MonitoringApp {
             form.querySelector('input[name="community"]').value = device.community || 'public';
             form.querySelector('input[name="port"]').value = device.port || 161;
 
+            form.querySelector('input[name="username"]').value = device.username || '';
+            form.querySelector('select[name="auth_protocol"]').value = device.auth_protocol || 'SHA';
+            form.querySelector('select[name="priv_protocol"]').value = device.priv_protocol || 'AES';
+            // The password fields stay empty. The stored secret is not put back
+            // into the page, and blank means "unchanged" on save.
+            form.querySelector('input[name="auth_password"]').value = '';
+            form.querySelector('input[name="priv_password"]').value = '';
+
+            this.syncDeviceVersionFields();
+
             // Disable name field when editing (name is used as ID)
             form.querySelector('input[name="name"]').disabled = true;
 
@@ -1896,17 +1907,63 @@ class MonitoringApp {
         }
     }
 
+    // Show the credentials the chosen SNMP version actually uses.
+    //
+    // v1 and v2c authenticate with a community string; v3 with a user, an
+    // authentication passphrase and a privacy passphrase. A form offering all
+    // of them at once invites filling in both and wondering which took effect.
+    syncDeviceVersionFields() {
+        const form = document.getElementById('deviceForm');
+        if (!form) return;
+
+        const version = form.querySelector('select[name="snmp_version"]').value;
+        const isV3 = version === 'v3';
+
+        const community = document.getElementById('deviceCommunityFields');
+        const v3 = document.getElementById('deviceV3Fields');
+        if (community) community.hidden = isV3;
+        if (v3) v3.hidden = !isV3;
+
+        // required is set here rather than in the markup: a hidden required
+        // field blocks submission with a message pointing at something the
+        // reader cannot see.
+        const username = form.querySelector('input[name="username"]');
+        if (username) username.required = isV3;
+        const communityInput = form.querySelector('input[name="community"]');
+        if (communityInput) communityInput.required = !isV3;
+    }
+
     async saveDevice(formData) {
         const deviceId = formData.get('id');
         const isEdit = deviceId && deviceId.length > 0;
 
+        const version = formData.get('snmp_version');
         const device = {
             name: formData.get('name'),
             address: formData.get('address'),
-            snmp_version: formData.get('snmp_version'),
-            community: formData.get('community'),
+            snmp_version: version,
             port: parseInt(formData.get('port')),
         };
+
+        // Only the credentials the chosen version uses are sent. Sending a
+        // community string with a v3 device would store one that nothing reads
+        // and that an export would then carry around as a secret.
+        if (version === 'v3') {
+            device.username = formData.get('username') || '';
+            device.auth_protocol = formData.get('auth_protocol') || '';
+            device.priv_protocol = formData.get('priv_protocol') || '';
+
+            // A blank password on an edit means "keep the stored one": the form
+            // is never filled with the existing secret, so blank cannot be
+            // distinguished from unchanged, and clearing a password is not
+            // something this form offers.
+            const auth = formData.get('auth_password');
+            const priv = formData.get('priv_password');
+            if (auth) device.auth_password = auth;
+            if (priv) device.priv_password = priv;
+        } else {
+            device.community = formData.get('community');
+        }
 
         if (isEdit) {
             device.id = deviceId;
@@ -6139,6 +6196,11 @@ class MonitoringApp {
         this.bindDescriptionSheet();
 
         // Device form
+        const versionSelect = document.getElementById('deviceSNMPVersion');
+        if (versionSelect) {
+            versionSelect.addEventListener('change', () => this.syncDeviceVersionFields());
+        }
+
         document.getElementById('deviceForm').addEventListener('submit', (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);

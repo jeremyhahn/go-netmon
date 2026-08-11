@@ -196,10 +196,20 @@ func (s *Server) buildPollerDeviceConfig(ctx context.Context, device *storage.De
 	tags["source"] = "webui"
 
 	return &PollerDeviceConfig{
-		Name:          device.Name,
-		Address:       address,
-		SNMPVersion:   device.SNMPVersion,
-		Community:     device.Community,
+		Name:        device.Name,
+		Address:     address,
+		SNMPVersion: device.SNMPVersion,
+		Community:   device.Community,
+
+		// The poller has read these fields since it was written; nothing ever
+		// filled them, because the store had nowhere to keep them. A v3 device
+		// therefore reached the agent with no username and was refused.
+		Username:     device.Username,
+		AuthProtocol: device.AuthProtocol,
+		AuthPassword: device.AuthPassword,
+		PrivProtocol: device.PrivProtocol,
+		PrivPassword: device.PrivPassword,
+
 		PollInterval:  storage.PollIntervalOf(device),
 		Enabled:       true,
 		Profile:       profileName,

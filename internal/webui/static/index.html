@@ -6,7 +6,7 @@
     <title>Network Monitor</title>
     <meta name="color-scheme" content="dark light">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/css/style.css?v=20260811-011">
+    <link rel="stylesheet" href="/css/style.css?v=20260811-012">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <script>
         // Apply the stored theme before first paint so the page never flashes
@@ -396,15 +396,57 @@ make restore FROM=backups/netmon-20260811T173450Z YES=1</code></pre>
                 </label>
                 <label>
                     <span>SNMP version</span>
-                    <select name="snmp_version">
+                    <select name="snmp_version" id="deviceSNMPVersion">
                         <option value="v2c">SNMPv2c</option>
+                        <option value="v1">SNMPv1</option>
                         <option value="v3">SNMPv3</option>
                     </select>
                 </label>
-                <label>
-                    <span>Community string</span>
-                    <input name="community" placeholder="public" value="public">
-                </label>
+
+                <!-- v1 and v2c authenticate with a community string; v3 with a
+                     user. Only the fields the chosen version uses are shown,
+                     because a form asking for both invites filling in both and
+                     wondering which one took effect. -->
+                <div id="deviceCommunityFields">
+                    <label>
+                        <span>Community string</span>
+                        <input name="community" placeholder="public" value="public">
+                    </label>
+                </div>
+
+                <div id="deviceV3Fields" hidden>
+                    <label>
+                        <span>Username <em>required</em></span>
+                        <input name="username" placeholder="snmpuser" autocomplete="off">
+                    </label>
+                    <label>
+                        <span>Authentication protocol</span>
+                        <select name="auth_protocol">
+                            <option value="SHA">SHA</option>
+                            <option value="MD5">MD5</option>
+                            <option value="">None (noAuthNoPriv)</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Authentication password</span>
+                        <input name="auth_password" type="password" autocomplete="new-password"
+                               placeholder="leave blank to keep the stored one">
+                    </label>
+                    <label>
+                        <span>Privacy protocol</span>
+                        <select name="priv_protocol">
+                            <option value="AES">AES</option>
+                            <option value="DES">DES</option>
+                            <option value="">None (authNoPriv)</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Privacy password</span>
+                        <input name="priv_password" type="password" autocomplete="new-password"
+                               placeholder="leave blank to keep the stored one">
+                    </label>
+                </div>
+
                 <label>
                     <span>Port</span>
                     <input name="port" type="number" value="161">

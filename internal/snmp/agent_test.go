@@ -128,8 +128,11 @@ func (a *testAgent) serve() {
 
 // respond builds the reply to one decoded request.
 func (a *testAgent) respond(request *gosnmp.SnmpPacket) *gosnmp.SnmpPacket {
+	// The reply speaks whatever the request spoke: a client validates the
+	// version it gets back, so answering a v1 request in v2c would make this
+	// agent unusable for testing v1.
 	response := &gosnmp.SnmpPacket{
-		Version:   gosnmp.Version2c,
+		Version:   request.Version,
 		Community: request.Community,
 		PDUType:   gosnmp.GetResponse,
 		RequestID: request.RequestID,
@@ -273,10 +276,16 @@ func oidLess(a, b string) bool {
 // agentDevice describes a device pointing at the agent.
 func agentDevice(t *testing.T, a *testAgent) *config.Device {
 	t.Helper()
+	return agentDeviceVersion(t, a, "2c")
+}
+
+// agentDeviceVersion is agentDevice for a stated SNMP version.
+func agentDeviceVersion(t *testing.T, a *testAgent, version string) *config.Device {
+	t.Helper()
 	return &config.Device{
 		Name:        "agent-" + t.Name(),
 		Address:     a.addr(),
-		SNMPVersion: "2c",
+		SNMPVersion: version,
 		Community:   "public",
 		Enabled:     true,
 	}
