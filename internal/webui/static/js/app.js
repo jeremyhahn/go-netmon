@@ -195,33 +195,46 @@ class MonitoringApp {
                 // Refresh device status to update error banner
                 await this.fetchAndDisplayDeviceStatus(this.currentDashboardDevice);
 
-                // Fetch currently displayed MIBs
-                const currentMibs = this.deviceDashboards[this.currentDashboardDevice]?.mibs || [];
-                const currentMibNames = new Set(currentMibs.map(m => m.name));
+                // Has a MIB assigned to *this* device started producing data
+                // since the dashboard was drawn?
+                //
+                // This used to ask which modules hold data for anything on the
+                // fleet and compare that with the modules drawn for one device.
+                // Those sets differ by construction — 13 against 2 on a four
+                // device stack — so it found "new" data on every tick and tore
+                // the whole dashboard down and rebuilt it every 30 seconds,
+                // discarding the streamed history along with it.
+                const deviceName = this.deviceNameFor(this.currentDashboardDevice);
+                if (!deviceName) return;
 
-                // Fetch MIBs with available data
-                const response = await fetch('/api/mibs?filter=available');
+                const drawn = new Set(
+                    (this.deviceDashboards[this.currentDashboardDevice]?.mibs || []).map(m => m.name));
+                const response = await fetch(
+                    `/api/mibs?filter=available&device=${encodeURIComponent(deviceName)}`);
+                if (!response.ok) return;
                 const data = await response.json();
-                const availableMibNames = new Set((data.mibs || []).map(m => m.name));
 
-                // Check if any new MIBs have data
-                let hasNewData = false;
-                for (const mibName of availableMibNames) {
-                    if (!currentMibNames.has(mibName)) {
-                        hasNewData = true;
-                        break;
-                    }
-                }
-
-                // Reload dashboards if new data appeared
-                if (hasNewData) {
-                    console.log('New MIB data detected, reloading dashboards...');
+                const appeared = (data.mibs || []).map(m => m.name).filter(name => !drawn.has(name));
+                if (appeared.length > 0) {
+                    console.log(`New MIB data for ${deviceName}: ${appeared.join(', ')}; reloading`);
                     await this.loadDeviceDashboards(this.currentDashboardDevice);
                 }
             } catch (error) {
                 console.error('Error polling for MIB data:', error);
             }
         }, DASHBOARD_REFRESH_MS);
+    }
+
+    // deviceNameFor resolves a device id to the name its metrics are labelled
+    // with. The dashboard selector carries ids; Prometheus carries names, so
+    // anything asking Prometheus about the selected device goes through here.
+    //
+    // The id arrives as a string from a select element and as a number from the
+    // device list, so both are accepted rather than relying on the caller.
+    deviceNameFor(deviceId) {
+        if (deviceId === null || deviceId === undefined) return null;
+        const wanted = String(deviceId);
+        return this.devices.find(d => String(d.id) === wanted)?.name || null;
     }
 
     // ========================================

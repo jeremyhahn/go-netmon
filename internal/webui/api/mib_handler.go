@@ -35,11 +35,15 @@ func (s *Server) handleListStoredMIBs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if we should filter by available data
+	// Check if we should filter by available data. "device" narrows the
+	// question to one device's own series: without it the answer is every
+	// module holding data for anything on the fleet, which is not what a
+	// caller asking on behalf of one device wants to know.
 	filterByData := r.URL.Query().Get("filter") == "available"
 
 	if filterByData {
-		filtered, filterErr := s.filterMIBsWithData(r.Context(), mibs)
+		filtered, filterErr := s.filterMIBsWithData(
+			r.Context(), mibs, r.URL.Query().Get("device"))
 		if filterErr != nil {
 			http.Error(w, filterErr.Error(), http.StatusInternalServerError)
 			return
@@ -410,7 +414,9 @@ func (s *Server) fetchLearnedTables(ctx context.Context) dashboard.LearnedTables
 // queries per module, which at 170 modules and ~29,000 OIDs meant millions of
 // deserializations and well over a thousand round trips — the request timed out,
 // and the web UI reported it as "no MIBs assigned".
-func (s *Server) filterMIBsWithData(ctx context.Context, mibs []webuistorage.MIB) ([]webuistorage.MIB, error) {
+func (s *Server) filterMIBsWithData(
+	ctx context.Context, mibs []webuistorage.MIB, device string,
+) ([]webuistorage.MIB, error) {
 	loaderStorage, err := s.mibStore()
 	if err != nil {
 		return nil, err
@@ -427,8 +433,19 @@ func (s *Server) filterMIBsWithData(ctx context.Context, mibs []webuistorage.MIB
 		oidsByModule[oid.Module] = append(oidsByModule[oid.Module], oid)
 	}
 
-	learnedTables := s.fetchLearnedTables(ctx)
-	metricNames := s.prometheusMetricNames(ctx, nil)
+	// An empty device asks the fleet-wide question, which is what the module
+	// catalog wants. A named one asks only about that device's series, and then
+	// the process-wide learned tables are not evidence about it.
+	var (
+		matchers      map[string]string
+		learnedTables dashboard.LearnedTablesMap
+	)
+	if device == "" {
+		learnedTables = s.fetchLearnedTables(ctx)
+	} else {
+		matchers = map[string]string{promname.DeviceLabel: device}
+	}
+	metricNames := s.prometheusMetricNames(ctx, matchers)
 
 	filtered := make([]webuistorage.MIB, 0, len(mibs))
 	for _, m := range mibs {
@@ -476,28 +493,46 @@ func (s *Server) prometheusLabelValues(ctx context.Context, label string, matche
 }
 
 // moduleHasData reports whether a module's objects are backed by collected data.
+//
+// Metric names are the stronger evidence and the only kind that can be narrowed
+// to one device, so they are tried first and for every pollable object. A table
+// column counts as well as a scalar: the exporter names a column's metric after
+// the object and puts the row in labels, so one name covers every row.
+//
+// Learned tables are the fallback, for a module whose data has been walked but
+// whose names are not in the metric set the caller supplied. They are discovered
+// process-wide rather than per device, so a caller asking about one device must
+// pass none -- otherwise every module holding a table anyone has walked answers
+// yes, which is how the dashboard came to believe 13 modules had data for a
+// device that has 2.
 func moduleHasData(
 	oids []*mib.OIDMetadata,
 	learnedTables dashboard.LearnedTablesMap,
 	metricNames map[string]bool,
 ) bool {
-	for _, oid := range oids {
-		switch {
-		case oid.IsTableEntry && len(learnedTables) > 0:
-			// A table the poller has walked at least once.
-			entryOID := oid.EntryOID
-			if entryOID == "" {
-				entryOID = oid.OID
+	if len(metricNames) > 0 {
+		for _, oid := range oids {
+			if !oid.Pollable {
+				continue
 			}
-			if entryOID != "" && learnedTables[entryOID] != nil {
+			if metricNames[promname.MetricName(oid.Name)] ||
+				metricNames[promname.InfoMetricName(oid.Name)] {
 				return true
 			}
+		}
+	}
 
-		case oid.IsScalar && oid.Pollable && len(metricNames) > 0:
-			// A scalar whose exported metric exists in Prometheus.
-			if metricNames[promname.MetricName(oid.Name)] {
-				return true
-			}
+	for _, oid := range oids {
+		if !oid.IsTableEntry || len(learnedTables) == 0 {
+			continue
+		}
+		// A table the poller has walked at least once.
+		entryOID := oid.EntryOID
+		if entryOID == "" {
+			entryOID = oid.OID
+		}
+		if entryOID != "" && learnedTables[entryOID] != nil {
+			return true
 		}
 	}
 	return false
