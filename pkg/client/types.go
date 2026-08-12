@@ -329,6 +329,14 @@ type SNMPTestRequest struct {
 	Community   string `json:"community,omitempty"`
 	Port        int    `json:"port,omitempty"`
 	Timeout     int    `json:"timeout,omitempty"`
+
+	// SNMPv3. Testing an ad-hoc v3 address is how credentials are checked
+	// before they are stored anywhere.
+	Username     string `json:"username,omitempty"`
+	AuthProtocol string `json:"auth_protocol,omitempty"`
+	AuthPassword string `json:"auth_password,omitempty"`
+	PrivProtocol string `json:"priv_protocol,omitempty"`
+	PrivPassword string `json:"priv_password,omitempty"`
 }
 
 // SNMPTestResult is one OID returned by a connectivity test.

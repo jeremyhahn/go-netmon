@@ -11,8 +11,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
 	"testing"
 	"time"
+
+	"github.com/gosnmp/gosnmp"
 
 	"github.com/gorilla/mux"
 
@@ -211,8 +214,11 @@ func TestTestSNMPDirectRejectsBadInput(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			// "v4" does not exist. This case used to be "v3", which the tester
+			// refused — leaving no way to check a v3 device's credentials from
+			// either interface, which is the case that most needs one.
 			name:       "unsupported version",
-			body:       `{"address":"127.0.0.1","snmp_version":"v3"}`,
+			body:       `{"address":"127.0.0.1","snmp_version":"v4"}`,
 			wantStatus: http.StatusBadRequest,
 			wantField:  "snmp_version",
 		},
@@ -457,5 +463,116 @@ func TestRefusedDeviceIsABadGatewayNotATimeout(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error, "bastion") {
 		t.Errorf("Error = %q, want it to name the device", resp.Error)
+	}
+}
+
+// Testing a v3 device is the case that most needs a test. A community string is
+// either right or wrong; v3 has a user, two protocols and two passphrases, and
+// every wrong combination looks identical from the poller — "unreachable". The
+// tester refused v3 outright until the ATEN KVM turned out to speak nothing
+// else, which left no way to check credentials from either interface.
+
+// TestConfigureV3SetsTheSecurityModel covers the three security levels, since
+// the message flags have to agree with the protocols actually set or the agent
+// refuses the message before it looks at the credentials.
+func TestConfigureV3SetsTheSecurityModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe snmpProbe
+		flags gosnmp.SnmpV3MsgFlags
+		auth  gosnmp.SnmpV3AuthProtocol
+		priv  gosnmp.SnmpV3PrivProtocol
+	}{
+		{
+			name:  "authPriv",
+			probe: snmpProbe{Username: "u", AuthProtocol: "SHA", AuthPassword: "a", PrivProtocol: "AES", PrivPassword: "p"},
+			flags: gosnmp.AuthPriv, auth: gosnmp.SHA, priv: gosnmp.AES,
+		},
+		{
+			name:  "authNoPriv",
+			probe: snmpProbe{Username: "u", AuthProtocol: "MD5", AuthPassword: "a"},
+			flags: gosnmp.AuthNoPriv, auth: gosnmp.MD5, priv: gosnmp.NoPriv,
+		},
+		{
+			name:  "noAuthNoPriv",
+			probe: snmpProbe{Username: "u"},
+			flags: gosnmp.NoAuthNoPriv, auth: gosnmp.NoAuth, priv: gosnmp.NoPriv,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn := &gosnmp.GoSNMP{}
+			if err := configureV3(conn, tt.probe); err != nil {
+				t.Fatalf("configureV3: %v", err)
+			}
+
+			if conn.Version != gosnmp.Version3 {
+				t.Errorf("version = %v, want v3", conn.Version)
+			}
+			if conn.MsgFlags != tt.flags {
+				t.Errorf("msg flags = %v, want %v", conn.MsgFlags, tt.flags)
+			}
+			params, ok := conn.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+			if !ok {
+				t.Fatalf("security parameters = %T, want *gosnmp.UsmSecurityParameters", conn.SecurityParameters)
+			}
+			if params.AuthenticationProtocol != tt.auth {
+				t.Errorf("auth protocol = %v, want %v", params.AuthenticationProtocol, tt.auth)
+			}
+			if params.PrivacyProtocol != tt.priv {
+				t.Errorf("priv protocol = %v, want %v", params.PrivacyProtocol, tt.priv)
+			}
+			if params.UserName != "u" {
+				t.Errorf("user = %q, want %q", params.UserName, "u")
+			}
+		})
+	}
+}
+
+// TestConfigureV3RejectsBadInput is the bad-input case. Each refusal names the
+// field, because "invalid request" against five settings is not a diagnosis.
+func TestConfigureV3RejectsBadInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe snmpProbe
+		field string
+	}{
+		{"no user", snmpProbe{}, "username"},
+		{"unknown auth protocol", snmpProbe{Username: "u", AuthProtocol: "SHA512"}, "auth_protocol"},
+		{"unknown priv protocol", snmpProbe{Username: "u", PrivProtocol: "3DES"}, "priv_protocol"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := configureV3(&gosnmp.GoSNMP{}, tt.probe)
+
+			var reqErr *SNMPRequestError
+			if !errors.As(err, &reqErr) {
+				t.Fatalf("error = %T (%v), want *SNMPRequestError", err, err)
+			}
+			if reqErr.Field != tt.field {
+				t.Errorf("field = %q, want %q", reqErr.Field, tt.field)
+			}
+		})
+	}
+}
+
+// TestProtocolNamesAreCaseInsensitive covers what an operator actually types.
+// The device form offers "SHA" and "AES"; a person at a terminal types "sha".
+func TestProtocolNamesAreCaseInsensitive(t *testing.T) {
+	conn := &gosnmp.GoSNMP{}
+	err := configureV3(conn, snmpProbe{
+		Username: "u", AuthProtocol: "sha", AuthPassword: "a",
+		PrivProtocol: "aes", PrivPassword: "p",
+	})
+	if err != nil {
+		t.Fatalf("configureV3 with lowercase protocols: %v", err)
+	}
+
+	params := conn.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if params.AuthenticationProtocol != gosnmp.SHA || params.PrivacyProtocol != gosnmp.AES {
+		t.Errorf("lowercase protocol names were not recognized: auth=%v priv=%v",
+			params.AuthenticationProtocol, params.PrivacyProtocol)
 	}
 }

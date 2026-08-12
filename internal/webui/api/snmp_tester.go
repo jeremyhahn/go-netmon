@@ -24,6 +24,12 @@ type SNMPTestRequest struct {
 	Community   string `json:"community,omitempty"`
 	Port        int    `json:"port,omitempty"`
 	Timeout     int    `json:"timeout,omitempty"` // seconds
+
+	Username     string `json:"username,omitempty"`
+	AuthProtocol string `json:"auth_protocol,omitempty"`
+	AuthPassword string `json:"auth_password,omitempty"`
+	PrivProtocol string `json:"priv_protocol,omitempty"`
+	PrivPassword string `json:"priv_password,omitempty"`
 }
 
 // SNMPTestResult represents a single OID result
@@ -102,11 +108,16 @@ func (s *Server) handleTestSNMPConnection(w http.ResponseWriter, r *http.Request
 	}
 
 	response := s.performSNMPTest(r.Context(), snmpProbe{
-		Device:      device.Name,
-		Address:     device.Address,
-		SNMPVersion: device.SNMPVersion,
-		Community:   device.Community,
-		Port:        defaultSNMPPort,
+		Device:       device.Name,
+		Address:      device.Address,
+		SNMPVersion:  device.SNMPVersion,
+		Community:    device.Community,
+		Port:         defaultSNMPPort,
+		Username:     device.Username,
+		AuthProtocol: device.AuthProtocol,
+		AuthPassword: device.AuthPassword,
+		PrivProtocol: device.PrivProtocol,
+		PrivPassword: device.PrivPassword,
 	})
 	respondJSON(w, statusForProbe(response), response)
 }
@@ -133,10 +144,15 @@ func (s *Server) handleTestSNMPDirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := s.performSNMPTest(r.Context(), snmpProbe{
-		Address:     req.Address,
-		SNMPVersion: req.SNMPVersion,
-		Community:   req.Community,
-		Port:        req.Port,
+		Address:      req.Address,
+		SNMPVersion:  req.SNMPVersion,
+		Community:    req.Community,
+		Port:         req.Port,
+		Username:     req.Username,
+		AuthProtocol: req.AuthProtocol,
+		AuthPassword: req.AuthPassword,
+		PrivProtocol: req.PrivProtocol,
+		PrivPassword: req.PrivPassword,
 	})
 	respondJSON(w, statusForProbe(response), response)
 }
@@ -170,6 +186,16 @@ type snmpProbe struct {
 	SNMPVersion string
 	Community   string
 	Port        int
+
+	// SNMPv3. Testing a v3 device is the case that most needs a test: a
+	// community string is either right or wrong, but v3 has a user, two
+	// protocols and two passphrases, and the failure for every wrong
+	// combination looks the same from the poller.
+	Username     string
+	AuthProtocol string
+	AuthPassword string
+	PrivProtocol string
+	PrivPassword string
 }
 
 // performSNMPTest probes a device's system group and reports what it found.
@@ -230,11 +256,15 @@ func (s *Server) performSNMPTest(ctx context.Context, probe snmpProbe) *SNMPTest
 	case "v1", "1":
 		snmpConn.Version = gosnmp.Version1
 		snmpConn.Community = probe.Community
+	case "v3", "3":
+		if err := configureV3(snmpConn, probe); err != nil {
+			return probe.reject(startTime, err)
+		}
 	default:
 		return probe.reject(startTime, &SNMPRequestError{
 			Field:  "snmp_version",
 			Value:  probe.SNMPVersion,
-			Reason: "only v1 and v2c are supported for testing",
+			Reason: "want v1, v2c or v3",
 		})
 	}
 
@@ -415,4 +445,63 @@ func getSNMPTypeName(t gosnmp.Asn1BER) string {
 	default:
 		return fmt.Sprintf("Type(%d)", t)
 	}
+}
+
+// configureV3 sets up user-based security for a probe.
+//
+// The protocol names match what the device form and the CLI offer. An empty
+// protocol means that layer is off — noAuthNoPriv or authNoPriv — which is a
+// real configuration on plenty of equipment and not an error.
+func configureV3(conn *gosnmp.GoSNMP, probe snmpProbe) error {
+	if probe.Username == "" {
+		return &SNMPRequestError{
+			Field: "username", Value: "", Reason: "required for SNMPv3",
+		}
+	}
+
+	conn.Version = gosnmp.Version3
+	conn.SecurityModel = gosnmp.UserSecurityModel
+	params := &gosnmp.UsmSecurityParameters{UserName: probe.Username}
+
+	switch strings.ToUpper(probe.AuthProtocol) {
+	case "":
+		params.AuthenticationProtocol = gosnmp.NoAuth
+	case "MD5":
+		params.AuthenticationProtocol = gosnmp.MD5
+	case "SHA":
+		params.AuthenticationProtocol = gosnmp.SHA
+	default:
+		return &SNMPRequestError{
+			Field: "auth_protocol", Value: probe.AuthProtocol, Reason: "want SHA, MD5 or empty",
+		}
+	}
+	params.AuthenticationPassphrase = probe.AuthPassword
+
+	switch strings.ToUpper(probe.PrivProtocol) {
+	case "":
+		params.PrivacyProtocol = gosnmp.NoPriv
+	case "DES":
+		params.PrivacyProtocol = gosnmp.DES
+	case "AES":
+		params.PrivacyProtocol = gosnmp.AES
+	default:
+		return &SNMPRequestError{
+			Field: "priv_protocol", Value: probe.PrivProtocol, Reason: "want AES, DES or empty",
+		}
+	}
+	params.PrivacyPassphrase = probe.PrivPassword
+
+	// The message flags have to agree with the protocols actually set, or the
+	// agent refuses the message before looking at the credentials.
+	switch {
+	case params.PrivacyProtocol != gosnmp.NoPriv:
+		conn.MsgFlags = gosnmp.AuthPriv
+	case params.AuthenticationProtocol != gosnmp.NoAuth:
+		conn.MsgFlags = gosnmp.AuthNoPriv
+	default:
+		conn.MsgFlags = gosnmp.NoAuthNoPriv
+	}
+
+	conn.SecurityParameters = params
+	return nil
 }

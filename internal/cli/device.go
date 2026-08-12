@@ -527,11 +527,16 @@ func newDeviceDeleteCommand(env *Env) *cobra.Command {
 
 func newDeviceTestCommand(env *Env) *cobra.Command {
 	var (
-		address   string
-		version   string
-		community string
-		port      int
-		timeout   int
+		address      string
+		version      string
+		community    string
+		port         int
+		timeout      int
+		username     string
+		authProtocol string
+		authPassword string
+		privProtocol string
+		privPassword string
 	)
 
 	cmd := &cobra.Command{
@@ -553,6 +558,13 @@ func newDeviceTestCommand(env *Env) *cobra.Command {
 					return err
 				}
 
+				if authPassword == "" {
+					authPassword = os.Getenv("NETMON_AUTH_PASSWORD")
+				}
+				if privPassword == "" {
+					privPassword = os.Getenv("NETMON_PRIV_PASSWORD")
+				}
+
 				var result *client.SNMPTestResponse
 				if len(args) == 1 {
 					id, resolveErr := api.ResolveDevice(ctx, args[0])
@@ -562,11 +574,16 @@ func newDeviceTestCommand(env *Env) *cobra.Command {
 					result, err = api.TestDeviceSNMP(ctx, id)
 				} else {
 					result, err = api.TestSNMP(ctx, client.SNMPTestRequest{
-						Address:     address,
-						SNMPVersion: version,
-						Community:   community,
-						Port:        port,
-						Timeout:     timeout,
+						Address:      address,
+						SNMPVersion:  version,
+						Community:    community,
+						Port:         port,
+						Timeout:      timeout,
+						Username:     username,
+						AuthProtocol: authProtocol,
+						AuthPassword: authPassword,
+						PrivProtocol: privProtocol,
+						PrivPassword: privPassword,
 					})
 				}
 				if err != nil {
@@ -583,10 +600,20 @@ func newDeviceTestCommand(env *Env) *cobra.Command {
 
 	f := cmd.Flags()
 	f.StringVar(&address, "address", "", "probe this address instead of a configured device")
-	f.StringVar(&version, "version", "2c", "SNMP version for --address")
+	f.StringVar(&version, "version", "2c", "SNMP version for --address (1, 2c or 3)")
 	f.StringVar(&community, "community", "public", "community string for --address")
 	f.IntVar(&port, "port", 161, "SNMP port for --address")
 	f.IntVar(&timeout, "snmp-timeout", 10, "SNMP timeout in seconds")
+
+	// Testing an address is how v3 credentials get checked before they are
+	// stored on a device, so the same five settings are available here.
+	f.StringVar(&username, "username", "", "SNMPv3 user name for --address")
+	f.StringVar(&authProtocol, "auth-protocol", "", "SNMPv3 authentication protocol (SHA, MD5, or empty for none)")
+	f.StringVar(&authPassword, "auth-password", "",
+		"SNMPv3 authentication passphrase (prefer NETMON_AUTH_PASSWORD)")
+	f.StringVar(&privProtocol, "priv-protocol", "", "SNMPv3 privacy protocol (AES, DES, or empty for none)")
+	f.StringVar(&privPassword, "priv-password", "",
+		"SNMPv3 privacy passphrase (prefer NETMON_PRIV_PASSWORD)")
 	return cmd
 }
 
