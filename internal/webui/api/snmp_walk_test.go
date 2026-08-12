@@ -184,6 +184,14 @@ func TestARegistrationNodeIsNotAName(t *testing.T) {
 		{OID: "1.3.6.1.4.1", Name: "enterprises", Module: "SNMPv2-SMI"},
 		{OID: "1.3.6.1.2.1", Name: "mib-2", Module: "SNMPv2-SMI"},
 		{OID: "1.3.6.1.4.1.21317.1", Name: "atenProducts", Module: "ATEN-SMI"},
+		// The parser writes "unknown" rather than an empty access for a
+		// registration, so a check that only asked whether access was set let
+		// every one of these back in: a walk of a Supermicro BMC attributed
+		// 1317 objects to ATEN-PRODUCTS-MIB, which defines six.
+		{OID: "1.3.6.1.4.1.21317.1.3.1", Name: "kvmoverip", Module: "ATEN-PRODUCTS-MIB",
+			Access: "unknown"},
+		{OID: "1.3.6.1.4.1.21317.1.3", Name: "overip", Module: "ATEN-PRODUCTS-MIB",
+			Access: "unknown", Status: "current"},
 	}
 	for _, node := range registrations {
 		if describesAnObject(node) {

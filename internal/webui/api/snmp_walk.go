@@ -388,6 +388,11 @@ func describesAnObject(object *mib.OIDMetadata) bool {
 	if object == nil {
 		return false
 	}
-	return object.Type != "" || object.Access != "" ||
+	// A syntax, or a structural role in a table. Access is deliberately not
+	// part of this: the parser records "unknown" for a registration node rather
+	// than leaving it empty, so accepting a non-empty access let every
+	// registration back in — a walk of a Supermicro BMC came back with 1317
+	// objects attributed to ATEN-PRODUCTS-MIB, which defines six.
+	return object.Type != "" ||
 		object.IsScalar || object.IsColumn || object.IsTable || object.IsTableEntry
 }
