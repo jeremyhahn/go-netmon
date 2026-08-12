@@ -148,19 +148,26 @@ test.describe('fleet overview', () => {
       .toHaveText(String(expected.devices.length));
   });
 
-  test('bastion is presented as unreachable, with the reason one click away', async ({ page, request }) => {
-    // bastion is a real specimen: it is genuinely unreachable on this stack.
-    const live = await (await request.get(STATUS_URL)).json();
-    const bastion = (live.devices as FleetEntry[]).find(d => d.name === 'bastion');
-    expect(bastion, 'bastion should be configured on this stack').toBeTruthy();
-    expect(bastion!.state, 'bastion should be unreachable').toBe('unreachable');
+  test('an unreachable device is presented as unreachable, with the reason one click away', async ({ page }) => {
+    // This was written against bastion while bastion was genuinely unreachable, and
+    // read the live status to prove it. Then bastion was fixed — it answers v1 —
+    // and the test failed for the best possible reason, which is not a reason a
+    // test should fail. The state is served instead, so this stays a test of how
+    // an unreachable device is presented rather than of whether one exists.
+    const bastion: FleetEntry = {
+      id: 4, name: 'bastion', address: '198.51.100.14', state: 'unreachable',
+      error: 'device 198.51.100.14 answered none of the 47 OIDs polled: '
+           + 'request timeout (after 3 retries) on every chunk',
+      status: { consecutive_failures: 12 },
+    };
+    await serveFleet(page, [bastion]);
 
     await openOverview(page);
     const row = rowFor(page, 'bastion');
     await expect(row.locator('.fleet-state')).toHaveText('Unreachable');
 
     // The failure count is on the row; the message is clipped to one line.
-    const failures = Number((bastion!.status as any).consecutive_failures);
+    const failures = Number((bastion.status as any).consecutive_failures);
     await expect(row.locator('.badge.error')).toContainText(`${failures} failed poll`);
 
     const trigger = row.locator('.desc-trigger');
