@@ -60,13 +60,13 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 
 	// Register device with poller (graceful degradation - don't fail if poller is down)
 	if s.pollerClient != nil {
-		mibNames, err := s.getDeviceMIBNames(r.Context(), device.ID)
+		modules, err := s.getDeviceModules(r.Context(), device.ID)
 		if err != nil {
-			log.Printf("Warning: failed to get device MIB names: %v", err)
-			mibNames = nil
+			log.Printf("Warning: failed to get device modules: %v", err)
+			modules = moduleSelection{}
 		}
 
-		if err := s.pollerClient.RegisterDevice(r.Context(), &device, mibNames); err != nil {
+		if err := s.pollerClient.RegisterDevice(r.Context(), &device, modules.Modules, modules.Filters); err != nil {
 			log.Printf("Warning: failed to register device with poller: %v", err)
 			// Don't fail - device is saved in DB
 		}
@@ -136,13 +136,13 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 
 	// Update device in poller (graceful degradation - don't fail if poller is down)
 	if s.pollerClient != nil {
-		mibNames, err := s.getDeviceMIBNames(r.Context(), device.ID)
+		modules, err := s.getDeviceModules(r.Context(), device.ID)
 		if err != nil {
-			log.Printf("Warning: failed to get device MIB names: %v", err)
-			mibNames = nil
+			log.Printf("Warning: failed to get device modules: %v", err)
+			modules = moduleSelection{}
 		}
 
-		if err := s.pollerClient.UpdateDevice(r.Context(), &device, mibNames); err != nil {
+		if err := s.pollerClient.UpdateDevice(r.Context(), &device, modules.Modules, modules.Filters); err != nil {
 			log.Printf("Warning: failed to update device in poller: %v", err)
 			// Don't fail - device is updated in DB
 		}
@@ -430,27 +430,27 @@ func (s *Server) syncDeviceWithPoller(ctx context.Context, deviceID int64, reaso
 		return
 	}
 
-	mibNames, err := s.getDeviceMIBNames(ctx, deviceID)
+	modules, err := s.getDeviceModules(ctx, deviceID)
 	if err != nil {
-		log.Printf("Warning: failed to get MIB names for device %s after %s: %v", device.Name, reason, err)
+		log.Printf("Warning: failed to get modules for device %s after %s: %v", device.Name, reason, err)
 		return
 	}
 
-	if err := s.pollerClient.UpdateDevice(ctx, device, mibNames); err != nil {
+	if err := s.pollerClient.UpdateDevice(ctx, device, modules.Modules, modules.Filters); err != nil {
 		log.Printf("Warning: failed to update device %s in poller after %s: %v", device.Name, reason, err)
 	}
 }
 
-// getDeviceMIBNames returns the names of the MIB modules a device polls.
+// getDeviceModules returns what a device polls: the modules, and the filters
+// that narrow each one.
 //
 // A MIB whose assignment is disabled is left out, so telling the poller this
-// list is what stops or resumes polling of a module.
-func (s *Server) getDeviceMIBNames(ctx context.Context, deviceID int64) ([]string, error) {
-	selection, err := s.resolveDeviceModules(ctx, deviceID)
-	if err != nil {
-		return nil, err
-	}
-	return selection.Modules, nil
+// list is what stops or resumes polling of a module. The filters travel with it
+// because the poller applies them when it builds a worker -- it used to receive
+// only the names, so every filter an operator set was stored, displayed, costed
+// and then ignored by the thing doing the polling.
+func (s *Server) getDeviceModules(ctx context.Context, deviceID int64) (moduleSelection, error) {
+	return s.resolveDeviceModules(ctx, deviceID)
 }
 
 // respondJSON writes a JSON response. The status line is already on the wire by

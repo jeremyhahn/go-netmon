@@ -74,12 +74,15 @@ type Device struct {
 //
 // Patterns are regular expressions matched against an object's OID or name.
 // Excludes are applied before includes, so an object matching both is excluded.
+// It carries JSON tags as well as YAML because it is both a configuration key
+// and the wire format the web UI pushes to the poller's control API. One type
+// for both keeps a filter meaning the same thing wherever it is written down.
 type ModuleFilter struct {
-	IncludeOIDs  []string `yaml:"include_oids,omitempty"`
-	ExcludeOIDs  []string `yaml:"exclude_oids,omitempty"`
-	IncludeNames []string `yaml:"include_names,omitempty"`
-	ExcludeNames []string `yaml:"exclude_names,omitempty"`
-	MaxOIDs      int      `yaml:"max_oids,omitempty"`
+	IncludeOIDs  []string `yaml:"include_oids,omitempty" json:"include_oids,omitempty"`
+	ExcludeOIDs  []string `yaml:"exclude_oids,omitempty" json:"exclude_oids,omitempty"`
+	IncludeNames []string `yaml:"include_names,omitempty" json:"include_names,omitempty"`
+	ExcludeNames []string `yaml:"exclude_names,omitempty" json:"exclude_names,omitempty"`
+	MaxOIDs      int      `yaml:"max_oids,omitempty" json:"max_oids,omitempty"`
 }
 
 // MIBModule represents a MIB module configuration

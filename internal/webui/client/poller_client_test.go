@@ -119,7 +119,7 @@ func TestPollerClient_RegisterDevice(t *testing.T) {
 			defer server.Close()
 
 			client := NewPollerClient(server.URL, 5*time.Second)
-			err := client.RegisterDevice(context.Background(), tt.device, tt.mibNames)
+			err := client.RegisterDevice(context.Background(), tt.device, tt.mibNames, nil)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("RegisterDevice() error = %v, wantErr %v", err, tt.wantErr)
@@ -178,7 +178,7 @@ func TestPollerClient_UpdateDevice(t *testing.T) {
 			defer server.Close()
 
 			client := NewPollerClient(server.URL, 5*time.Second)
-			err := client.UpdateDevice(context.Background(), tt.device, tt.mibNames)
+			err := client.UpdateDevice(context.Background(), tt.device, tt.mibNames, nil)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("UpdateDevice() error = %v, wantErr %v", err, tt.wantErr)
@@ -390,7 +390,7 @@ func TestPollerClient_RetryLogic(t *testing.T) {
 		Community:   "public",
 	}
 
-	err := client.RegisterDevice(context.Background(), device, nil)
+	err := client.RegisterDevice(context.Background(), device, nil, nil)
 	if err != nil {
 		t.Errorf("RegisterDevice() should succeed after retries, got error: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestPollerClient_ContextCancellation(t *testing.T) {
 		Community:   "public",
 	}
 
-	err := client.RegisterDevice(ctx, device, nil)
+	err := client.RegisterDevice(ctx, device, nil, nil)
 	if err == nil {
 		t.Error("RegisterDevice() should fail with canceled context")
 	}
@@ -439,7 +439,7 @@ func TestPollerClient_Timeout(t *testing.T) {
 		Community:   "public",
 	}
 
-	err := client.RegisterDevice(context.Background(), device, nil)
+	err := client.RegisterDevice(context.Background(), device, nil, nil)
 	if err == nil {
 		t.Error("RegisterDevice() should fail with timeout")
 	}

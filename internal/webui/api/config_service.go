@@ -501,7 +501,7 @@ func (s *Server) syncImportedDevices(ctx context.Context, created, removed []str
 
 	for i := range devices {
 		device := &devices[i]
-		mibNames, mibErr := s.getDeviceMIBNames(ctx, device.ID)
+		modules, mibErr := s.getDeviceModules(ctx, device.ID)
 		if mibErr != nil {
 			s.log().WarnContext(ctx, "cannot resolve a device's modules after an import",
 				"device", device.Name, "error", mibErr)
@@ -511,9 +511,9 @@ func (s *Server) syncImportedDevices(ctx context.Context, created, removed []str
 		_, fresh := isNew[device.Name]
 		s.callPoller(ctx, device.Name, func(callCtx context.Context) error {
 			if fresh {
-				return s.pollerClient.RegisterDevice(callCtx, device, mibNames)
+				return s.pollerClient.RegisterDevice(callCtx, device, modules.Modules, modules.Filters)
 			}
-			return s.pollerClient.UpdateDevice(callCtx, device, mibNames)
+			return s.pollerClient.UpdateDevice(callCtx, device, modules.Modules, modules.Filters)
 		})
 	}
 }

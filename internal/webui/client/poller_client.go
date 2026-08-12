@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jeremyhahn/go-netmon/internal/config"
+
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
@@ -39,6 +41,13 @@ type PollerDeviceRequest struct {
 	Profile      string            `json:"profile"`
 	Modules      []string          `json:"modules,omitempty"`
 	Tags         map[string]string `json:"tags,omitempty"`
+
+	// ModuleFilters narrows what is polled within a module, keyed by module
+	// name. Without it the poller has only the module list and fetches every
+	// pollable object of every module -- which is what happened to every filter
+	// an operator set: stored, shown in the UI, counted by the cost estimator,
+	// and then ignored by the thing actually doing the polling.
+	ModuleFilters map[string]config.ModuleFilter `json:"module_filters,omitempty"`
 }
 
 // DeviceStatus represents the runtime status of a monitored device
@@ -103,8 +112,11 @@ func NewPollerClient(baseURL string, timeout time.Duration) *PollerClient {
 }
 
 // RegisterDevice registers a new device with the poller service
-func (c *PollerClient) RegisterDevice(ctx context.Context, device *storage.Device, mibNames []string) error {
-	req := c.deviceToRequest(device, mibNames)
+func (c *PollerClient) RegisterDevice(
+	ctx context.Context, device *storage.Device,
+	mibNames []string, filters map[string]config.ModuleFilter,
+) error {
+	req := c.deviceToRequest(device, mibNames, filters)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -122,8 +134,11 @@ func (c *PollerClient) RegisterDevice(ctx context.Context, device *storage.Devic
 }
 
 // UpdateDevice updates an existing device in the poller service
-func (c *PollerClient) UpdateDevice(ctx context.Context, device *storage.Device, mibNames []string) error {
-	req := c.deviceToRequest(device, mibNames)
+func (c *PollerClient) UpdateDevice(
+	ctx context.Context, device *storage.Device,
+	mibNames []string, filters map[string]config.ModuleFilter,
+) error {
+	req := c.deviceToRequest(device, mibNames, filters)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -191,7 +206,9 @@ func (c *PollerClient) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
 // a device that inherits arrives at the poller still inheriting: the default it
 // gets is the poller's current one, not a copy of it taken when the device was
 // last pushed.
-func (c *PollerClient) deviceToRequest(device *storage.Device, mibNames []string) PollerDeviceRequest {
+func (c *PollerClient) deviceToRequest(
+	device *storage.Device, mibNames []string, filters map[string]config.ModuleFilter,
+) PollerDeviceRequest {
 	// Create tags map
 	tags := make(map[string]string)
 	tags["source"] = "webui"
@@ -224,11 +241,12 @@ func (c *PollerClient) deviceToRequest(device *storage.Device, mibNames []string
 		PrivProtocol: device.PrivProtocol,
 		PrivPassword: device.PrivPassword,
 
-		PollInterval: storage.PollIntervalOf(device),
-		Enabled:      true,
-		Profile:      "default",
-		Modules:      mibNames,
-		Tags:         tags,
+		PollInterval:  storage.PollIntervalOf(device),
+		Enabled:       true,
+		Profile:       "default",
+		Modules:       mibNames,
+		ModuleFilters: filters,
+		Tags:          tags,
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/webui/client"
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
@@ -20,11 +21,17 @@ type mockPollerClient struct {
 	getDeviceStatusFunc func(ctx context.Context, deviceName string) (*client.DeviceStatus, error)
 }
 
-func (m *mockPollerClient) RegisterDevice(ctx context.Context, device *storage.Device, mibNames []string) error {
+func (m *mockPollerClient) RegisterDevice(
+	ctx context.Context, device *storage.Device,
+	mibNames []string, filters map[string]config.ModuleFilter,
+) error {
 	return nil
 }
 
-func (m *mockPollerClient) UpdateDevice(ctx context.Context, device *storage.Device, mibNames []string) error {
+func (m *mockPollerClient) UpdateDevice(
+	ctx context.Context, device *storage.Device,
+	mibNames []string, filters map[string]config.ModuleFilter,
+) error {
 	return nil
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 
+	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/logging"
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 	"github.com/jeremyhahn/go-netmon/internal/promname"
@@ -28,8 +29,10 @@ import (
 
 // PollerClient defines the interface for interacting with the poller service
 type PollerClient interface {
-	RegisterDevice(ctx context.Context, device *storage.Device, mibNames []string) error
-	UpdateDevice(ctx context.Context, device *storage.Device, mibNames []string) error
+	RegisterDevice(ctx context.Context, device *storage.Device,
+		mibNames []string, filters map[string]config.ModuleFilter) error
+	UpdateDevice(ctx context.Context, device *storage.Device,
+		mibNames []string, filters map[string]config.ModuleFilter) error
 	RemoveDevice(ctx context.Context, deviceName string) error
 	GetDeviceStatus(ctx context.Context, deviceName string) (*client.DeviceStatus, error)
 	ListDevices(ctx context.Context) ([]client.DeviceInfo, error)
@@ -434,19 +437,20 @@ func (s *Server) LoadAndRegisterDevices(ctx context.Context) error {
 	for _, device := range devices {
 		// Modules the device polls: direct and profile assignments resolved,
 		// with disabled MIBs left out.
-		mibNames, err := s.getDeviceMIBNames(ctx, device.ID)
+		modules, err := s.getDeviceModules(ctx, device.ID)
 		if err != nil {
 			log.Printf("Warning: failed to get MIBs for device %s: %v", device.Name, err)
 			continue
 		}
 
 		// Register device with poller
-		if err := s.pollerClient.RegisterDevice(ctx, &device, mibNames); err != nil {
+		if err := s.pollerClient.RegisterDevice(ctx, &device, modules.Modules, modules.Filters); err != nil {
 			log.Printf("Warning: failed to register device %s with poller: %v", device.Name, err)
 			continue
 		}
 
-		log.Printf("Registered device %s with %d MIBs", device.Name, len(mibNames))
+		log.Printf("Registered device %s with %d MIBs (%d filtered)",
+			device.Name, len(modules.Modules), len(modules.Filters))
 		successCount++
 	}
 

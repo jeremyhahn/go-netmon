@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/webui/client"
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
@@ -25,17 +26,25 @@ type recordingPoller struct {
 	removed    []string
 	modules    [][]string
 
+	// filters is what each call carried alongside the module list. The poller
+	// applies these when it builds a worker; the web UI used to push only the
+	// names, so a filter never reached the thing choosing the OIDs.
+	filters []map[string]config.ModuleFilter
+
 	// stall blocks every call until the call's context is done, standing in
 	// for a poller that is not answering.
 	stall bool
 	err   error
 }
 
-func (p *recordingPoller) record(list *[]string, name string, mibNames []string) {
+func (p *recordingPoller) record(
+	list *[]string, name string, mibNames []string, filters map[string]config.ModuleFilter,
+) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	*list = append(*list, name)
 	p.modules = append(p.modules, mibNames)
+	p.filters = append(p.filters, filters)
 }
 
 func (p *recordingPoller) blockIfStalled(ctx context.Context) error {
@@ -49,18 +58,24 @@ func (p *recordingPoller) blockIfStalled(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (p *recordingPoller) RegisterDevice(ctx context.Context, d *storage.Device, mibNames []string) error {
-	p.record(&p.registered, d.Name, mibNames)
+func (p *recordingPoller) RegisterDevice(
+	ctx context.Context, d *storage.Device,
+	mibNames []string, filters map[string]config.ModuleFilter,
+) error {
+	p.record(&p.registered, d.Name, mibNames, filters)
 	return p.blockIfStalled(ctx)
 }
 
-func (p *recordingPoller) UpdateDevice(ctx context.Context, d *storage.Device, mibNames []string) error {
-	p.record(&p.updated, d.Name, mibNames)
+func (p *recordingPoller) UpdateDevice(
+	ctx context.Context, d *storage.Device,
+	mibNames []string, filters map[string]config.ModuleFilter,
+) error {
+	p.record(&p.updated, d.Name, mibNames, filters)
 	return p.blockIfStalled(ctx)
 }
 
 func (p *recordingPoller) RemoveDevice(ctx context.Context, name string) error {
-	p.record(&p.removed, name, nil)
+	p.record(&p.removed, name, nil, nil)
 	return p.blockIfStalled(ctx)
 }
 

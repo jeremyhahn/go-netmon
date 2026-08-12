@@ -50,6 +50,13 @@ type RegisterDeviceRequest struct {
 	Modules      []string          `json:"modules,omitempty"`
 	Profile      string            `json:"profile"`
 	Tags         map[string]string `json:"tags,omitempty"`
+
+	// ModuleFilters narrows what is polled within a module, keyed by module
+	// name. A module with no entry is polled in full, which is what every
+	// module used to be: the web UI stored an operator's filters and pushed
+	// only the module list, so the narrowing never reached the worker that
+	// chooses the OIDs.
+	ModuleFilters map[string]config.ModuleFilter `json:"module_filters,omitempty"`
 }
 
 // DeviceResponse represents a device in API responses
@@ -377,20 +384,21 @@ func (h *PollerControlHandler) validateRegisterRequest(req *RegisterDeviceReques
 // requestToDevice converts a RegisterDeviceRequest to a config.Device
 func (h *PollerControlHandler) requestToDevice(req *RegisterDeviceRequest) *config.Device {
 	device := &config.Device{
-		Name:         req.Name,
-		Address:      req.Address,
-		SNMPVersion:  req.SNMPVersion,
-		Community:    req.Community,
-		Username:     req.Username,
-		AuthProtocol: req.AuthProtocol,
-		AuthPassword: req.AuthPassword,
-		PrivProtocol: req.PrivProtocol,
-		PrivPassword: req.PrivPassword,
-		PollInterval: req.PollInterval,
-		Enabled:      req.Enabled,
-		Modules:      req.Modules,
-		Profile:      req.Profile,
-		Tags:         req.Tags,
+		Name:          req.Name,
+		Address:       req.Address,
+		SNMPVersion:   req.SNMPVersion,
+		Community:     req.Community,
+		Username:      req.Username,
+		AuthProtocol:  req.AuthProtocol,
+		AuthPassword:  req.AuthPassword,
+		PrivProtocol:  req.PrivProtocol,
+		PrivPassword:  req.PrivPassword,
+		PollInterval:  req.PollInterval,
+		Enabled:       req.Enabled,
+		Modules:       req.Modules,
+		ModuleFilters: req.ModuleFilters,
+		Profile:       req.Profile,
+		Tags:          req.Tags,
 	}
 
 	// Set defaults

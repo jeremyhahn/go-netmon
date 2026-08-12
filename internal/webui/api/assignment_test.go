@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/webui/client"
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
@@ -28,14 +29,25 @@ type recordingPollerClient struct {
 type pollerUpdate struct {
 	device   string
 	mibNames []string
+
+	// filters is what narrows each module. The poller applies these when it
+	// builds a worker, so a change that does not arrive here does not happen.
+	filters map[string]config.ModuleFilter
 }
 
-func (c *recordingPollerClient) RegisterDevice(ctx context.Context, device *storage.Device, mibNames []string) error {
+func (c *recordingPollerClient) RegisterDevice(
+	ctx context.Context, device *storage.Device,
+	mibNames []string, filters map[string]config.ModuleFilter,
+) error {
 	return nil
 }
 
-func (c *recordingPollerClient) UpdateDevice(ctx context.Context, device *storage.Device, mibNames []string) error {
-	c.updates = append(c.updates, pollerUpdate{device: device.Name, mibNames: mibNames})
+func (c *recordingPollerClient) UpdateDevice(
+	ctx context.Context, device *storage.Device,
+	mibNames []string, filters map[string]config.ModuleFilter,
+) error {
+	c.updates = append(c.updates,
+		pollerUpdate{device: device.Name, mibNames: mibNames, filters: filters})
 	return nil
 }
 
@@ -954,10 +966,11 @@ func TestGetDeviceMIBNames(t *testing.T) {
 			t.Fatalf("failed to disable MIB: %v", err)
 		}
 
-		names, err := server.getDeviceMIBNames(ctx, deviceID)
+		selection, err := server.getDeviceModules(ctx, deviceID)
 		if err != nil {
-			t.Fatalf("getDeviceMIBNames() error: %v", err)
+			t.Fatalf("getDeviceModules() error: %v", err)
 		}
+		names := selection.Modules
 		if !reflect.DeepEqual(names, []string{"IF-MIB"}) {
 			t.Errorf("names = %v, want only the enabled MIB", names)
 		}
@@ -966,10 +979,11 @@ func TestGetDeviceMIBNames(t *testing.T) {
 	t.Run("a device that does not exist has no MIBs", func(t *testing.T) {
 		server, _ := newAssignmentServer(t)
 
-		names, err := server.getDeviceMIBNames(ctx, 1234)
+		selection, err := server.getDeviceModules(ctx, 1234)
 		if err != nil {
-			t.Fatalf("getDeviceMIBNames() error: %v", err)
+			t.Fatalf("getDeviceModules() error: %v", err)
 		}
+		names := selection.Modules
 		if len(names) != 0 {
 			t.Errorf("names = %v, want none", names)
 		}

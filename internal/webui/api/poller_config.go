@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jeremyhahn/go-netmon/internal/config"
 	mibStorage "github.com/jeremyhahn/go-netmon/internal/mib/storage"
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
@@ -41,13 +42,10 @@ type PollerDeviceConfig struct {
 //
 // It mirrors the poller's own module filter: patterns are regular expressions
 // matched against an object's OID or name, and excludes win over includes.
-type PollerModuleFilter struct {
-	IncludeOIDs  []string `json:"include_oids,omitempty"`
-	ExcludeOIDs  []string `json:"exclude_oids,omitempty"`
-	IncludeNames []string `json:"include_names,omitempty"`
-	ExcludeNames []string `json:"exclude_names,omitempty"`
-	MaxOIDs      int      `json:"max_oids,omitempty"`
-}
+// It is config.ModuleFilter under another name: the poller reads that type, the
+// YAML config declares it, and the control API carries it. Three copies of the
+// same five fields is how they drift apart.
+type PollerModuleFilter = config.ModuleFilter
 
 // newPollerModuleFilter converts the filtering half of a stored assignment to
 // what the poller is told.

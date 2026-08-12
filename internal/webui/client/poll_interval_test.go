@@ -75,7 +75,7 @@ func TestDeviceToRequestCarriesTheDevicesInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := c.deviceToRequest(&tt.device, nil)
+			req := c.deviceToRequest(&tt.device, nil, nil)
 
 			if req.PollInterval != tt.want {
 				t.Errorf("PollInterval = %d, want %d", req.PollInterval, tt.want)
@@ -115,7 +115,7 @@ func TestPushedIntervalMeansWhatThePollerReads(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := c.deviceToRequest(&tt.device, nil)
+			req := c.deviceToRequest(&tt.device, nil, nil)
 
 			// What the poller makes of the request it receives.
 			received := config.Device{PollInterval: req.PollInterval}
@@ -156,7 +156,7 @@ func TestRegisterAndUpdateSendTheInterval(t *testing.T) {
 		Community: "public", Port: 161, PollInterval: seconds(45),
 	}
 
-	if err := c.RegisterDevice(context.Background(), device, []string{"IF-MIB"}); err != nil {
+	if err := c.RegisterDevice(context.Background(), device, []string{"IF-MIB"}, nil); err != nil {
 		t.Fatalf("RegisterDevice: %v", err)
 	}
 	if got := (<-bodies).PollInterval; got != 45 {
@@ -164,7 +164,7 @@ func TestRegisterAndUpdateSendTheInterval(t *testing.T) {
 	}
 
 	device.PollInterval = seconds(300)
-	if err := c.UpdateDevice(context.Background(), device, []string{"IF-MIB"}); err != nil {
+	if err := c.UpdateDevice(context.Background(), device, []string{"IF-MIB"}, nil); err != nil {
 		t.Fatalf("UpdateDevice: %v", err)
 	}
 	if got := (<-bodies).PollInterval; got != 300 {
@@ -184,7 +184,7 @@ func TestRegisterRejectedByThePollerIsReported(t *testing.T) {
 	c := NewPollerClient(server.URL, time.Second)
 	device := &storage.Device{Name: "bastion", Address: "192.0.2.14", SNMPVersion: "v2c"}
 
-	err := c.RegisterDevice(context.Background(), device, nil)
+	err := c.RegisterDevice(context.Background(), device, nil, nil)
 	if err == nil {
 		t.Fatal("RegisterDevice = nil, want the poller's refusal")
 	}
