@@ -372,6 +372,21 @@ func (s *Server) handleGetMIBDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Narrow it to one device when the caller names one.
+	//
+	// The specification describes what a device of this kind could report. The
+	// web UI renders it directly, so without this every object the module
+	// defines became a card, and a card for an object this device does not
+	// implement waits for data that never comes.
+	if device := r.URL.Query().Get("device"); device != "" {
+		reported := s.prometheusMetricNames(r.Context(),
+			map[string]string{promname.DeviceLabel: device})
+		before := len(spec.ScalarWidgets) + len(spec.TableWidgets)
+		spec = scopeSpecToDevice(spec, reported)
+		log.Printf("INFO: %s on %s: %d widgets of %d are reported by the device",
+			record.Name, device, len(spec.ScalarWidgets)+len(spec.TableWidgets), before)
+	}
+
 	// Log dashboard statistics for debugging
 	log.Printf("INFO: Generated dashboard for %s (ID=%d): %d scalar widgets, %d table widgets",
 		record.Name, id, len(spec.ScalarWidgets), len(spec.TableWidgets))

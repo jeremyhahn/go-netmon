@@ -10,6 +10,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 	"github.com/jeremyhahn/go-netmon/internal/mib/parser"
 	mibstorage "github.com/jeremyhahn/go-netmon/internal/mib/storage"
+	"github.com/jeremyhahn/go-netmon/internal/promname"
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
@@ -801,5 +802,50 @@ func TestBuildScalarWidget_ChartingLogic(t *testing.T) {
 				assert.NotEmpty(t, widget.ChartType, "Chart widget should have chart type")
 			}
 		})
+	}
+}
+
+// TestATextScalarNamesItsInfoMetric is the naming a text reading needs.
+//
+// A reading that is words rather than a number reaches Prometheus as an info
+// metric: the text sits in a label on a constant-1 series, under a different
+// name from the one a numeric object carries. Naming it the numeric way asked
+// for a series nobody writes, so the widget could never find its data.
+//
+// The ATEN KVM reports its power supplies, fan and temperature this way. "PSU2
+// is abnormal, please check the device" was collected every 30 seconds and had
+// no widget that could find it.
+func TestATextScalarNamesItsInfoMetric(t *testing.T) {
+	text := &mib.OIDMetadata{
+		OID: "1.3.6.1.4.1.21317.1.3.1.13.1.9.2", Name: "PSU2Status",
+		Type: "DisplayString", Access: "read-only", Status: "current",
+		IsScalar: true, Pollable: true,
+	}
+
+	widget := buildScalarWidget(text)
+
+	if want := promname.InfoMetricName("PSU2Status"); widget.Metric != want {
+		t.Errorf("Metric = %q, want %q -- the name the exporter actually writes",
+			widget.Metric, want)
+	}
+	if widget.Type != "status" {
+		t.Errorf("Type = %q, want status: there is nothing to plot in a sentence", widget.Type)
+	}
+}
+
+// TestANumericScalarKeepsItsPlainMetric guards the other direction: a number is
+// written under its plain name, and asking for an info metric would find
+// nothing.
+func TestANumericScalarKeepsItsPlainMetric(t *testing.T) {
+	number := &mib.OIDMetadata{
+		OID: "1.3.6.1.2.1.1.3", Name: "sysUpTime",
+		Type: "TimeTicks", Access: "read-only", Status: "current",
+		IsScalar: true, Pollable: true, IsChartable: true,
+	}
+
+	widget := buildScalarWidget(number)
+
+	if want := promname.MetricName("sysUpTime"); widget.Metric != want {
+		t.Errorf("Metric = %q, want %q", widget.Metric, want)
 	}
 }

@@ -308,6 +308,18 @@ func buildScalarWidget(oid *mib.OIDMetadata) ScalarWidget {
 		widget.Type = "status"
 	}
 
+	// A reading that is words rather than a number reaches Prometheus as an
+	// info metric: the text is a label on a constant-1 series, under a
+	// different name from the one a numeric object would carry.
+	//
+	// Naming it the numeric way asked for a series nobody writes. The ATEN
+	// KVM reports its power supplies, fan and temperature exactly this way, so
+	// "PSU2 is abnormal, please check the device" was collected every 30
+	// seconds and had no widget that could find it.
+	if oid.IsString() {
+		widget.Metric = promname.InfoMetricName(oid.Name)
+	}
+
 	return widget
 }
 

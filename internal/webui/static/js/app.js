@@ -5048,11 +5048,18 @@ class MonitoringApp {
                 if (statusElement) {
                     let actualValue;
 
-                    // Check if this is an info metric (string status field)
-                    if (obj.isInfoMetric && metrics[0]?.metric?.value) {
-                        // For info metrics, the value is in the "value" label
+                    // A reading that is words arrives as an info metric: the
+                    // text is a label on a constant-1 series, so the sample is
+                    // always 1 and the label is the reading.
+                    //
+                    // The label is the evidence, rather than obj.isInfoMetric,
+                    // which the spec sets on a table's status fields and never
+                    // on a scalar. Every text scalar therefore displayed "1":
+                    // the ATEN KVM's power supplies, fan and temperature all
+                    // read 1 where the device was saying "PSU2 is abnormal,
+                    // please check the device".
+                    if (metrics[0]?.metric?.value !== undefined) {
                         actualValue = metrics[0].metric.value;
-                        console.log(`Extracted info metric value from label: ${actualValue}`);
                     } else {
                         // Extract actual value from metric value (numeric status fields)
                         actualValue = metrics[0]?.value || 'N/A';
@@ -5615,6 +5622,25 @@ class MonitoringApp {
     // ========================================
     // Helper: Format metric values for tooltips
     // ========================================
+    // rateWindow is the lookback rate() needs for a device's poll interval.
+    //
+    // rate() needs at least two samples inside its window, so a fixed [1m] is
+    // empty for anything polled less often than every 30 seconds -- and an empty
+    // result is delivered as an update carrying no metrics, so the card sits on
+    // "Waiting for data…" while the counter underneath it is being collected
+    // normally. lab-node-1-bmc polls every 60 seconds and had 94 cards in that
+    // state; core-01 at 30 seconds had none, which is what made it look like
+    // a device problem rather than a query one.
+    //
+    // Four intervals is the usual guidance: it tolerates a missed poll and the
+    // jitter between the poll and the scrape without widening so far that a
+    // real change is smoothed away.
+    rateWindow(device) {
+        const seconds = Number(device?.effective_poll_interval || device?.poll_interval) || 30;
+        const window = Math.max(60, seconds * 4);
+        return window % 60 === 0 ? `${window / 60}m` : `${window}s`;
+    }
+
     formatMetricValue(value, name, useRate = false) {
         if (value === null || value === undefined) return 'N/A';
 
@@ -5716,6 +5742,16 @@ class MonitoringApp {
         try {
             const response = await fetch('/api/devices');
             const data = await response.json();
+
+            // Keep the fleet, not just the dropdown built from it.
+            //
+            // deviceNameFor resolves the selected id to the name Prometheus
+            // labels its series with, and everything that asks Prometheus about
+            // "this device" goes through it. This list was only ever filled by
+            // the Devices page, so on the dashboard -- where the question is
+            // actually asked -- it was empty, the name came back null, and every
+            // request fell back to its fleet-wide form.
+            this.devices = data.devices || [];
 
             // Populate legacy device selector (if it exists)
             const select = document.getElementById('deviceSelect');
@@ -6631,8 +6667,14 @@ class MonitoringApp {
             // Use all_mibs which includes both direct and profile MIBs
             let mibs = data.all_mibs || [];
 
-            // Filter to only show MIBs with available data
-            const filteredResponse = await fetch('/api/mibs?filter=available');
+            // Filter to the MIBs producing data *for this device*. Without the
+            // device the answer is every module holding data for anything on
+            // the fleet, which offers tabs a device never fills.
+            const deviceName = this.deviceNameFor(deviceId);
+            const availableUrl = deviceName
+                ? `/api/mibs?filter=available&device=${encodeURIComponent(deviceName)}`
+                : '/api/mibs?filter=available';
+            const filteredResponse = await fetch(availableUrl);
             const filteredData = await filteredResponse.json();
             const availableMibNames = new Set((filteredData.mibs || []).map(m => m.name));
 
@@ -6961,7 +7003,14 @@ class MonitoringApp {
 
             // Fetch dashboard specification from backend
             console.log(`Fetching dashboard spec for ${mibName} (ID: ${mib.id})`);
-            const dashboardResponse = await fetch(`/api/mibs/${mib.id}/dashboard`);
+            // Scoped to the device: the specification describes what this kind
+            // of device could report, and a card for an object this one does
+            // not implement waits for data that never comes.
+            const deviceName = this.deviceNameFor(deviceId);
+            const specUrl = deviceName
+                ? `/api/mibs/${mib.id}/dashboard?device=${encodeURIComponent(deviceName)}`
+                : `/api/mibs/${mib.id}/dashboard`;
+            const dashboardResponse = await fetch(specUrl);
             if (!dashboardResponse.ok) {
                 tabPane.innerHTML = '<div class="empty-state"><p>Failed to load dashboard specification</p></div>';
                 return;
@@ -7540,8 +7589,7 @@ class MonitoringApp {
 
             // Wrap counter metrics in rate() to show per-second values (bandwidth)
             if (chart.use_rate) {
-                query = `rate(${query}[1m])`;
-                console.log(`Using rate() for counter metric ${chart.name}: ${query}`);
+                query = `rate(${query}[${this.rateWindow(device)}])`;
             }
 
             subscriptionData.metricQueries.add(query);

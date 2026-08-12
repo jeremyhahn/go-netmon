@@ -573,22 +573,50 @@ func (s *Server) handleQueryMetrics(w http.ResponseWriter, r *http.Request) {
 		s.log().DebugContext(r.Context(), "label_values query detected",
 			"label", labelValues.LabelName, "matchers", labelValues.Matchers)
 
-		// Build PromQL query for info metrics with the matchers
 		var matchParts []string
 		for k, v := range labelValues.Matchers {
 			matchParts = append(matchParts, fmt.Sprintf("%s=%q", k, v))
 		}
-		promQuery := fmt.Sprintf("{__name__=~%q,%s}", promname.Prefix+".*_info", strings.Join(matchParts, ","))
+		matchParts = append(matchParts, fmt.Sprintf("%s!=%q", labelValues.LabelName, ""))
+		selector := "{" + strings.Join(matchParts, ",") + "}"
 
-		s.log().DebugContext(r.Context(), "executing instant query", "query", promQuery)
-
-		// Use instant query which returns current metrics
-		metrics, err := s.queryFunc(r.Context(), promQuery)
+		// Every row of the table, from every series carrying the index label.
+		//
+		// This used to ask only for info metrics -- snmp_*_info, the ones
+		// carrying a text value. A table with no text column therefore had no
+		// rows to offer, so its instance picker came up empty, nothing
+		// subscribed, and every one of its cards waited for data that was being
+		// collected the whole time. cpmCPUTotalTable is entirely numeric and
+		// this is exactly what happened to it; across five devices it left 507
+		// cards waiting.
+		//
+		// Aggregated by the label so the cost is one row per instance rather
+		// than one per series: a table of 24 interfaces with 40 columns is 24
+		// rows here, not 960.
+		rows, err := s.queryFunc(r.Context(),
+			fmt.Sprintf("count by (%s) (%s)", labelValues.LabelName, selector))
 		if err != nil {
 			log.Printf("ERROR: instant query failed: %v", err)
 			http.Error(w, fmt.Sprintf("failed to query metrics: %v", err), http.StatusInternalServerError)
 			return
 		}
+
+		// The info metrics separately, for the friendly names an operator reads
+		// a row by -- ifName and ifDescr rather than ifIndex 7. A failure here
+		// costs the names, not the rows, so it is not fatal.
+		named, err := s.queryFunc(r.Context(),
+			fmt.Sprintf("{__name__=~%q,%s}", promname.Prefix+".*_info", strings.Join(matchParts, ",")))
+		if err != nil {
+			s.log().WarnContext(r.Context(), "instance names unavailable",
+				"label", labelValues.LabelName, "error", err)
+			named = nil
+		}
+
+		// A fresh slice rather than appending onto rows, whose backing array
+		// belongs to the query that produced it.
+		metrics := make([]ws.MetricValue, 0, len(rows)+len(named))
+		metrics = append(metrics, rows...)
+		metrics = append(metrics, named...)
 
 		s.log().DebugContext(r.Context(), "instant query returned", "metrics", len(metrics))
 
