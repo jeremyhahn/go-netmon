@@ -136,6 +136,22 @@ func (s *Storage) StoreOID(meta *mib.OIDMetadata) error {
 	return nil
 }
 
+// DeleteObject removes the record stored for meta, whichever key it was stored
+// under.
+//
+// DeleteOID cannot reach an object that has no numeric OID. Those are keyed by
+// module and name -- groups, notifications, and anything a module defines that
+// resolved to no identifier -- so deleting by an empty OID looks up a key that
+// was never written, finds nothing, and leaves the record in place. Reloading a
+// module therefore accumulated one orphan per such object, every time, and no
+// re-import could clear them because the clear had the same blind spot.
+func (s *Storage) DeleteObject(meta *mib.OIDMetadata) error {
+	if meta == nil {
+		return nil
+	}
+	return s.DeleteOID(oidKeyValue(meta))
+}
+
 // GetOID retrieves OID metadata by OID
 func (s *Storage) GetOID(oid string) (*mib.OIDMetadata, error) {
 	s.mu.RLock()

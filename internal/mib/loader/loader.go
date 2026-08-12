@@ -261,7 +261,10 @@ func (l *Loader) clearModule(moduleName string) error {
 
 	staleOIDs := 0
 	for _, oid := range moduleOIDs {
-		if err := l.storage.DeleteOID(oid.OID); err != nil {
+		// By record rather than by OID: an object with no numeric identifier is
+		// stored under module and name, and deleting it by its empty OID
+		// removes nothing at all.
+		if err := l.storage.DeleteObject(oid); err != nil {
 			staleOIDs++
 		}
 	}
