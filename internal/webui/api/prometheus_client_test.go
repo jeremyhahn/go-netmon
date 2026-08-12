@@ -150,12 +150,38 @@ func TestPrometheusQueryLabelValues(t *testing.T) {
 		t.Errorf("params = %q, want the matcher", stub.lastParams)
 	}
 
-	// With no matchers the endpoint is asked for everything.
+	// Every lookup is windowed. Without start and end the label API answers
+	// across the whole retention period, so a metric that stopped being
+	// collected hours ago still reads as present -- which had the dashboard
+	// offering panels for objects a device no longer reports.
+	for _, bound := range []string{"start=", "end="} {
+		if !strings.Contains(stub.lastParams, bound) {
+			t.Errorf("params = %q, want a %s bound", stub.lastParams, bound)
+		}
+	}
+
+	// With no matchers the endpoint is asked about every series, still within
+	// the window.
 	if _, err := client.QueryLabelValues(context.Background(), "ifindex", nil); err != nil {
 		t.Fatalf("QueryLabelValues with no matchers: %v", err)
 	}
-	if stub.lastParams != "" {
-		t.Errorf("params = %q, want none when no matchers were given", stub.lastParams)
+	if strings.Contains(stub.lastParams, "match") {
+		t.Errorf("params = %q, want no matcher when none was given", stub.lastParams)
+	}
+	if !strings.Contains(stub.lastParams, "start=") {
+		t.Errorf("params = %q, want the window even with no matchers", stub.lastParams)
+	}
+}
+
+// TestLabelValueWindowOutlastsASlowPoll guards the bound itself. A device polled
+// every five minutes must not read as absent between polls, so the window has to
+// be comfortably longer than the slowest interval anyone would configure.
+func TestLabelValueWindowOutlastsASlowPoll(t *testing.T) {
+	const slowestSensiblePoll = 5 * time.Minute
+
+	if LabelValueWindow <= slowestSensiblePoll {
+		t.Errorf("LabelValueWindow is %v, which a device polled every %v could fall out of",
+			LabelValueWindow, slowestSensiblePoll)
 	}
 }
 

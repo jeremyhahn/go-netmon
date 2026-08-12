@@ -147,23 +147,37 @@ func TestChartMetricNames(t *testing.T) {
 	}
 }
 
-func TestGetAvailableMetrics(t *testing.T) {
-	s := dashboardServer(t)
-
-	metrics, err := s.getAvailableMetrics()
-	if err != nil {
-		t.Fatalf("getAvailableMetrics: %v", err)
-	}
-	if !metrics["snmp_ifinoctets"] {
-		t.Errorf("metrics = %v, want the name Prometheus reported", metrics)
-	}
-}
-
-func TestGetAvailableMetricsReportsAFailingPrometheus(t *testing.T) {
+// TestTheGeneratorAsksAboutThisDeviceOnly is the contract behind every panel.
+//
+// A panel is offered only for a metric the device reports. The question used to
+// be asked fleet-wide, so a metric any device produced offered a panel on every
+// device: 75 of core-01's 408 panels named a metric it does not produce, and
+// narrowing a MIB left its panels behind because the name lingers in the label
+// index after the series goes stale.
+func TestTheGeneratorAsksAboutThisDeviceOnly(t *testing.T) {
 	s := newTestServer(t)
-	s.promClient = (&promStub{body: `{"status":"error","error":"boom"}`}).start(t)
+	s.mibStoragePath = filepath.Join(t.TempDir(), "mib-storage")
+	stub := &promStub{body: `{"status":"success","data":["snmp_ifinoctets"]}`}
+	s.promClient = stub.start(t)
 
-	if _, err := s.getAvailableMetrics(); err == nil {
-		t.Error("getAvailableMetrics reported success against a failing Prometheus")
+	ctx := context.Background()
+	device := storeDevice(t, s, "core-01", "192.0.2.1")
+	mib := &storage.MIB{Name: "IF-MIB", FilePath: "/mibs/IF-MIB.mib"}
+	if err := s.storage.CreateMIB(ctx, mib); err != nil {
+		t.Fatalf("CreateMIB: %v", err)
+	}
+	if err := s.storage.AssignMIBToDevice(ctx, device, mib.ID); err != nil {
+		t.Fatalf("AssignMIBToDevice: %v", err)
+	}
+
+	rec := do(t, s, http.MethodGet, "/api/devices/"+itoa(device)+"/dashboard", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+
+	// The device has to be in what was asked of Prometheus. Without it the
+	// answer describes the fleet, and the panels describe no device at all.
+	if !strings.Contains(stub.lastParams, "core-01") {
+		t.Errorf("Prometheus was asked %q, which does not name the device", stub.lastParams)
 	}
 }

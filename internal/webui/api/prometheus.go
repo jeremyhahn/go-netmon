@@ -168,6 +168,18 @@ func (p *PrometheusClient) QueryRange(ctx context.Context, query string, start, 
 	return results, nil
 }
 
+// LabelValueWindow is how far back a label lookup looks.
+//
+// Without a window the label API answers across the whole retention period, so
+// a metric that stopped being collected hours ago is still reported as present.
+// That made the dashboard offer panels for objects a device no longer reports:
+// narrowing a MIB left 42 of core-01's panels naming metrics with no live
+// series, promising data that could never arrive.
+//
+// It has to be comfortably longer than the slowest poll interval, or a device
+// polled every five minutes would look as though it had stopped.
+const LabelValueWindow = 30 * time.Minute
+
 // QueryLabelValues queries Prometheus for unique values of a label
 // Optionally filtered by label matchers
 func (p *PrometheusClient) QueryLabelValues(ctx context.Context, labelName string, matchers map[string]string) ([]string, error) {
@@ -176,6 +188,12 @@ func (p *PrometheusClient) QueryLabelValues(ctx context.Context, labelName strin
 
 	// Build match[] parameters for filtering by matchers
 	params := url.Values{}
+
+	// Only what is being reported now, not everything ever reported.
+	now := time.Now()
+	params.Add("start", strconv.FormatInt(now.Add(-LabelValueWindow).Unix(), 10))
+	params.Add("end", strconv.FormatInt(now.Unix(), 10))
+
 	if len(matchers) > 0 {
 		// Build PromQL selector: {device="core-01"}
 		matchParts := make([]string, 0, len(matchers))
@@ -186,10 +204,7 @@ func (p *PrometheusClient) QueryLabelValues(ctx context.Context, labelName strin
 		params.Add("match[]", selector)
 	}
 
-	queryURL := u
-	if len(params) > 0 {
-		queryURL += "?" + params.Encode()
-	}
+	queryURL := u + "?" + params.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", queryURL, http.NoBody)
 	if err != nil {

@@ -129,13 +129,17 @@ func (s *Server) generateDashboard(deviceName string, mibNames []string, title s
 
 	charts := []map[string]interface{}{}
 
-	// Get all available metric names from Prometheus once
-	availableMetrics, err := s.getAvailableMetrics()
-	if err != nil {
-		log.Printf("Warning: failed to get available metrics: %v", err)
-		availableMetrics = make(map[string]bool) // Empty set - will filter everything
-	}
-	log.Printf("INFO: Found %d available metrics in Prometheus", len(availableMetrics))
+	// The metric names Prometheus holds *for this device*.
+	//
+	// This used to ask the fleet-wide question, so a panel was offered whenever
+	// any device reported that metric: 75 of core-01's 408 panels named a
+	// metric it does not produce, promising data that could never arrive. The
+	// name also survives in the label index after a series goes stale, so
+	// narrowing a MIB left its panels behind for as long as the names lingered.
+	availableMetrics := s.prometheusMetricNames(context.Background(),
+		map[string]string{promname.DeviceLabel: deviceName})
+	log.Printf("INFO: %s reports %d distinct metrics in Prometheus",
+		deviceName, len(availableMetrics))
 
 	// Generate charts for each MIB
 	coverage := make([]MIBCoverage, 0, len(mibNames))
@@ -277,25 +281,4 @@ func coverageWarnings(coverage []MIBCoverage) []string {
 		}
 	}
 	return warnings
-}
-
-// getAvailableMetrics fetches all metric names from Prometheus
-func (s *Server) getAvailableMetrics() (map[string]bool, error) {
-	ctx := context.Background()
-
-	// Query Prometheus for all metric names
-	// We'll use the label API to get __name__ values
-	labelValues, err := s.promClient.QueryLabelValues(ctx, "__name__", nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query metric names: %w", err)
-	}
-
-	// Convert to map for fast lookup
-	// Include ALL metrics - we'll filter _info metrics differently when building charts
-	metrics := make(map[string]bool, len(labelValues))
-	for _, name := range labelValues {
-		metrics[name] = true
-	}
-
-	return metrics, nil
 }
