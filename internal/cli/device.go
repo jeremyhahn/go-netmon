@@ -756,8 +756,15 @@ func newDeviceMIBCommand(env *Env) *cobra.Command {
 			RunE: func(_ *cobra.Command, args []string) error {
 				return env.runBulk(deviceMIBOp("Assigned", func(
 					ctx context.Context, api *client.Client, deviceID, mibID int64,
-				) error {
-					return api.AssignMIBToDevice(ctx, deviceID, mibID)
+				) (string, error) {
+					// A module can be assigned successfully and still produce
+					// nothing, so the assignment's own warning is reported
+					// rather than left for an empty dashboard to imply.
+					assignment, err := api.AssignMIBToDevice(ctx, deviceID, mibID)
+					if err != nil {
+						return "", err
+					}
+					return assignment.Warning, nil
 				}), args[0], args[1:])
 			},
 		},
@@ -768,11 +775,11 @@ func newDeviceMIBCommand(env *Env) *cobra.Command {
 			Args:              cobra.MinimumNArgs(2),
 			ValidArgsFunction: env.completeNamesRepeating(deviceNames, mibNames),
 			RunE: func(_ *cobra.Command, args []string) error {
-				return env.runBulk(deviceMIBOp("Removed", func(
+				return env.runBulk(deviceMIBOp("Removed", silent(func(
 					ctx context.Context, api *client.Client, deviceID, mibID int64,
 				) error {
 					return api.RemoveMIBFromDevice(ctx, deviceID, mibID)
-				}), args[0], args[1:])
+				})), args[0], args[1:])
 			},
 		},
 	)
@@ -843,7 +850,7 @@ type deviceMIBsReport struct {
 // deviceMIBOp describes attaching or detaching a device's MIBs.
 func deviceMIBOp(
 	verb string,
-	apply func(context.Context, *client.Client, int64, int64) error,
+	apply func(context.Context, *client.Client, int64, int64) (string, error),
 ) bulkOp {
 	return bulkOp{
 		kind:          "mib",
@@ -870,11 +877,11 @@ func newDeviceProfileCommand(env *Env) *cobra.Command {
 			Args:              cobra.MinimumNArgs(2),
 			ValidArgsFunction: env.completeNamesRepeating(deviceNames, profileNames),
 			RunE: func(_ *cobra.Command, args []string) error {
-				return env.runBulk(deviceProfileOp("Assigned", func(
+				return env.runBulk(deviceProfileOp("Assigned", silent(func(
 					ctx context.Context, api *client.Client, deviceID, profileID int64,
 				) error {
 					return api.AssignProfileToDevice(ctx, deviceID, profileID)
-				}), args[0], args[1:])
+				})), args[0], args[1:])
 			},
 		},
 		&cobra.Command{
@@ -884,11 +891,11 @@ func newDeviceProfileCommand(env *Env) *cobra.Command {
 			Args:              cobra.MinimumNArgs(2),
 			ValidArgsFunction: env.completeNamesRepeating(deviceNames, profileNames),
 			RunE: func(_ *cobra.Command, args []string) error {
-				return env.runBulk(deviceProfileOp("Removed", func(
+				return env.runBulk(deviceProfileOp("Removed", silent(func(
 					ctx context.Context, api *client.Client, deviceID, profileID int64,
 				) error {
 					return api.RemoveProfileFromDevice(ctx, deviceID, profileID)
-				}), args[0], args[1:])
+				})), args[0], args[1:])
 			},
 		},
 	)
@@ -941,7 +948,7 @@ func newDeviceProfileListCommand(env *Env) *cobra.Command {
 // deviceProfileOp describes attaching or detaching a device's profiles.
 func deviceProfileOp(
 	verb string,
-	apply func(context.Context, *client.Client, int64, int64) error,
+	apply func(context.Context, *client.Client, int64, int64) (string, error),
 ) bulkOp {
 	return bulkOp{
 		kind:          "profile",

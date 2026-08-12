@@ -259,7 +259,72 @@ func (s *Server) handleAssignMIBToDevice(w http.ResponseWriter, r *http.Request)
 
 	s.syncDeviceWithPoller(r.Context(), deviceID, "MIB assignment")
 
-	w.WriteHeader(http.StatusNoContent)
+	respondJSON(w, http.StatusOK, s.describeAssignment(r.Context(), deviceID, req.MibID))
+}
+
+// MIBAssignmentResult is what an assignment will produce, reported back to whoever
+// made it.
+//
+// The assignment used to answer 204, which is honest about the storage write
+// and silent about the outcome. A module can be assigned successfully and yield
+// nothing — ATEN-PRODUCTS-MIB is six OBJECT IDENTIFIER registrations, so the
+// only symptom was an empty dashboard some minutes later, with no way to tell a
+// module that produces nothing from one that has not been polled yet.
+type MIBAssignmentResult struct {
+	MIB    string `json:"mib"`
+	Device string `json:"device"`
+
+	// Objects, Pollable and Unresolved describe the module as stored.
+	Objects    int `json:"objects"`
+	Pollable   int `json:"pollable"`
+	Unresolved int `json:"unresolved"`
+
+	// Series is what the cost estimator expects the assignment to add.
+	Series int `json:"series"`
+
+	// Warning is empty when the module will produce data.
+	Warning string `json:"warning,omitempty"`
+}
+
+// describeAssignment reports what was just assigned.
+//
+// It runs after the write, so nothing here can fail the assignment: the MIB is
+// attached whether or not it can be described, and a description that cannot be
+// produced leaves the counts at zero rather than reporting a bogus warning.
+func (s *Server) describeAssignment(ctx context.Context, deviceID, mibID int64) MIBAssignmentResult {
+	assignment := MIBAssignmentResult{}
+
+	device, err := s.storage.GetDevice(ctx, deviceID)
+	if err != nil || device == nil {
+		return assignment
+	}
+	assignment.Device = device.Name
+
+	stored, err := s.storage.GetMIB(ctx, mibID)
+	if err != nil || stored == nil {
+		return assignment
+	}
+	assignment.MIB = stored.Name
+
+	// One read of the module serves both the pollability check and the cost
+	// estimate; estimateObjectSeries exists for exactly this.
+	objects, err := s.moduleOIDs(stored.Name)
+	if err != nil {
+		log.Printf("Cannot describe assignment of %s to %s: %v", stored.Name, device.Name, err)
+		return assignment
+	}
+
+	pollability := assessPollability(stored.Name, objects)
+	assignment.Objects = pollability.Objects
+	assignment.Pollable = pollability.Pollable
+	assignment.Unresolved = pollability.Unresolved
+	assignment.Warning = pollability.Warning
+
+	if estimate := s.estimateObjectSeries(ctx, device.Name, stored.Name, objects); estimate != nil {
+		assignment.Series = estimate.Series
+	}
+
+	return assignment
 }
 
 // handleRemoveMIBFromDevice removes a MIB from a device

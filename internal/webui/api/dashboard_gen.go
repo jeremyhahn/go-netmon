@@ -138,10 +138,17 @@ func (s *Server) generateDashboard(deviceName string, mibNames []string, title s
 	log.Printf("INFO: Found %d available metrics in Prometheus", len(availableMetrics))
 
 	// Generate charts for each MIB
+	coverage := make([]MIBCoverage, 0, len(mibNames))
 	for _, mibName := range mibNames {
+		// What this MIB contributed, so a dashboard that comes back with fewer
+		// panels than expected says which module fell short and why.
+		reached := MIBCoverage{MIB: mibName}
+
 		// Load the module
 		if _, err := p.LoadModule(mibName); err != nil {
 			log.Printf("Warning: failed to load MIB %s: %v", mibName, err)
+			reached.Note = fmt.Sprintf("%s could not be loaded: %v", mibName, err)
+			coverage = append(coverage, reached)
 			continue
 		}
 
@@ -149,6 +156,8 @@ func (s *Server) generateDashboard(deviceName string, mibNames []string, title s
 		oids, err := p.ParseModule(mibName)
 		if err != nil {
 			log.Printf("Warning: failed to parse MIB %s: %v", mibName, err)
+			reached.Note = fmt.Sprintf("%s could not be parsed: %v", mibName, err)
+			coverage = append(coverage, reached)
 			continue
 		}
 
@@ -157,6 +166,7 @@ func (s *Server) generateDashboard(deviceName string, mibNames []string, title s
 			if !oid.Pollable {
 				continue
 			}
+			reached.Pollable++
 
 			// Determine chart type based on OID type
 			chartType := "line"
@@ -195,16 +205,78 @@ func (s *Server) generateDashboard(deviceName string, mibNames []string, title s
 			}
 
 			charts = append(charts, chart)
+			reached.Charts++
 		}
+
+		reached.Note = coverageNote(reached)
+		coverage = append(coverage, reached)
 	}
 
 	dashboard := map[string]interface{}{
-		"device": deviceName,
-		"title":  title,
-		"charts": charts,
+		"device":   deviceName,
+		"title":    title,
+		"charts":   charts,
+		"mibs":     coverage,
+		"warnings": coverageWarnings(coverage),
 	}
 
 	return dashboard, nil
+}
+
+// MIBCoverage says what one of a device's MIBs contributed to its dashboard.
+//
+// A panel appears only for an object that Prometheus already holds data for, so
+// a freshly assigned MIB contributes nothing until the poller has run once. That
+// looks identical to a MIB that will never contribute anything, and both looked
+// identical to a bug. These counts separate the three.
+type MIBCoverage struct {
+	MIB string `json:"mib"`
+	// Pollable is how many of the module's objects the poller would ask for.
+	Pollable int `json:"pollable"`
+	// Charts is how many of them became a panel, which requires the metric to
+	// already exist in Prometheus.
+	Charts int `json:"charts"`
+	// Note explains a shortfall, and is empty when there is none.
+	Note string `json:"note,omitempty"`
+}
+
+// coverageNote explains why a MIB contributed fewer panels than its objects.
+func coverageNote(c MIBCoverage) string {
+	switch {
+	case c.Pollable == 0:
+		return fmt.Sprintf(
+			"%s has no pollable objects, so it will never add a panel. It is most "+
+				"likely a registry of identifiers, or a module whose IMPORTS did not "+
+				"resolve.", c.MIB)
+
+	case c.Charts == 0:
+		return fmt.Sprintf(
+			"%s has %d pollable objects but none of them have reached Prometheus yet, "+
+				"so it adds no panels. A panel appears once the device has been polled "+
+				"and answered — wait one poll interval and generate again. If it stays "+
+				"empty, the device is not answering those OIDs.",
+			c.MIB, c.Pollable)
+
+	case c.Charts < c.Pollable:
+		return fmt.Sprintf(
+			"%s contributed %d panels of %d pollable objects; the rest have no data in "+
+				"Prometheus, either not yet polled or not answered by the device.",
+			c.MIB, c.Charts, c.Pollable)
+
+	default:
+		return ""
+	}
+}
+
+// coverageWarnings is every note worth showing, in the order the MIBs were read.
+func coverageWarnings(coverage []MIBCoverage) []string {
+	warnings := []string{}
+	for _, c := range coverage {
+		if c.Note != "" {
+			warnings = append(warnings, c.Note)
+		}
+	}
+	return warnings
 }
 
 // getAvailableMetrics fetches all metric names from Prometheus

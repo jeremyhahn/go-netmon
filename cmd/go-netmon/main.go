@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib/loader"
 	"github.com/jeremyhahn/go-netmon/internal/mib/storage"
 	"github.com/jeremyhahn/go-netmon/internal/poller"
+	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
 const version = "0.1.0"
@@ -413,12 +414,23 @@ func processPollResults(ctx context.Context, poll *poller.Poller, statusTracker 
 				duration := time.Since(result.Timestamp).Seconds()
 				pollDuration.WithLabelValues(result.DeviceName).Observe(duration)
 
-				log.Printf("Poll successful for device %s: %d results in %.2fs",
-					result.DeviceName, len(result.Results), duration)
+				// Answered varbinds, not returned varbinds. A device answers
+				// every OID it was asked about, including the ones it does not
+				// implement, and those come back as NoSuchObject. Reporting the
+				// raw count told an operator a KVM had collected 79 metrics
+				// when it had produced 41 series.
+				collected := snmp.CountValues(result.Results)
+				if collected == len(result.Results) {
+					log.Printf("Poll successful for device %s: %d results in %.2fs",
+						result.DeviceName, collected, duration)
+				} else {
+					log.Printf("Poll successful for device %s: %d of %d OIDs answered with a value in %.2fs",
+						result.DeviceName, collected, len(result.Results), duration)
+				}
 
 				// Update status tracker with success
 				if statusTracker != nil {
-					statusTracker.UpdatePollSuccess(result.DeviceName, len(result.Results))
+					statusTracker.UpdatePollSuccess(result.DeviceName, collected)
 				}
 
 				// Note: metric export success/failure is tracked by the

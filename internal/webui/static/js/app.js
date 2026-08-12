@@ -2692,7 +2692,20 @@ class MonitoringApp {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            this.showNotification('MIB assigned successfully', 'success');
+            // The assignment reports what it will produce. A module can be
+            // assigned successfully and yield nothing — a registry of OBJECT
+            // IDENTIFIERs, or one whose IMPORTS did not resolve — and the only
+            // symptom used to be an empty dashboard minutes later.
+            const assignment = await response.json().catch(() => null);
+            if (assignment?.warning) {
+                this.showNotification(assignment.warning, 'warning', 12000);
+            } else if (assignment?.series > 0) {
+                this.showNotification(
+                    `MIB assigned: about ${assignment.series.toLocaleString()} series from ` +
+                    `${assignment.pollable.toLocaleString()} pollable objects`, 'success');
+            } else {
+                this.showNotification('MIB assigned successfully', 'success');
+            }
             await this.loadDeviceMIBs(deviceId);
             
             // If this device is currently displayed in dashboard, reload dashboard tabs
@@ -4856,6 +4869,19 @@ class MonitoringApp {
     // Dashboard Generation
     // ========================================
 
+    // generateDeviceDashboard opens a device's dashboard and reports what its
+    // MIBs will contribute.
+    //
+    // This used to render the generated configuration itself, into a
+    // ".metrics-grid" the dashboard redesign removed. The first statement of that
+    // renderer therefore threw on a null element, every time — after the view had
+    // already switched. The symptom was exactly what it looked like: the button
+    // takes you to the dashboard and the device's MIBs are not there.
+    //
+    // Rendering now goes through the device selector, like openFleetDevice, so
+    // the one place that knows how to build a device dashboard stays the only
+    // place that does it. What this endpoint uniquely offers is the diagnosis:
+    // which MIBs contributed panels, and why the others did not.
     async generateDeviceDashboard(deviceId) {
         try {
             this.showNotification('Generating dashboard...', 'success');
@@ -4872,99 +4898,24 @@ class MonitoringApp {
             const dashboardConfig = await response.json();
             console.log('Dashboard config:', dashboardConfig);
 
-            // Store the dashboard config and switch to dashboard view
-            this.currentDashboard = dashboardConfig;
-            this.showDeviceDashboard(dashboardConfig);
+            this.switchView('dashboard');
+            this.openFleetDevice(deviceId);
 
-            this.showNotification('Dashboard generated successfully!', 'success');
+            // A panel exists only for an object Prometheus already holds data
+            // for, so a MIB assigned a moment ago contributes nothing until the
+            // device has been polled and answered. Saying which case applies is
+            // the difference between "wait a minute" and "this will never work".
+            const warnings = dashboardConfig.warnings || [];
+            if (warnings.length > 0) {
+                warnings.forEach(warning => this.showNotification(warning, 'warning', 15000));
+            } else {
+                const count = (dashboardConfig.charts || []).length;
+                this.showNotification(`Dashboard generated: ${count} panels`, 'success');
+            }
         } catch (error) {
             console.error('Error generating dashboard:', error);
             this.showNotification(`Failed to generate dashboard: ${error.message}`, 'error');
         }
-    }
-
-    showDeviceDashboard(config) {
-        // Switch to dashboard view
-        this.switchView('dashboard');
-
-        // Clear existing charts
-        const metricsGrid = document.querySelector('#dashboardView .metrics-grid');
-        metricsGrid.innerHTML = '';
-
-        // Update dashboard title
-        const titleElement = document.querySelector('#dashboardView h2');
-        if (titleElement) {
-            titleElement.textContent = config.title || `${config.device} Dashboard`;
-        }
-
-        // Create charts for each metric
-        config.charts.forEach((chartConfig, index) => {
-            const container = document.createElement('div');
-            container.className = 'chart-container';
-
-            const title = document.createElement('h3');
-            title.textContent = chartConfig.title;
-            title.title = chartConfig.description || '';
-
-            const chartDiv = document.createElement('div');
-            chartDiv.id = `chart_${chartConfig.id}`;
-            chartDiv.className = 'chart';
-
-            container.appendChild(title);
-            container.appendChild(chartDiv);
-            metricsGrid.appendChild(container);
-
-            // Initialize the chart
-            const chart = echarts.init(chartDiv, 'dark');
-            this.charts[chartConfig.id] = chart;
-
-            if (chartConfig.type === 'line') {
-                chart.setOption({
-                    tooltip: { trigger: 'axis' },
-                    xAxis: {
-                        type: 'time',
-                        boundaryGap: false
-                    },
-                    yAxis: {
-                        name: chartConfig.unit || ''
-                    },
-                    series: [{
-                        name: chartConfig.title,
-                        type: 'line',
-                        data: [],
-                        smooth: true
-                    }]
-                });
-
-                // Load historical data
-                if (chartConfig.metric) {
-                    this.loadChartData(chartConfig.metric, chart, '6h');
-
-                    // Subscribe to WebSocket updates for real-time data
-                    if (this.ws) {
-                        this.ws.send(JSON.stringify({
-                            type: 'subscribe',
-                            metric: chartConfig.metric
-                        }));
-                    }
-                }
-            } else if (chartConfig.type === 'text') {
-                // For text values, show as a stat card
-                chart.setOption({
-                    title: {
-                        text: '-',
-                        textStyle: { fontSize: 32 },
-                        left: 'center',
-                        top: 'middle'
-                    }
-                });
-            }
-        });
-
-        // Resize charts when window resizes
-        window.addEventListener('resize', () => {
-            Object.values(this.charts).forEach(chart => chart.resize());
-        });
     }
 
     async loadChartData(metric, chart, timeRange = '6h') {
@@ -5017,37 +4968,8 @@ class MonitoringApp {
         const time = new Date(timestamp * 1000);
         console.log('Active subscriptions count:', this.activeSubscriptions.size);
 
-        // Handle old dashboard format (from generateDeviceDashboard)
-        if (this.currentDashboard && this.currentDashboard.charts) {
-            this.currentDashboard.charts.forEach(chartConfig => {
-                if (chartConfig.metric && query.includes(chartConfig.metric)) {
-                    const chart = this.charts[chartConfig.id];
-                    if (!chart) return;
-
-                    metrics.forEach(m => {
-                        // Append new data point to the chart
-                        const option = chart.getOption();
-                        if (option.series && option.series[0]) {
-                            const data = option.series[0].data || [];
-                            data.push([time, m.value]);
-
-                            // Keep only last 1000 points for performance
-                            if (data.length > 1000) {
-                                data.shift();
-                            }
-
-                            chart.setOption({
-                                series: [{
-                                    data: data
-                                }]
-                            });
-                        }
-                    });
-                }
-            });
-        }
-
-        // Handle new dashboard format (lazy-loaded charts with WebSocket subscriptions)
+        // Live updates go to the subscribed charts. The branch that used to sit
+        // here fed the charts showDeviceDashboard built, which no longer exist.
         // Iterate through all active subscriptions and update matching elements
         this.activeSubscriptions.forEach((subscriptionData, dashboardKey) => {
             const { metricQueries, statusQueries, objects } = subscriptionData;
@@ -8130,7 +8052,11 @@ class MonitoringApp {
     // UI Helpers
     // ========================================
 
-    showNotification(message, type = 'success') {
+    // showNotification shows a transient message. holdMs is how long it stays;
+    // the default suits a few words, and a message that explains something —
+    // why a MIB will produce no metrics, say — needs longer than a reader takes
+    // to notice it appeared.
+    showNotification(message, type = 'success', holdMs = 3000) {
         const container = document.getElementById('notificationContainer');
         const notification = document.createElement('div');
         notification.className = `notification ${type}`;
@@ -8140,10 +8066,8 @@ class MonitoringApp {
 
         setTimeout(() => {
             notification.style.opacity = '0';
-            setTimeout(() => {
-                container.removeChild(notification);
-            }, 300);
-        }, 3000);
+            setTimeout(() => notification.remove(), 300);
+        }, holdMs);
     }
 
     async confirm(message) {

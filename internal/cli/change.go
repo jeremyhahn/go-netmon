@@ -16,6 +16,12 @@ type changeReport struct {
 	Kind   string `json:"kind"`
 	Ref    string `json:"ref"`
 	ID     int64  `json:"id,omitempty"`
+
+	// Note is what the operator needs to know about a change that succeeded
+	// without doing what they expected — a MIB assigned to a device that has no
+	// pollable objects, and so will never produce a metric. Empty when the
+	// change speaks for itself.
+	Note string `json:"note,omitempty"`
 }
 
 // ChangeError reports the reference an operation failed on. A command applies a
@@ -62,7 +68,23 @@ type bulkOp struct {
 
 	resolveOwner  resolver
 	resolveTarget resolver
-	apply         func(context.Context, *client.Client, int64, int64) error
+
+	// apply performs the operation for one owner/target pair. Its string is a
+	// note about the outcome, empty for the ordinary case: an operation that
+	// succeeded but did not achieve what the operator was after has to be able
+	// to say so, and returning only an error cannot express that.
+	apply func(context.Context, *client.Client, int64, int64) (string, error)
+}
+
+// silent lifts an operation with nothing to report into apply's shape. Most
+// attach and detach operations are like this: they either work or they fail, and
+// there is nothing to add beyond the verb already printed.
+func silent(
+	op func(context.Context, *client.Client, int64, int64) error,
+) func(context.Context, *client.Client, int64, int64) (string, error) {
+	return func(ctx context.Context, api *client.Client, ownerID, targetID int64) (string, error) {
+		return "", op(ctx, api, ownerID, targetID)
+	}
 }
 
 // runBulk resolves an owner and a list of references and applies the operation
@@ -91,15 +113,19 @@ func (e *Env) runBulk(op bulkOp, ownerRef string, refs []string) error {
 		if resolveErr != nil {
 			return resolveErr
 		}
-		if applyErr := op.apply(ctx, api, ownerID, id); applyErr != nil {
+		note, applyErr := op.apply(ctx, api, ownerID, id)
+		if applyErr != nil {
 			return &ChangeError{Ref: ref, Err: applyErr}
 		}
 
 		changes = append(changes, changeReport{
-			Action: strings.ToLower(op.verb), Kind: op.kind, Ref: ref, ID: id,
+			Action: strings.ToLower(op.verb), Kind: op.kind, Ref: ref, ID: id, Note: note,
 		})
 		if !e.Opts.JSON {
 			fmt.Fprintf(e.Out, "%s %s\n", op.verb, ref)
+			if note != "" {
+				fmt.Fprintf(e.Out, "  warning: %s\n", note)
+			}
 		}
 	}
 

@@ -46,7 +46,8 @@ func TestEndpoints(t *testing.T) {
 		},
 		{
 			name: "AssignMIBToDevice", wantMethod: "POST", wantPath: "/api/devices/1/mibs",
-			call: func(c *Client) error { return c.AssignMIBToDevice(ctx, 1, 2) },
+			body: `{"mib":"IF-MIB","device":"bastion","objects":10,"pollable":8,"series":40}`,
+			call: func(c *Client) error { _, err := c.AssignMIBToDevice(ctx, 1, 2); return err },
 		},
 		{
 			name: "RemoveMIBFromDevice", wantMethod: "DELETE", wantPath: "/api/devices/1/mibs/2",
@@ -226,7 +227,7 @@ func TestRequestBodiesAreWellFormed(t *testing.T) {
 	}{
 		{
 			name: "AssignMIBToDevice sends mib_id",
-			call: func(c *Client) error { return c.AssignMIBToDevice(ctx, 1, 42) },
+			call: func(c *Client) error { _, err := c.AssignMIBToDevice(ctx, 1, 42); return err },
 			want: map[string]any{"mib_id": float64(42)},
 		},
 		{
@@ -250,9 +251,12 @@ func TestRequestBodiesAreWellFormed(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var got map[string]any
 
+			// This test is about what the client sends, so the reply says
+			// nothing at all: 204 short-circuits decoding, and a stub body
+			// would otherwise have to match each method's response shape.
 			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 				json.NewDecoder(r.Body).Decode(&got)
-				w.Write([]byte(`[]`))
+				w.WriteHeader(http.StatusNoContent)
 			})
 
 			if err := tt.call(c); err != nil {

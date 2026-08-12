@@ -277,10 +277,33 @@ func (c *Client) DeviceMIBs(ctx context.Context, id int64) (*DeviceMIBs, error) 
 	return &mibs, nil
 }
 
-// AssignMIBToDevice attaches a MIB directly to a device.
-func (c *Client) AssignMIBToDevice(ctx context.Context, deviceID, mibID int64) error {
+// MIBAssignmentResult is what assigning a MIB to a device will produce. A module can
+// be attached successfully and yield nothing — a registry of OBJECT IDENTIFIERs,
+// or one whose IMPORTS did not resolve — and Warning is how the server says so.
+type MIBAssignmentResult struct {
+	MIB    string `json:"mib"`
+	Device string `json:"device"`
+
+	Objects    int `json:"objects"`
+	Pollable   int `json:"pollable"`
+	Unresolved int `json:"unresolved"`
+	Series     int `json:"series"`
+
+	Warning string `json:"warning,omitempty"`
+}
+
+// AssignMIBToDevice attaches a MIB directly to a device and reports what the
+// assignment will produce.
+func (c *Client) AssignMIBToDevice(
+	ctx context.Context, deviceID, mibID int64,
+) (*MIBAssignmentResult, error) {
 	body := map[string]int64{"mib_id": mibID}
-	return c.do(ctx, http.MethodPost, "/api/devices/"+itoa(deviceID)+"/mibs", body, nil)
+	var assignment MIBAssignmentResult
+	if err := c.do(ctx, http.MethodPost,
+		"/api/devices/"+itoa(deviceID)+"/mibs", body, &assignment); err != nil {
+		return nil, err
+	}
+	return &assignment, nil
 }
 
 // RemoveMIBFromDevice detaches a directly assigned MIB.

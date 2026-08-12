@@ -75,6 +75,39 @@ func (r *Result) TypeString() string {
 	}
 }
 
+// HasValue reports whether the agent answered this OID with a value.
+//
+// An SNMP response carries one varbind per OID whether or not the agent has
+// that object, and the ones it does not have come back as NoSuchObject,
+// NoSuchInstance or EndOfMibView — a well-formed answer whose content is "not
+// here". Counting those as readings is how a device that implements almost
+// nothing reported 79 metrics collected while producing 41 series: the ATEN KVM
+// advertises IP, TCP and UDP in its sysORTable and answers NoSuchObject for
+// every counter in them.
+//
+// This is what the poller counts and what the exporter's own decision follows
+// from, so the number an operator reads and the number of series in Prometheus
+// describe the same thing.
+func (r *Result) HasValue() bool {
+	switch r.Type {
+	case gosnmp.NoSuchObject, gosnmp.NoSuchInstance, gosnmp.EndOfMibView, gosnmp.Null:
+		return false
+	default:
+		return r.Value != nil
+	}
+}
+
+// CountValues reports how many results in a set carry a value.
+func CountValues(results []*Result) int {
+	n := 0
+	for _, r := range results {
+		if r != nil && r.HasValue() {
+			n++
+		}
+	}
+	return n
+}
+
 // IsCounter returns true if the result is a counter type
 func (r *Result) IsCounter() bool {
 	return r.Type == gosnmp.Counter32 || r.Type == gosnmp.Counter64

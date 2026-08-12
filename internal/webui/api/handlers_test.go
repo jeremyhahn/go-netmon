@@ -215,8 +215,25 @@ func TestDeviceMIBAssignmentSyncsThePoller(t *testing.T) {
 	}
 
 	rec := do(t, s, http.MethodPost, "/api/devices/"+itoa(device)+"/mibs", `{"mib_id":`+itoa(mib.ID)+`}`)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("assign status = %d, want 204 (body %q)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("assign status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+
+	// The assignment reports what it will produce, so a module that yields
+	// nothing can say so instead of leaving an empty dashboard to imply it.
+	var assigned MIBAssignmentResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &assigned); err != nil {
+		t.Fatalf("the assignment response is not a result: %v (body %q)", err, rec.Body.String())
+	}
+	if assigned.MIB != "IF-MIB" || assigned.Device != "bastion" {
+		t.Errorf("assignment = %+v, want the MIB and device it attached", assigned)
+	}
+	// This server has no MIB loader, so the module cannot be examined. That must
+	// leave the counts at zero rather than fabricate "this MIB produces nothing":
+	// a warning that appears whenever the loader is down would send an operator
+	// looking for a fault in a working module.
+	if assigned.Warning != "" {
+		t.Errorf("a module that could not be read was warned about: %s", assigned.Warning)
 	}
 
 	if got := poller.calls(&poller.updated); len(got) != 1 || got[0] != "bastion" {
@@ -267,8 +284,8 @@ func TestAStalledPollerCannotHoldARequestOpen(t *testing.T) {
 	rec := do(t, s, http.MethodPost, "/api/devices/"+itoa(device)+"/mibs", `{"mib_id":`+itoa(mib.ID)+`}`)
 	elapsed := time.Since(start)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204: a durable change is not undone by a silent poller", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a durable change is not undone by a silent poller", rec.Code)
 	}
 	if elapsed >= ServerWriteTimeout {
 		t.Fatalf("the request took %v, past ServerWriteTimeout (%v): the connection would be closed unanswered",

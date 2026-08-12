@@ -403,11 +403,11 @@ func newProfileMIBCommand(env *Env) *cobra.Command {
 			Args:              cobra.MinimumNArgs(2),
 			ValidArgsFunction: env.completeNamesRepeating(profileNames, mibNames),
 			RunE: func(_ *cobra.Command, args []string) error {
-				return env.runBulk(profileMIBOp("Added", func(
+				return env.runBulk(profileMIBOp("Added", silent(func(
 					ctx context.Context, api *client.Client, profileID, mibID int64,
 				) error {
 					return api.AddMIBToProfile(ctx, profileID, mibID)
-				}), args[0], args[1:])
+				})), args[0], args[1:])
 			},
 		},
 		&cobra.Command{
@@ -417,11 +417,11 @@ func newProfileMIBCommand(env *Env) *cobra.Command {
 			Args:              cobra.MinimumNArgs(2),
 			ValidArgsFunction: env.completeNamesRepeating(profileNames, mibNames),
 			RunE: func(_ *cobra.Command, args []string) error {
-				return env.runBulk(profileMIBOp("Removed", func(
+				return env.runBulk(profileMIBOp("Removed", silent(func(
 					ctx context.Context, api *client.Client, profileID, mibID int64,
 				) error {
 					return api.RemoveMIBFromProfile(ctx, profileID, mibID)
-				}), args[0], args[1:])
+				})), args[0], args[1:])
 			},
 		},
 	)
@@ -499,7 +499,7 @@ func renderProfileMIBTable(out io.Writer, page listPage[client.AssignedMIB], ind
 // profileMIBOp describes adding or removing a profile's MIBs.
 func profileMIBOp(
 	verb string,
-	apply func(context.Context, *client.Client, int64, int64) error,
+	apply func(context.Context, *client.Client, int64, int64) (string, error),
 ) bulkOp {
 	return bulkOp{
 		kind:          "mib",
