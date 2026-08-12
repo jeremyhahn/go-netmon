@@ -149,6 +149,9 @@ class MonitoringApp {
         // Track current selected device for re-subscription on reconnect
         this.currentDashboardDevice = null;
 
+        // Cards registered but not yet plotted; see initializeEmptyChart.
+        this.pendingCharts = new Map();
+
         // Widgets whose spec arrived without a metric name, so the failure is
         // logged once per widget instead of once per render. See specMetric().
         this.reportedMissingMetrics = new Set();
@@ -5097,10 +5100,9 @@ class MonitoringApp {
             } else {
                 // Update chart
                 const chartId = obj.chartId || `chart-${deviceId}-${mibName}-${obj.name}`;
-                console.log(`Looking for chart with ID: ${chartId}`);
-                console.log(`  Available charts (${Object.keys(this.charts).length}):`, Object.keys(this.charts));
-                console.log(`  Chart exists:`, !!this.charts[chartId]);
-                const chart = this.charts[chartId];
+                // Building on demand: a card off screen has no plot until a
+                // sample arrives for it or a reader scrolls to it.
+                const chart = this.chartFor(chartId);
 
                 if (chart) {
                     metrics.forEach(m => {
@@ -7525,10 +7527,7 @@ class MonitoringApp {
             const chartId = `chart-${deviceId}-${mibName}-${tableName}-${chart.name}`;
 
             // Reinitialize chart
-            const existingChart = this.charts[chartId];
-            if (existingChart) {
-                existingChart.dispose();
-            }
+            this.discardChart(chartId);
             this.initializeEmptyChart(chartId, chart.name);
 
             const metric = this.specMetric(chart, `${mibName}.${tableName}.${chart.name}`);
@@ -7676,12 +7675,7 @@ class MonitoringApp {
         this.instanceSelections[chartId] = selectedInstance;
 
         // Clear chart and reinitialize
-        const chart = this.charts[chartId];
-        if (chart) {
-            chart.dispose();
-        }
-
-        // Reinitialize chart
+        this.discardChart(chartId);
         this.initializeEmptyChart(chartId, obj.name);
 
         const metric = this.specMetric(obj, `${mibName}.${obj.name}`);
@@ -7900,6 +7894,17 @@ class MonitoringApp {
         });
     }
 
+    // initializeEmptyChart registers a chart card without building its plot.
+    //
+    // A device dashboard can hold hundreds of cards -- core-01 has 407 -- and
+    // building every plot up front created 271 live ECharts instances, each with
+    // its own canvas, resize listener and animation loop, for the eight or so a
+    // reader can actually see. Only 40 of them were subscribed to anything; the
+    // rest were empty plots waiting on data that never comes.
+    //
+    // The instance is now built on first need: when the card scrolls into view,
+    // or when a sample arrives for it, whichever happens first. Nothing is lost
+    // either way, and a dashboard nobody scrolls costs almost nothing.
     initializeEmptyChart(chartId, title) {
         const chartElement = document.getElementById(chartId);
         if (!chartElement) {
@@ -7907,12 +7912,78 @@ class MonitoringApp {
             return;
         }
 
-        console.log(`Initializing empty chart: ${chartId}`);
-
-        // The card starts collapsed, so the canvas has no height to measure
-        // yet. ECharts still needs a size at init; the real one is applied by
-        // revealChart() when the first sample arrives.
+        // The card starts collapsed; resetChartCard is what puts it in its
+        // waiting state, and that is DOM rather than a plot.
         this.resetChartCard(chartId);
+
+        this.pendingCharts.set(chartId, title);
+        this.chartViewport().observe(chartElement);
+
+        // The no-data deadline is about the card, not the plot, so it runs
+        // whether or not anything has been built yet.
+        setTimeout(() => {
+            this.checkChartDataTimeout(chartId);
+        }, FIRST_SAMPLE_TIMEOUT);
+    }
+
+    // discardChart drops a card's plot and any pending registration for it, so
+    // a rebuild starts from nothing. Disposing the instance alone would leave a
+    // registration behind that rebuilds the card the caller just replaced.
+    discardChart(chartId) {
+        const existing = this.charts[chartId];
+        if (existing) {
+            existing.dispose();
+            delete this.charts[chartId];
+        }
+        this.pendingCharts.delete(chartId);
+
+        const element = document.getElementById(chartId);
+        if (element && this._chartViewport) {
+            this._chartViewport.unobserve(element);
+        }
+    }
+
+    // chartViewport is the shared observer that builds a plot when its card
+    // first comes into view. One observer serves every card on the page.
+    chartViewport() {
+        if (!this._chartViewport) {
+            this._chartViewport = new IntersectionObserver(entries => {
+                for (const entry of entries) {
+                    if (entry.isIntersecting) {
+                        this.chartFor(entry.target.id);
+                    }
+                }
+            }, {
+                // Build a little before the card is reached, so scrolling does
+                // not expose an empty frame.
+                root: null, rootMargin: '400px 0px', threshold: 0,
+            });
+        }
+        return this._chartViewport;
+    }
+
+    // chartFor returns a card's plot, building it if this is the first need.
+    // It returns null for a card that was never registered.
+    chartFor(chartId) {
+        const existing = this.charts[chartId];
+        if (existing) return existing;
+
+        const title = this.pendingCharts.get(chartId);
+        if (title === undefined) return null;
+
+        this.pendingCharts.delete(chartId);
+        return this.buildChart(chartId, title);
+    }
+
+    // buildChart creates the ECharts instance for a registered card.
+    buildChart(chartId, title) {
+        const chartElement = document.getElementById(chartId);
+        if (!chartElement) {
+            console.warn(`Chart element not found: ${chartId}`);
+            return null;
+        }
+
+        this.chartViewport().unobserve(chartElement);
 
         const containerWidth = chartElement.offsetWidth || chartElement.parentElement?.offsetWidth || 800;
         const initOpts = { width: containerWidth, height: 300 };
@@ -7931,17 +8002,21 @@ class MonitoringApp {
         chart._initTimestamp = Date.now();
         chart._hasData = false;
         this.charts[chartId] = chart;
-
-        // Convert "Waiting for data…" to the terminal no-data state once the
-        // shared first-sample window has elapsed.
-        setTimeout(() => {
-            this.checkChartDataTimeout(chartId);
-        }, FIRST_SAMPLE_TIMEOUT);
+        return chart;
     }
 
     checkChartDataTimeout(chartId) {
         const chart = this.charts[chartId];
-        if (!chart || chart._hasData) return;
+        // A card with no plot has certainly received nothing: a sample would
+        // have built one. Without this it kept saying "Waiting for data…"
+        // forever, since the deadline only ever examined built plots.
+        if (!chart) {
+            if (this.pendingCharts.has(chartId)) {
+                this.markChartNoData(chartId);
+            }
+            return;
+        }
+        if (chart._hasData) return;
 
         // The card keeps its place in the grid: a MIB whose objects the device
         // does not populate should read as "nothing here", not disappear.
