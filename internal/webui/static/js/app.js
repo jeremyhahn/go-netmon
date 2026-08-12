@@ -1868,7 +1868,7 @@ class MonitoringApp {
         document.getElementById('deviceForm').reset();
         document.querySelector('#deviceForm input[name="id"]').value = '';
         // Enable name field for new devices
-        document.querySelector('#deviceForm input[name="name"]').disabled = false;
+        document.querySelector('#deviceForm input[name="name"]').readOnly = false;
         this.syncDeviceVersionFields();
         this.showModal('deviceModal');
     }
@@ -1897,8 +1897,13 @@ class MonitoringApp {
 
             this.syncDeviceVersionFields();
 
-            // Disable name field when editing (name is used as ID)
-            form.querySelector('input[name="name"]').disabled = true;
+            // readOnly, not disabled. A disabled input is omitted from
+            // FormData entirely, so the name came back null and every edit was
+            // refused with "name is required" — whatever field was being
+            // changed. readOnly stops it being edited and keeps it submitted,
+            // which is what was wanted: the name identifies the device and
+            // renaming here would be renaming the thing being edited.
+            form.querySelector('input[name="name"]').readOnly = true;
 
             this.showModal('deviceModal');
         } catch (error) {
@@ -1966,7 +1971,12 @@ class MonitoringApp {
         }
 
         if (isEdit) {
-            device.id = deviceId;
+            // A number, not the string FormData handed back. storage.Device.ID
+            // is an int64, so JSON with a quoted id fails to decode and the
+            // server answers "invalid request body" — which reads as though
+            // something about the device were wrong rather than the id's type.
+            // Every edit failed this way, whatever field was being changed.
+            device.id = Number(deviceId);
         }
 
         try {

@@ -27,7 +27,7 @@ func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 	var profile storage.DeviceProfile
 	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -74,7 +74,7 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 
 	var profile storage.DeviceProfile
 	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -156,7 +156,7 @@ func (s *Server) handleAssignMIBToProfile(w http.ResponseWriter, r *http.Request
 		MibID int64 `json:"mib_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 

@@ -538,7 +538,7 @@ func (s *Server) handleUpdateMIBTags(w http.ResponseWriter, r *http.Request) {
 		Tags []string `json:"tags"`
 	}
 	if decodeErr := json.NewDecoder(r.Body).Decode(&req); decodeErr != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+decodeErr.Error(), http.StatusBadRequest)
 		return
 	}
 

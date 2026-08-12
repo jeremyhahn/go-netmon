@@ -233,7 +233,7 @@ func assignmentIDs(w http.ResponseWriter, r *http.Request, ownerField string) (o
 func decodeAssignment(w http.ResponseWriter, r *http.Request) (storage.MIBAssignment, bool) {
 	var a storage.MIBAssignment
 	if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return storage.MIBAssignment{}, false
 	}
 

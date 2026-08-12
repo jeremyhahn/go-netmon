@@ -115,7 +115,7 @@ func (s *Server) handleTestSNMPConnection(w http.ResponseWriter, r *http.Request
 func (s *Server) handleTestSNMPDirect(w http.ResponseWriter, r *http.Request) {
 	var req SNMPTestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 

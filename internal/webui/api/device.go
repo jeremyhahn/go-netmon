@@ -30,7 +30,7 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	var device storage.Device
 	if err := json.NewDecoder(r.Body).Decode(&device); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -104,7 +104,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 
 	var device storage.Device
 	if err := json.NewDecoder(r.Body).Decode(&device); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -243,7 +243,7 @@ func (s *Server) handleAssignMIBToDevice(w http.ResponseWriter, r *http.Request)
 		MibID int64 `json:"mib_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 

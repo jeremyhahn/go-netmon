@@ -2492,3 +2492,12 @@ select.pager-size-select { width: auto; min-width: 0; }
 }
 .settings-status.is-ok { color: var(--success, var(--text-primary)); }
 .settings-status.is-error { color: var(--danger, var(--text-primary)); }
+
+/* A read-only field looks inert, the way a disabled one does. It is read-only
+   rather than disabled because a disabled input is left out of FormData: the
+   device name was submitted as null and every edit was refused. */
+input[readonly] {
+    background: var(--surface-inset);
+    color: var(--text-muted);
+    cursor: not-allowed;
+}

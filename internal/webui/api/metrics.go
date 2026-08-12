@@ -46,7 +46,7 @@ type SystemInfoResponse struct {
 func (s *Server) handleGetSystemInfo(w http.ResponseWriter, r *http.Request) {
 	var req SystemInfoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -121,7 +121,7 @@ func (s *Server) handleGetSystemInfo(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 	var req MetricsQueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
