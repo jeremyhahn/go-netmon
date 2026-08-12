@@ -168,59 +168,70 @@ func TestFullSearchPathResolvesTypesAndHints(t *testing.T) {
 	}
 }
 
-// TestIncompleteSearchPathDegradesSilently documents a trap, not a feature.
+// TestAnIncompleteSearchPathIsReported is the trap this used to document.
 //
-// Parsing a module whose imports are not on the search path returns *no error*.
-// It returns fewer objects, and the ones it does return carry no type, no
-// units and no display hint — which downstream is indistinguishable from a MIB
-// that genuinely declares none. An import job configured with one MIB directory
-// therefore appears to succeed while producing metadata that renders every
-// value as a bare number and classifies every metric wrongly.
+// Parsing a module whose imports are not on the search path returns no error. It
+// used to return objects too: fewer of them, carrying no type, no units and no
+// display hint, which downstream is indistinguishable from a MIB that declares
+// none. An import configured with one MIB directory therefore appeared to
+// succeed while producing metadata that rendered every value as a bare number.
 //
-// The assertions are relational rather than exact so the test states the hazard
-// rather than blessing any particular degraded output. If the parser is ever
-// changed to report unresolved imports, this test is the one to revisit.
-func TestIncompleteSearchPathDegradesSilently(t *testing.T) {
+// Those objects also had no OID, so nothing could ever poll them. They are now
+// discarded and counted, which turns a silent degradation into a number the
+// importer can show. This test holds that line: an incomplete search path must
+// produce no usable objects and must say how many it dropped.
+func TestAnIncompleteSearchPathIsReported(t *testing.T) {
 	// IP-MIB's imports (SNMPv2-SMI, SNMPv2-TC, INET-ADDRESS-MIB and others)
 	// are not in the asr1001 directory.
-	partial := parseWith(t, "IP-MIB", testsupport.MIBDir("asr1001"))
-	full := parseWith(t, "IP-MIB", allMIBDirs()...)
+	partial, partialReport := parseReportWith(t, "IP-MIB", testsupport.MIBDir("asr1001"))
+	full, fullReport := parseReportWith(t, "IP-MIB", allMIBDirs()...)
 
-	if len(partial) >= len(full) {
-		t.Fatalf("the partial parse yielded %d objects and the full one %d; the fixture no longer demonstrates the degradation",
-			len(partial), len(full))
+	if len(full) == 0 {
+		t.Fatal("the full parse yielded nothing; the fixture is broken")
 	}
-
-	if units := unitsByObject(partial); len(units) != 0 {
-		t.Errorf("the partial parse recovered %d UNITS clauses; the fixture no longer demonstrates the degradation", len(units))
+	if fullReport.UnresolvedCount() != 0 {
+		t.Errorf("a complete search path still discarded %d objects: %v",
+			fullReport.UnresolvedCount(), fullReport.Unresolved)
 	}
 	if units := unitsByObject(full); len(units) == 0 {
 		t.Error("the full parse recovered no UNITS clauses")
 	}
 
-	// The severity is what matters: most readable objects come back untyped,
-	// and nothing in the return value says so.
-	partialUntyped := untypedAccessible(partial)
-	fullUntyped := untypedAccessible(full)
-	if partialUntyped <= fullUntyped {
-		t.Errorf("the partial parse left %d readable objects untyped and the full parse %d; the degradation is no longer visible",
-			partialUntyped, fullUntyped)
+	// Nothing usable comes out of the partial parse, because nothing it defines
+	// resolved to an OID.
+	for _, object := range partial {
+		if object.OID == "" {
+			t.Errorf("%s came back with no OID", object.Name)
+		}
+	}
+	if len(partial) >= len(full) {
+		t.Fatalf("the partial parse yielded %d objects and the full one %d; the fixture no longer demonstrates the degradation",
+			len(partial), len(full))
+	}
+
+	// And the loss is stated rather than left to be inferred from thin metadata.
+	if partialReport.UnresolvedCount() == 0 {
+		t.Error("an incomplete search path discarded nothing and reported nothing; " +
+			"the degradation is silent again")
 	}
 }
 
-// untypedAccessible counts readable objects that came back with no type, which
-// is the shape an unresolved import leaves behind.
-func untypedAccessible(oids []*mib.OIDMetadata) int {
-	count := 0
-	for _, oid := range oids {
-		if oid.Type != "" {
-			continue
-		}
-		if oid.Access == "read-only" || oid.Access == "read-write" {
-			count++
-		}
+// parseReportWith parses moduleName with dirs on the search path and returns
+// both the objects and what was discarded.
+func parseReportWith(t *testing.T, moduleName string, dirs ...string) ([]*mib.OIDMetadata, *ParseReport) {
+	t.Helper()
+
+	p := New(dirs...)
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
 	}
-	return count
+	t.Cleanup(p.Close)
+
+	objects, report, err := p.ParseModuleWithReport(moduleName)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", moduleName, err)
+	}
+	return objects, report
 }
 
 // TestInetAddressMIBResolvesIPMIBZoneColumns guards a gap that used to exist in

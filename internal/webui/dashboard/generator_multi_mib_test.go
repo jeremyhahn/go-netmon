@@ -12,11 +12,18 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// loadTestMIBFromPath loads a MIB from a specific directory
-func loadTestMIBFromPath(t *testing.T, storage *mibstorage.Storage, mibPath string, moduleName string) {
+// loadTestMIBFromPath loads a MIB with the given directories on the search path.
+//
+// A vendor module's IMPORTS reach into the standard tree, so a vendor directory
+// alone is not a search path: the module parses without error and every object
+// comes back with no OID. That used to be storable, and this test stored 169
+// such objects for CISCO-BGP4-MIB and asserted on the count.
+func loadTestMIBFromPath(
+	t *testing.T, storage *mibstorage.Storage, moduleName string, mibPaths ...string,
+) {
 	t.Helper()
 
-	p := parser.New(mibPath)
+	p := parser.New(mibPaths...)
 	err := p.Init()
 	require.NoError(t, err, "Failed to init parser")
 	defer p.Close()
@@ -24,8 +31,11 @@ func loadTestMIBFromPath(t *testing.T, storage *mibstorage.Storage, mibPath stri
 	moduleInfo, err := p.LoadModule(moduleName)
 	require.NoError(t, err, "Failed to load module %s", moduleName)
 
-	metadata, err := p.ParseModule(moduleName)
+	metadata, report, err := p.ParseModuleWithReport(moduleName)
 	require.NoError(t, err, "Failed to parse module %s", moduleName)
+	require.Zero(t, report.UnresolvedCount(),
+		"%s left objects without an OID; its search path is incomplete: %v",
+		moduleName, report.Unresolved)
 
 	for _, meta := range metadata {
 		storeErr := storage.StoreOID(meta)
@@ -46,11 +56,15 @@ func TestGenerateDashboard_MultiMIBSeparation(t *testing.T) {
 
 	// Load IF-MIB from standard directory
 	t.Log("Loading IF-MIB...")
-	loadTestMIBFromPath(t, storage, testsupport.MIBDir("standard"), "IF-MIB")
+	loadTestMIBFromPath(t, storage, "IF-MIB", testsupport.MIBDir("standard"))
 
 	// Load CISCO-BGP4-MIB from asr1001 directory
 	t.Log("Loading CISCO-BGP4-MIB...")
-	loadTestMIBFromPath(t, storage, testsupport.MIBDir("asr1001"), "CISCO-BGP4-MIB")
+	// CISCO-BGP4-MIB hangs off ciscoMgmt, which CISCO-SMI defines, and imports
+	// its base types from the standard tree. All three directories are needed:
+	// with any missing, it parses without error into objects with no OIDs.
+	loadTestMIBFromPath(t, storage, "CISCO-BGP4-MIB",
+		testsupport.MIBDir("asr1001"), testsupport.MIBDir("cisco"), testsupport.MIBDir("standard"))
 
 	// Verify both modules are in storage
 	allOIDs, err := storage.ListOIDs("")
@@ -180,8 +194,8 @@ func TestGenerateDashboard_SNMPv2AndIFMIBSeparation(t *testing.T) {
 	defer cleanup()
 
 	// Load both MIBs from standard directory
-	loadTestMIBFromPath(t, storage, testsupport.MIBDir("standard"), "SNMPv2-MIB")
-	loadTestMIBFromPath(t, storage, testsupport.MIBDir("standard"), "IF-MIB")
+	loadTestMIBFromPath(t, storage, "SNMPv2-MIB", testsupport.MIBDir("standard"))
+	loadTestMIBFromPath(t, storage, "IF-MIB", testsupport.MIBDir("standard"))
 
 	// Generate dashboards
 	snmpDashboard, err := GenerateDashboard(storage, "SNMPv2-MIB")

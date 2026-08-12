@@ -58,6 +58,13 @@ const (
 	// ReasonMaxOIDs marks an object dropped because its module had already
 	// contributed max_oids objects by the time the object was reached.
 	ReasonMaxOIDs Reason = "capped-by-max-oids"
+
+	// ReasonUnresolved marks an object that carries no OID, so there is nothing
+	// to ask a device for. It means the module was parsed without one of the
+	// modules its IMPORTS names, and it is worth its own reason because the
+	// remedy is different from every other: import the missing module, rather
+	// than adjust a filter or accept that the object is obsolete.
+	ReasonUnresolved Reason = "unresolved-oid"
 )
 
 // Decision is one object's polling verdict.
@@ -227,6 +234,12 @@ func fetchable(object *mib.OIDMetadata, kind Kind, walked map[string]bool) (Reas
 func readable(object *mib.OIDMetadata) (Reason, bool) {
 	if object.IsPollable() {
 		return ReasonPolled, true
+	}
+	// Checked before access and status, because an object with no OID usually
+	// has both of those and reporting it as deprecated would send a reader
+	// looking for the wrong problem.
+	if object.OID == "" {
+		return ReasonUnresolved, false
 	}
 	if object.Access != "read-only" && object.Access != "read-write" {
 		return ReasonNotAccessible, false

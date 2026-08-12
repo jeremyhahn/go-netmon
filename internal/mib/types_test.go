@@ -19,12 +19,18 @@ func TestOIDMetadataIsPollable(t *testing.T) {
 	}{
 		{
 			name: "read-only current column",
-			meta: OIDMetadata{Access: "read-only", Status: "current", IsColumn: true},
+			meta: OIDMetadata{
+				OID:    "1.3.6.1.2.1.2.2.1.10",
+				Access: "read-only", Status: "current", IsColumn: true,
+			},
 			want: true,
 		},
 		{
 			name: "read-write current scalar",
-			meta: OIDMetadata{Access: "read-write", Status: "current", IsScalar: true},
+			meta: OIDMetadata{
+				OID:    "1.3.6.1.2.1.1.4",
+				Access: "read-write", Status: "current", IsScalar: true,
+			},
 			want: true,
 		},
 		{
@@ -60,6 +66,15 @@ func TestOIDMetadataIsPollable(t *testing.T) {
 		{
 			name: "zero value carries no access or status",
 			meta: OIDMetadata{},
+			want: false,
+		},
+		{
+			// A module whose IMPORTS did not resolve parses into objects with
+			// the right access and status and no OID at all. Counting them as
+			// pollable told the series estimate, the object plan and the poller
+			// itself that there was something to ask for when there was not.
+			name: "readable and current but unresolved to any OID",
+			meta: OIDMetadata{Access: "read-only", Status: "current", IsScalar: true},
 			want: false,
 		},
 	}

@@ -347,59 +347,69 @@ func TestFetchableRules(t *testing.T) {
 	}{
 		{
 			"table is a walk target regardless of access",
-			&mib.OIDMetadata{IsTable: true, Access: "not-accessible", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.4.1.9.9.109.1.1.1", IsTable: true, Access: "not-accessible", Status: "current"},
 			true, ReasonPolled,
 		},
 		{
 			"entry adds nothing over the table",
-			&mib.OIDMetadata{IsTableEntry: true, Access: "not-accessible", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.2.1.2.2.1", IsTableEntry: true, Access: "not-accessible", Status: "current"},
 			false, ReasonCoveredByTable,
 		},
 		{
 			"column of a walked table is redundant",
-			&mib.OIDMetadata{IsColumn: true, TableOID: ifTableOID, Access: "read-only", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.2.1.2.2.1.10", IsColumn: true, TableOID: ifTableOID,
+				Access: "read-only", Status: "current"},
 			false, ReasonCoveredByTable,
 		},
 		{
 			"column of an unwalked table is needed",
-			&mib.OIDMetadata{IsColumn: true, TableOID: "1.3.6.1.4.1.9.9.109.1.1.1",
-				Access: "read-only", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.4.1.9.9.109.1.1.1.3", IsColumn: true,
+				TableOID: "1.3.6.1.4.1.9.9.109.1.1.1", Access: "read-only", Status: "current"},
 			true, ReasonPolled,
 		},
 		{
 			"not-accessible column of an unwalked table can never be fetched",
-			&mib.OIDMetadata{IsColumn: true, TableOID: "1.3.6.1.4.1.9.9.109.1.1.1",
-				Access: "not-accessible", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.4.1.9.9.109.1.1.1.1", IsColumn: true,
+				TableOID: "1.3.6.1.4.1.9.9.109.1.1.1", Access: "not-accessible", Status: "current"},
 			false, ReasonNotAccessible,
 		},
 		{
 			"readable scalar",
-			&mib.OIDMetadata{IsScalar: true, Access: "read-only", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.2.1.1.1", IsScalar: true, Access: "read-only", Status: "current"},
 			true, ReasonPolled,
 		},
 		{
 			"writable scalar is readable too",
-			&mib.OIDMetadata{IsScalar: true, Access: "read-write", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.2.1.1.4", IsScalar: true, Access: "read-write", Status: "current"},
 			true, ReasonPolled,
 		},
 		{
 			"not-accessible scalar",
-			&mib.OIDMetadata{IsScalar: true, Access: "not-accessible", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.2.1.1.9", IsScalar: true, Access: "not-accessible", Status: "current"},
 			false, ReasonNotAccessible,
 		},
 		{
 			"notify-only scalar",
-			&mib.OIDMetadata{IsScalar: true, Access: "accessible-for-notify", Status: "current"},
+			&mib.OIDMetadata{OID: "1.3.6.1.6.3.1.1.4.1", IsScalar: true, Access: "accessible-for-notify", Status: "current"},
 			false, ReasonNotAccessible,
 		},
 		{
 			"deprecated scalar is readable but stale",
-			&mib.OIDMetadata{IsScalar: true, Access: "read-only", Status: "deprecated"},
+			&mib.OIDMetadata{OID: "1.3.6.1.2.1.2.2.1.12", IsScalar: true, Access: "read-only", Status: "deprecated"},
 			false, ReasonNotCurrent,
 		},
 		{
+			// An object whose module was parsed without one of the modules its
+			// IMPORTS names. It looks readable and current and has no OID, so
+			// there is nothing to ask a device for; calling it deprecated would
+			// send a reader after the wrong problem entirely.
+			"readable and current but unresolved to any OID",
+			&mib.OIDMetadata{IsScalar: true, Access: "read-only", Status: "current"},
+			false, ReasonUnresolved,
+		},
+		{
 			"obsolete scalar",
-			&mib.OIDMetadata{IsScalar: true, Access: "read-only", Status: "obsolete"},
+			&mib.OIDMetadata{OID: "1.3.6.1.2.1.4.21.1.10", IsScalar: true, Access: "read-only", Status: "obsolete"},
 			false, ReasonNotCurrent,
 		},
 	}

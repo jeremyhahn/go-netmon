@@ -139,6 +139,13 @@ func (u *mibUpload) restore() error {
 type importedMIB struct {
 	record   *storage.MIB
 	replaced bool
+
+	// unresolved counts objects the module defines that came out with no OID
+	// and were therefore discarded. It is nearly always zero; when it is not,
+	// the module is partly or wholly unusable and the caller has to be told,
+	// since a module that stores fewer objects than it declares is otherwise
+	// indistinguishable from one that is simply small.
+	unresolved int
 }
 
 // handleImportMIB imports an uploaded MIB file.
@@ -197,8 +204,9 @@ func (s *Server) handleImportMIB(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Successfully %s MIB: %s (%d objects)", verb, outcome.record.Name, outcome.record.ObjectCount)
 
 	respondJSON(w, status, map[string]interface{}{
-		"mib":      outcome.record,
-		"replaced": outcome.replaced,
+		"mib":        outcome.record,
+		"replaced":   outcome.replaced,
+		"unresolved": outcome.unresolved,
 		"message": fmt.Sprintf("Successfully %s MIB %s with %d objects",
 			verb, outcome.record.Name, outcome.record.ObjectCount),
 	})
@@ -294,17 +302,26 @@ func (s *Server) importMIBSource(
 		return nil, &MIBParseError{Stage: "file", Name: fileName, Err: err}
 	}
 
-	oids, err := loaderParser.ParseModule(moduleInfo.Name)
+	oids, report, err := loaderParser.ParseModuleWithReport(moduleInfo.Name)
 	if err != nil {
 		undoUpload(upload, "parse")
 		return nil, &MIBParseError{Stage: "module", Name: moduleInfo.Name, Err: err}
 	}
+	if unresolved := report.UnresolvedCount(); unresolved > 0 {
+		log.Printf("MIB %s: %d of %d objects resolved to no OID and were discarded",
+			moduleInfo.Name, unresolved, unresolved+len(oids))
+	}
 
-	return s.storeParsedMIB(ctx, moduleInfo.Name, storage.MIBContent{
+	stored, err := s.storeParsedMIB(ctx, moduleInfo.Name, storage.MIBContent{
 		FilePath:    upload.path,
 		Description: moduleInfo.Description,
 		ObjectCount: len(oids),
 	}, tags, replace)
+	if err != nil {
+		return nil, err
+	}
+	stored.unresolved = report.UnresolvedCount()
+	return stored, nil
 }
 
 // saveUploadedMIB writes an upload into the server's MIB directory, keeping the

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sleepinggenius2/gosmi"
@@ -16,6 +17,24 @@ import (
 
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
+
+// gosmiLibrary serializes every use of gosmi.
+//
+// gosmi keeps its loaded modules and search path in package-level state, so a
+// Parser is a handle on one shared library rather than an independent object.
+// Two things follow, and neither was being handled:
+//
+//   - Close calls gosmi.Exit, which discards every loaded module. The web UI
+//     builds a short-lived Parser to generate a dashboard and closes it when
+//     done, so a dashboard generated while a MIB was importing could empty the
+//     library underneath the import.
+//   - Loading a module caches the outcome, including failure. A module imported
+//     before the module it IMPORTS therefore stays unresolved for the life of
+//     the process; see reloadLocked.
+//
+// Every exported method takes this lock and calls an unexported *Locked helper,
+// so the lock is taken exactly once per call.
+var gosmiLibrary sync.Mutex
 
 // Parser handles MIB parsing using gosmi
 type Parser struct {
@@ -31,23 +50,63 @@ func New(paths ...string) *Parser {
 
 // Init initializes the gosmi library with MIB paths
 func (p *Parser) Init() error {
+	gosmiLibrary.Lock()
+	defer gosmiLibrary.Unlock()
+
+	p.initLocked()
+	return nil
+}
+
+// initLocked opens the library and points it at this parser's search paths.
+func (p *Parser) initLocked() {
 	gosmi.Init()
 
 	// Set MIB paths
 	for _, path := range p.paths {
 		gosmi.AppendPath(path)
 	}
-
-	return nil
 }
 
 // Close cleans up the gosmi library
 func (p *Parser) Close() {
+	gosmiLibrary.Lock()
+	defer gosmiLibrary.Unlock()
+
 	gosmi.Exit()
+}
+
+// Reload discards every loaded module and reopens the library.
+//
+// Loading a module caches its outcome, and a failed lookup is cached like any
+// other. A module imported before the module it IMPORTS therefore keeps
+// resolving to nothing for the life of the process, however many times it is
+// re-imported: the file on disk is right, the cache is not.
+//
+// This is the way out. It costs a re-read of every module the next time one is
+// needed, so it belongs on the import path and nowhere near polling.
+func (p *Parser) Reload() {
+	gosmiLibrary.Lock()
+	defer gosmiLibrary.Unlock()
+
+	p.reloadLocked()
+}
+
+// reloadLocked is Reload for a caller already holding the lock.
+func (p *Parser) reloadLocked() {
+	gosmi.Exit()
+	p.initLocked()
 }
 
 // LoadModule loads a MIB module by name
 func (p *Parser) LoadModule(moduleName string) (*mib.ModuleInfo, error) {
+	gosmiLibrary.Lock()
+	defer gosmiLibrary.Unlock()
+
+	return p.loadModuleLocked(moduleName)
+}
+
+// loadModuleLocked is LoadModule for a caller already holding the lock.
+func (p *Parser) loadModuleLocked(moduleName string) (*mib.ModuleInfo, error) {
 	// Load the module
 	_, err := gosmi.LoadModule(moduleName)
 	if err != nil {
@@ -86,30 +145,106 @@ func (p *Parser) LoadModule(moduleName string) (*mib.ModuleInfo, error) {
 	return info, nil
 }
 
-// ParseModule parses a MIB module and returns all OIDs
+// ParseReport describes what parsing a module could not use.
+type ParseReport struct {
+	// Unresolved names the objects that came out with no OID. An object
+	// without one cannot be polled, stored under its OID, or named in a
+	// metric, so it is discarded rather than kept as a record that looks like
+	// an object and behaves like nothing.
+	Unresolved []string
+}
+
+// UnresolvedCount is how many objects were discarded.
+func (r *ParseReport) UnresolvedCount() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.Unresolved)
+}
+
+// ParseModule parses a MIB module and returns the objects it defines.
 func (p *Parser) ParseModule(moduleName string) ([]*mib.OIDMetadata, error) {
+	objects, _, err := p.ParseModuleWithReport(moduleName)
+	return objects, err
+}
+
+// ParseModuleWithReport parses a module and also reports what it discarded.
+//
+// An object with no OID is dropped. gosmi produces them in two situations, and
+// keeping them served neither:
+//
+//   - A module whose IMPORTS did not resolve yields objects that parse but hang
+//     off a parent identifier gosmi never found. Every one comes out with an
+//     empty OID, and storing them made an unusable module report "imported, 6
+//     objects" -- indistinguishable from one that simply has little in it.
+//   - A module with a malformed IMPORTS list can yield each object twice, once
+//     resolved and once not. KNGeneric-MIB names OBJECT-TYPE in two IMPORTS
+//     clauses and produced 80 usable objects alongside 79 phantoms, so every
+//     count shown for it was roughly double the truth.
+//
+// The report is what keeps the drop from being silent, which is the failure the
+// stored phantoms were standing in for.
+func (p *Parser) ParseModuleWithReport(
+	moduleName string,
+) ([]*mib.OIDMetadata, *ParseReport, error) {
+	gosmiLibrary.Lock()
+	defer gosmiLibrary.Unlock()
+
+	objects, report, err := p.parseModuleLocked(moduleName)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Nothing resolved, yet the module defines objects: its IMPORTS were looked
+	// up while the modules they name were not on disk yet, and that failure is
+	// cached. Every later attempt reads the same cache and fails identically, so
+	// re-importing does not help and the module looks permanently empty.
+	//
+	// One reload and one retry separates that from a module that genuinely
+	// defines nothing usable. It is bounded to a single extra attempt: if the
+	// dependency really is missing, the second parse returns the same thing and
+	// the caller reports an honest empty module.
+	if len(objects) == 0 && report.UnresolvedCount() > 0 {
+		p.reloadLocked()
+		return p.parseModuleLocked(moduleName)
+	}
+
+	return objects, report, nil
+}
+
+// parseModuleLocked is ParseModuleWithReport for a caller already holding the
+// lock.
+func (p *Parser) parseModuleLocked(
+	moduleName string,
+) ([]*mib.OIDMetadata, *ParseReport, error) {
 	// Load the module
 	_, err := gosmi.LoadModule(moduleName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load module: %w", err)
+		return nil, nil, fmt.Errorf("failed to load module: %w", err)
 	}
 
 	module, err := gosmi.GetModule(moduleName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get module: %w", err)
+		return nil, nil, fmt.Errorf("failed to get module: %w", err)
 	}
 
 	nodes := module.GetNodes()
 	oids := make([]*mib.OIDMetadata, 0, len(nodes))
+	report := &ParseReport{}
 
 	for _, node := range nodes {
 		meta := p.parseNode(node, moduleName)
-		if meta != nil {
-			oids = append(oids, meta)
+		if meta == nil {
+			continue
 		}
+		if meta.OID == "" {
+			report.Unresolved = append(report.Unresolved, meta.Name)
+			continue
+		}
+		oids = append(oids, meta)
 	}
 
-	return oids, nil
+	return oids, report, nil
 }
 
 // parseNode converts a gosmi node to OIDMetadata
@@ -675,6 +810,9 @@ func (p *Parser) getStatusString(status types.Status) string {
 
 // GetTableInfo extracts table information from a module
 func (p *Parser) GetTableInfo(moduleName string) ([]*mib.TableInfo, error) {
+	gosmiLibrary.Lock()
+	defer gosmiLibrary.Unlock()
+
 	module, err := gosmi.GetModule(moduleName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get module: %w", err)
@@ -733,8 +871,15 @@ func (p *Parser) parseTable(node gosmi.SmiNode, moduleName string) *mib.TableInf
 	return table
 }
 
-// LoadModuleFromFile loads a MIB module from a file path
+// LoadModuleFromFile loads a MIB module from a file path.
+//
+// gosmi resolves a module by filename, so the file has to be named for the
+// module it declares: KNGeneric-MIB-20200526.MIB fails to load a module that
+// calls itself KNGeneric-MIB, however valid the contents.
 func (p *Parser) LoadModuleFromFile(path string) (*mib.ModuleInfo, error) {
+	gosmiLibrary.Lock()
+	defer gosmiLibrary.Unlock()
+
 	// Add the directory to the search path
 	dir := filepath.Dir(path)
 	gosmi.AppendPath(dir)
@@ -743,11 +888,14 @@ func (p *Parser) LoadModuleFromFile(path string) (*mib.ModuleInfo, error) {
 	filename := filepath.Base(path)
 	moduleName := strings.TrimSuffix(filename, filepath.Ext(filename))
 
-	return p.LoadModule(moduleName)
+	return p.loadModuleLocked(moduleName)
 }
 
 // GetModules returns a list of all loaded modules
 func (p *Parser) GetModules() []string {
+	gosmiLibrary.Lock()
+	defer gosmiLibrary.Unlock()
+
 	modules := gosmi.GetLoadedModules()
 	names := make([]string, len(modules))
 	for i, mod := range modules {

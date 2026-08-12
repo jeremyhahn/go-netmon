@@ -416,8 +416,10 @@ func TestOIDMetadata_IsPollable(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "pollable scalar",
-			meta:     mib.OIDMetadata{Access: "read-only", Status: "current", IsScalar: true},
+			name: "pollable scalar",
+			meta: mib.OIDMetadata{
+				OID: "1.3.6.1.2.1.1.1", Access: "read-only", Status: "current", IsScalar: true,
+			},
 			expected: true,
 		},
 		{
