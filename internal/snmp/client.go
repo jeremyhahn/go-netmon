@@ -65,42 +65,15 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 		conn.Version = gosnmp.Version2c
 		conn.Community = device.Community
 	case "3":
-		conn.Version = gosnmp.Version3
-		conn.SecurityModel = gosnmp.UserSecurityModel
-		conn.MsgFlags = gosnmp.AuthPriv
-
-		// Set up SNMPv3 security parameters
-		secParams := &gosnmp.UsmSecurityParameters{
-			UserName: device.Username,
+		if err := ConfigureV3(conn, V3Credentials{
+			Username:     device.Username,
+			AuthProtocol: device.AuthProtocol,
+			AuthPassword: device.AuthPassword,
+			PrivProtocol: device.PrivProtocol,
+			PrivPassword: device.PrivPassword,
+		}); err != nil {
+			return nil, err
 		}
-
-		// Configure authentication
-		if device.AuthPassword != "" {
-			switch device.AuthProtocol {
-			case "MD5", "md5", "":
-				secParams.AuthenticationProtocol = gosnmp.MD5
-			case "SHA", "sha":
-				secParams.AuthenticationProtocol = gosnmp.SHA
-			default:
-				return nil, fmt.Errorf("unsupported auth protocol: %s", device.AuthProtocol)
-			}
-			secParams.AuthenticationPassphrase = device.AuthPassword
-		}
-
-		// Configure privacy
-		if device.PrivPassword != "" {
-			switch device.PrivProtocol {
-			case "DES", "des", "":
-				secParams.PrivacyProtocol = gosnmp.DES
-			case "AES", "aes":
-				secParams.PrivacyProtocol = gosnmp.AES
-			default:
-				return nil, fmt.Errorf("unsupported priv protocol: %s", device.PrivProtocol)
-			}
-			secParams.PrivacyPassphrase = device.PrivPassword
-		}
-
-		conn.SecurityParameters = secParams
 	default:
 		return nil, &UnsupportedVersionError{Version: device.SNMPVersion}
 	}

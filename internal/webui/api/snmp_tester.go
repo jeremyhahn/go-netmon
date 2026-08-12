@@ -257,7 +257,17 @@ func (s *Server) performSNMPTest(ctx context.Context, probe snmpProbe) *SNMPTest
 		snmpConn.Version = gosnmp.Version1
 		snmpConn.Community = probe.Community
 	case "v3", "3":
-		if err := configureV3(snmpConn, probe); err != nil {
+		// The same configuration the poller uses. Two implementations of this
+		// disagreed once already: the tester derived the security level from
+		// the protocols and the poller hardcoded authPriv, so a device could
+		// pass its connectivity test here and still be unpollable.
+		if err := snmp.ConfigureV3(snmpConn, snmp.V3Credentials{
+			Username:     probe.Username,
+			AuthProtocol: probe.AuthProtocol,
+			AuthPassword: probe.AuthPassword,
+			PrivProtocol: probe.PrivProtocol,
+			PrivPassword: probe.PrivPassword,
+		}); err != nil {
 			return probe.reject(startTime, err)
 		}
 	default:
@@ -445,63 +455,4 @@ func getSNMPTypeName(t gosnmp.Asn1BER) string {
 	default:
 		return fmt.Sprintf("Type(%d)", t)
 	}
-}
-
-// configureV3 sets up user-based security for a probe.
-//
-// The protocol names match what the device form and the CLI offer. An empty
-// protocol means that layer is off — noAuthNoPriv or authNoPriv — which is a
-// real configuration on plenty of equipment and not an error.
-func configureV3(conn *gosnmp.GoSNMP, probe snmpProbe) error {
-	if probe.Username == "" {
-		return &SNMPRequestError{
-			Field: "username", Value: "", Reason: "required for SNMPv3",
-		}
-	}
-
-	conn.Version = gosnmp.Version3
-	conn.SecurityModel = gosnmp.UserSecurityModel
-	params := &gosnmp.UsmSecurityParameters{UserName: probe.Username}
-
-	switch strings.ToUpper(probe.AuthProtocol) {
-	case "":
-		params.AuthenticationProtocol = gosnmp.NoAuth
-	case "MD5":
-		params.AuthenticationProtocol = gosnmp.MD5
-	case "SHA":
-		params.AuthenticationProtocol = gosnmp.SHA
-	default:
-		return &SNMPRequestError{
-			Field: "auth_protocol", Value: probe.AuthProtocol, Reason: "want SHA, MD5 or empty",
-		}
-	}
-	params.AuthenticationPassphrase = probe.AuthPassword
-
-	switch strings.ToUpper(probe.PrivProtocol) {
-	case "":
-		params.PrivacyProtocol = gosnmp.NoPriv
-	case "DES":
-		params.PrivacyProtocol = gosnmp.DES
-	case "AES":
-		params.PrivacyProtocol = gosnmp.AES
-	default:
-		return &SNMPRequestError{
-			Field: "priv_protocol", Value: probe.PrivProtocol, Reason: "want AES, DES or empty",
-		}
-	}
-	params.PrivacyPassphrase = probe.PrivPassword
-
-	// The message flags have to agree with the protocols actually set, or the
-	// agent refuses the message before looking at the credentials.
-	switch {
-	case params.PrivacyProtocol != gosnmp.NoPriv:
-		conn.MsgFlags = gosnmp.AuthPriv
-	case params.AuthenticationProtocol != gosnmp.NoAuth:
-		conn.MsgFlags = gosnmp.AuthNoPriv
-	default:
-		conn.MsgFlags = gosnmp.NoAuthNoPriv
-	}
-
-	conn.SecurityParameters = params
-	return nil
 }
