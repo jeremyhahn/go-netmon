@@ -898,7 +898,11 @@ class MonitoringApp {
             sortDir: options.sortDir || 'asc',
             // Rows whose behaviour is bound rather than delegated need to be
             // rebound after each repaint, because the repaint replaced them.
-            afterPaint: options.afterPaint || null
+            afterPaint: options.afterPaint || null,
+            // Both or neither: a repaint edits rows in place only when the list
+            // can say which row is which and how to bring one up to date.
+            rowKey: options.rowKey || null,
+            patchRow: options.patchRow || null
         };
         this.pagedLists.set(mountId, state);
 
@@ -1021,9 +1025,22 @@ class MonitoringApp {
         const slice = this.pagerSlice(ordered.length, state.page, state.size);
         state.page = slice.page;
 
-        body.innerHTML = ordered.length === 0
-            ? `<p class="empty-state">No ${this.escapeHtml(state.noun)} match “${this.escapeHtml(state.search.trim())}”</p>`
-            : state.wrap(state.renderRows(ordered.slice(slice.from, slice.to)), mountId);
+        const page = ordered.slice(slice.from, slice.to);
+
+        // A list that refreshes on a timer rewrites the same rows over and over.
+        // Replacing the table wholesale throws away the row elements a reader is
+        // pointing at, and on the fleet overview -- which repaints every thirty
+        // seconds -- that is a visible flash of the whole table.
+        //
+        // A list that supplies rowKey and patchRow can say "these are the same
+        // rows, just newer", and then only the cells whose text changed are
+        // touched. Everything else, including whatever the reader has focused or
+        // selected, stays where it was.
+        if (!this.patchPagedRows(state, body, page)) {
+            body.innerHTML = ordered.length === 0
+                ? `<p class="empty-state">No ${this.escapeHtml(state.noun)} match “${this.escapeHtml(state.search.trim())}”</p>`
+                : state.wrap(state.renderRows(page), mountId);
+        }
 
         // A list that fits on one page and is not being filtered has no
         // position to report and nowhere to step to, so it gets no footer.
@@ -1037,6 +1054,33 @@ class MonitoringApp {
             noun: state.noun,
             label: state.label
         });
+    }
+
+    // patchPagedRows updates a rendered page in place, and reports whether it
+    // could. It refuses unless the list opted in and the rows on screen are the
+    // same ones, in the same order -- anything else is a different page and has
+    // to be drawn rather than edited.
+    patchPagedRows(state, body, page) {
+        if (!state.rowKey || !state.patchRow || page.length === 0) return false;
+
+        const rows = body.querySelectorAll('[data-row-key]');
+        if (rows.length !== page.length) return false;
+
+        for (let i = 0; i < page.length; i++) {
+            if (rows[i].dataset.rowKey !== String(state.rowKey(page[i]))) return false;
+        }
+
+        for (let i = 0; i < page.length; i++) {
+            state.patchRow(rows[i], page[i]);
+        }
+        return true;
+    }
+
+    // setCellHtml writes into a cell only when the markup differs, so a value
+    // that has not moved does not disturb the node holding it.
+    setCellHtml(row, selector, html) {
+        const cell = row.querySelector(selector);
+        if (cell && cell.innerHTML !== html) cell.innerHTML = html;
     }
 
     // ========================================
@@ -1356,6 +1400,12 @@ class MonitoringApp {
                     <tbody>${rows}</tbody>
                 </table>`,
             renderRows: items => items.map(device => this.renderFleetRow(device)).join(''),
+            // The fleet repaints every thirty seconds and almost nothing moves:
+            // the times tick over, a metric count creeps up, and once in a while
+            // a device changes state. Identifying rows by device lets a repaint
+            // edit those cells rather than rebuild the table under the reader.
+            rowKey: device => device.id,
+            patchRow: (row, device) => this.patchFleetRow(row, device),
             // An empty fleet and a fleet that could not be read are different
             // facts, and only one of them is about configuration.
             emptyHtml: this.fleet.error
@@ -1420,13 +1470,42 @@ class MonitoringApp {
         return `${device.name || ''} ${device.address || ''} ${meta.key} ${meta.label}`.toLowerCase();
     }
 
+    // patchFleetRow brings one rendered row up to date.
+    //
+    // It writes the same markup renderFleetRow would have produced for each
+    // cell, and only where that markup has changed -- so a row whose device has
+    // not moved is left entirely alone, and one that has moved changes only in
+    // the cells that say something different.
+    patchFleetRow(row, device) {
+        const meta = this.fleetStateMeta(device.state);
+        const status = device.status || {};
+        const metrics = status.metrics_collected;
+
+        this.setCellHtml(row, '.fleet-device', `
+                    <button type="button" class="fleet-open"
+                            data-fleet-device="${this.escapeAttr(device.id)}">${this.escapeHtml(device.name)}</button>
+                    <span class="fleet-address">${this.escapeHtml(device.address || '')}</span>
+                `);
+        this.setCellHtml(row, 'td:nth-child(2)', `
+                    <span class="fleet-state fleet-tone--${this.escapeAttr(meta.tone)}">
+                        <span class="fleet-dot"></span>${this.escapeHtml(meta.label)}
+                    </span>
+                `);
+        this.setCellHtml(row, 'td:nth-child(3)', this.fleetTimeCell(status.last_poll_time, 'never'));
+        this.setCellHtml(row, '.fleet-col-next', this.fleetTimeCell(status.next_poll_time, 'not scheduled'));
+        this.setCellHtml(row, '.fleet-col-metrics',
+            typeof metrics === 'number' ? metrics.toLocaleString() : '—');
+        this.setCellHtml(row, 'td:last-child', this.fleetReasonHtml(device, meta));
+    }
+
     renderFleetRow(device) {
         const meta = this.fleetStateMeta(device.state);
         const status = device.status || {};
         const metrics = status.metrics_collected;
 
         return `
-            <tr class="fleet-row" data-fleet-device="${this.escapeAttr(device.id)}">
+            <tr class="fleet-row" data-row-key="${this.escapeAttr(device.id)}"
+                data-fleet-device="${this.escapeAttr(device.id)}">
                 <td class="fleet-device">
                     <button type="button" class="fleet-open"
                             data-fleet-device="${this.escapeAttr(device.id)}">${this.escapeHtml(device.name)}</button>
