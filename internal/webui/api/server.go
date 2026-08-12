@@ -267,6 +267,10 @@ func (s *Server) routes() {
 	// SNMP connection test endpoints
 	api.HandleFunc("/devices/{id:[0-9]+}/test-snmp", s.handleTestSNMPConnection).Methods("POST")
 	api.HandleFunc("/snmp/test", s.handleTestSNMPDirect).Methods("POST")
+	// Walking answers "what does this box actually expose?", which is what
+	// decides whether a MIB is worth importing and why a polled object is empty.
+	api.HandleFunc("/devices/{id:[0-9]+}/walk", s.handleWalkDevice).Methods("GET")
+	api.HandleFunc("/snmp/walk", s.handleWalkDirect).Methods("POST")
 
 	// Device MIB associations
 	api.HandleFunc("/devices/{id:[0-9]+}/mibs", s.handleGetDeviceMIBs).Methods("GET")

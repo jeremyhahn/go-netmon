@@ -930,8 +930,9 @@ func ConvertStatusColumnsToInfoMetrics(
 			labels[labelValue] = valueLabel
 			mergeExtraLabels(deviceName, labels, extraLabels)
 
-			// Create metric name: snmp_{column_name}_info
-			metricName := fmt.Sprintf("snmp_%s_info", strings.ToLower(statusCol.Name))
+			// The same naming a text scalar gets, so both kinds of info
+			// metric are found the same way.
+			metricName := infoMetricName(statusCol.Name)
 
 			infoSamples = append(infoSamples, &Sample{
 				Name:      metricName,
@@ -989,9 +990,14 @@ func ConvertSNMPResultsWithTableIndexes(
 		// Try numeric value first
 		value, err := result.GetFloat64Value()
 		if err != nil {
-			// Not a reading. It may still be one of the system scalars that
-			// snmp_system_info reports as labels.
+			// Not a number. It may be one of the system scalars that
+			// snmp_system_info reports as labels, and otherwise it is a text
+			// scalar in its own right -- a power supply or a fan saying how it
+			// is, in words. Those used to be dropped here.
 			recordSystemInfo(systemInfo, result)
+			if sample := textScalarSample(deviceName, result, index, extraLabels); sample != nil {
+				samples = append(samples, sample)
+			}
 			continue
 		}
 

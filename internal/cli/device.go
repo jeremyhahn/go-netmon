@@ -28,6 +28,7 @@ func newDeviceCommand(env *Env) *cobra.Command {
 		newDeviceUpdateCommand(env),
 		newDeviceDeleteCommand(env),
 		newDeviceTestCommand(env),
+		newDeviceWalkCommand(env),
 		newDeviceStatusCommand(env),
 		newDeviceMIBCommand(env),
 		newDeviceProfileCommand(env),

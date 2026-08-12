@@ -36,6 +36,11 @@ const (
 	bgpPrefixOID = ".1.3.6.1.4.1.9.9.187.1.2.5.1.10"
 
 	undescribedOID = ".1.3.6.1.4.1.9.9.999.1.2.3.4"
+
+	// A scalar reporting its condition as text rather than a number. Vendors of
+	// small appliances do this for everything worth knowing, so the naming
+	// contract has to cover it as well as the status-column case.
+	psuStatusOID = ".1.3.6.1.4.1.21317.1.3.1.13.1.9.2"
 )
 
 // contractMIB returns the objects the exporter and every consumer are checked
@@ -48,6 +53,11 @@ func contractMIB() []*mib.OIDMetadata {
 			OID: ifNumberOID, Name: "ifNumber", Module: testModule,
 			Type: "Integer32", Access: "read-only", IsScalar: true, Pollable: true,
 			ObjectClass: mib.ObjectClassScalar, IsChartable: true, IsDisplayable: true,
+		},
+		{
+			OID: psuStatusOID, Name: "PSU2Status", Module: testModule,
+			Type: "DisplayString", Access: "read-only", IsScalar: true, Pollable: true,
+			ObjectClass: mib.ObjectClassScalar, IsDisplayable: true,
 		},
 		{
 			OID: ifTableOID, Name: "ifTable", Module: testModule,
@@ -441,5 +451,44 @@ func TestInfoMetricNameMatchesExporter(t *testing.T) {
 	}
 	if got, want := info.Labels["value"], "established"; got != want {
 		t.Errorf("info metric value label = %q, want %q", got, want)
+	}
+}
+
+// TestInfoMetricNameMatchesExporterForATextScalar extends the contract to the
+// other kind of info metric.
+//
+// A scalar whose reading is text used to be dropped by the exporter entirely, so
+// there was nothing for a consumer's name to match and nothing to notice: a
+// missing metric and an empty one look the same from a query. Now that the
+// exporter emits one, the two sides have to keep agreeing on its name.
+func TestInfoMetricNameMatchesExporterForATextScalar(t *testing.T) {
+	store := contractStore(t)
+
+	samples := metrics.ConvertSNMPResultsWithTableIndexes(
+		"contract-device",
+		[]*snmp.Result{{
+			OID:       psuStatusOID + ".0",
+			Type:      gosnmp.OctetString,
+			Value:     []byte("PSU2 is abnormal, please check the device"),
+			Timestamp: time.Unix(0, 0),
+		}},
+		nil, metrics.NewTableIndexCache(store), nil)
+
+	var info *metrics.Sample
+	for _, sample := range samples {
+		if strings.HasSuffix(sample.Name, "_info") && sample.Labels["value"] != "" {
+			info = sample
+			break
+		}
+	}
+	if info == nil {
+		t.Fatalf("the exporter dropped a text scalar; it emitted %v", samples)
+	}
+
+	if got := promname.InfoMetricName("PSU2Status"); got != info.Name {
+		t.Errorf("promname.InfoMetricName(\"PSU2Status\") = %q, exporter emitted %q", got, info.Name)
+	}
+	if got, want := info.Labels["value"], "PSU2 is abnormal, please check the device"; got != want {
+		t.Errorf("value label = %q, want the device's own words %q", got, want)
 	}
 }

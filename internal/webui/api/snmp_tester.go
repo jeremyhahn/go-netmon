@@ -15,6 +15,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
+	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
 // SNMPTestRequest represents the request body for SNMP test
@@ -107,18 +108,10 @@ func (s *Server) handleTestSNMPConnection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	response := s.performSNMPTest(r.Context(), snmpProbe{
-		Device:       device.Name,
-		Address:      device.Address,
-		SNMPVersion:  device.SNMPVersion,
-		Community:    device.Community,
-		Port:         defaultSNMPPort,
-		Username:     device.Username,
-		AuthProtocol: device.AuthProtocol,
-		AuthPassword: device.AuthPassword,
-		PrivProtocol: device.PrivProtocol,
-		PrivPassword: device.PrivPassword,
-	})
+	// probeForDevice honors the device's own port. This used to pass
+	// defaultSNMPPort unconditionally, so a device configured on any other port
+	// was tested against 161 and reported unreachable while polling fine.
+	response := s.performSNMPTest(r.Context(), probeForDevice(device))
 	respondJSON(w, statusForProbe(response), response)
 }
 
@@ -198,6 +191,99 @@ type snmpProbe struct {
 	PrivPassword string
 }
 
+// connection turns a probe into a configured, unconnected gosnmp session.
+//
+// Every server-side SNMP operation builds its session here. That is deliberate:
+// the poller and the connectivity tester once had separate copies of this and
+// disagreed about SNMPv3, so a device could pass its test and still be
+// unpollable. A second copy for walking would have reintroduced exactly that.
+//
+// The returned session carries ctx, so its deadline bounds the whole retry
+// sequence rather than one request.
+func (p snmpProbe) connection(ctx context.Context) (*gosnmp.GoSNMP, error) {
+	// A port in the address wins over the field, which is how a caller names a
+	// device listening somewhere other than 161.
+	host := p.Address
+	port := p.Port
+	if h, parsed, err := net.SplitHostPort(p.Address); err == nil {
+		host = h
+		if parsedPort, err := strconv.Atoi(parsed); err == nil {
+			port = parsedPort
+		}
+	}
+	if port == 0 {
+		port = defaultSNMPPort
+	}
+
+	// Both the request field and the parsed address are caller-supplied. Without
+	// this check the conversion below would silently wrap and reach a different
+	// port than the one asked for.
+	if port < 1 || port > math.MaxUint16 {
+		return nil, &SNMPRequestError{
+			Field:  "port",
+			Value:  strconv.Itoa(port),
+			Reason: "must be between 1 and " + strconv.Itoa(math.MaxUint16),
+		}
+	}
+
+	conn := &gosnmp.GoSNMP{
+		Target:    host,
+		Port:      uint16(port), // #nosec G115 -- range checked above
+		Transport: "udp",
+		Timeout:   SNMPProbeTimeout,
+		Retries:   SNMPProbeRetries,
+		Context:   ctx,
+	}
+
+	switch strings.ToLower(p.SNMPVersion) {
+	case "v2c", "2c":
+		conn.Version = gosnmp.Version2c
+		conn.Community = p.Community
+	case "v1", "1":
+		conn.Version = gosnmp.Version1
+		conn.Community = p.Community
+	case "v3", "3":
+		if err := snmp.ConfigureV3(conn, snmp.V3Credentials{
+			Username:     p.Username,
+			AuthProtocol: p.AuthProtocol,
+			AuthPassword: p.AuthPassword,
+			PrivProtocol: p.PrivProtocol,
+			PrivPassword: p.PrivPassword,
+		}); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, &SNMPRequestError{
+			Field:  "snmp_version",
+			Value:  p.SNMPVersion,
+			Reason: "want v1, v2c or v3",
+		}
+	}
+
+	return conn, nil
+}
+
+// probeForDevice describes a stored device, so every endpoint that reaches a
+// registered device does it with the same credentials in the same order.
+func probeForDevice(device *storage.Device) snmpProbe {
+	port := device.Port
+	if port == 0 {
+		port = defaultSNMPPort
+	}
+	return snmpProbe{
+		Device:       device.Name,
+		Address:      device.Address,
+		SNMPVersion:  device.SNMPVersion,
+		Community:    device.Community,
+		Port:         port,
+		Username:     device.Username,
+		AuthProtocol: device.AuthProtocol,
+		AuthPassword: device.AuthPassword,
+		PrivProtocol: device.PrivProtocol,
+		PrivPassword: device.PrivPassword,
+	}
+}
+
 // performSNMPTest probes a device's system group and reports what it found.
 //
 // The whole probe is bounded by SNMPProbeBudget. That bound is the point: this
@@ -214,74 +300,15 @@ func (s *Server) performSNMPTest(ctx context.Context, probe snmpProbe) *SNMPTest
 	ctx, cancel := context.WithTimeout(ctx, SNMPProbeBudget)
 	defer cancel()
 
-	// Parse address to separate host and port if provided
-	host := probe.Address
-	port := probe.Port
-	if h, p, err := net.SplitHostPort(probe.Address); err == nil {
-		host = h
-		if parsedPort, err := strconv.Atoi(p); err == nil {
-			port = parsedPort
-		}
-	}
-	if port == 0 {
-		port = defaultSNMPPort
-	}
-
-	// Both the request field and the parsed address are caller-supplied. Without
-	// this check the conversion below would silently wrap and probe a different
-	// port than the one asked for.
-	if port < 1 || port > math.MaxUint16 {
-		return probe.reject(startTime, &SNMPRequestError{
-			Field:  "port",
-			Value:  strconv.Itoa(port),
-			Reason: "must be between 1 and " + strconv.Itoa(math.MaxUint16),
-		})
-	}
-
-	// Create SNMP connection
-	snmpConn := &gosnmp.GoSNMP{
-		Target:    host,
-		Port:      uint16(port), // #nosec G115 -- range checked above
-		Transport: "udp",
-		Timeout:   SNMPProbeTimeout,
-		Retries:   SNMPProbeRetries,
-		Context:   ctx,
-	}
-
-	// Configure version
-	switch strings.ToLower(probe.SNMPVersion) {
-	case "v2c", "2c":
-		snmpConn.Version = gosnmp.Version2c
-		snmpConn.Community = probe.Community
-	case "v1", "1":
-		snmpConn.Version = gosnmp.Version1
-		snmpConn.Community = probe.Community
-	case "v3", "3":
-		// The same configuration the poller uses. Two implementations of this
-		// disagreed once already: the tester derived the security level from
-		// the protocols and the poller hardcoded authPriv, so a device could
-		// pass its connectivity test here and still be unpollable.
-		if err := snmp.ConfigureV3(snmpConn, snmp.V3Credentials{
-			Username:     probe.Username,
-			AuthProtocol: probe.AuthProtocol,
-			AuthPassword: probe.AuthPassword,
-			PrivProtocol: probe.PrivProtocol,
-			PrivPassword: probe.PrivPassword,
-		}); err != nil {
-			return probe.reject(startTime, err)
-		}
-	default:
-		return probe.reject(startTime, &SNMPRequestError{
-			Field:  "snmp_version",
-			Value:  probe.SNMPVersion,
-			Reason: "want v1, v2c or v3",
-		})
+	snmpConn, err := probe.connection(ctx)
+	if err != nil {
+		return probe.reject(startTime, err)
 	}
 
 	// Connect
-	if err := snmpConn.Connect(); err != nil {
+	if connectErr := snmpConn.Connect(); connectErr != nil {
 		return probe.fail(startTime, &SNMPProbeError{
-			Device: probe.Device, Address: probe.Address, Reason: "connect failed", Err: err,
+			Device: probe.Device, Address: probe.Address, Reason: "connect failed", Err: connectErr,
 		})
 	}
 	// The probe is finished by the time this runs; a close error says nothing
@@ -345,7 +372,8 @@ func (s *Server) performSNMPTest(ctx context.Context, probe snmpProbe) *SNMPTest
 	}
 
 	s.log().DebugContext(ctx, "SNMP probe succeeded",
-		"device", probe.Device, "host", host, "port", port, "sys_name", response.SysName)
+		"device", probe.Device, "host", snmpConn.Target, "port", snmpConn.Port,
+		"sys_name", response.SysName)
 
 	return response
 }

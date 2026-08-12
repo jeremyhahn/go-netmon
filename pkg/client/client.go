@@ -306,6 +306,80 @@ func (c *Client) AssignMIBToDevice(
 	return &assignment, nil
 }
 
+// SNMPWalkVarbind is one object a device answered with. Name and Module are
+// empty when no imported MIB describes the OID.
+type SNMPWalkVarbind struct {
+	OID    string `json:"oid"`
+	Name   string `json:"name,omitempty"`
+	Module string `json:"module,omitempty"`
+	Type   string `json:"type"`
+	Value  string `json:"value"`
+}
+
+// SNMPWalkResponse is the result of walking one subtree.
+type SNMPWalkResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+
+	Device  string `json:"device,omitempty"`
+	Address string `json:"address,omitempty"`
+	Root    string `json:"root"`
+
+	Count     int               `json:"count"`
+	Truncated bool              `json:"truncated,omitempty"`
+	Duration  string            `json:"duration"`
+	Varbinds  []SNMPWalkVarbind `json:"varbinds"`
+
+	Error    string `json:"error,omitempty"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+	Rejected bool   `json:"rejected,omitempty"`
+}
+
+// WalkDevice walks a stored device's OID tree using the credentials the server
+// already holds for it. An empty oid walks from 1.3.6.1, and a limit of 0 takes
+// the server's default.
+//
+// A device that answers nothing is a successful walk with no varbinds: "this box
+// does not implement that MIB" is the answer, not a failure.
+func (c *Client) WalkDevice(
+	ctx context.Context, deviceID int64, oid string, limit int,
+) (*SNMPWalkResponse, error) {
+	query := url.Values{}
+	if oid != "" {
+		query.Set("oid", oid)
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+
+	path := "/api/devices/" + itoa(deviceID) + "/walk"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+
+	var resp SNMPWalkResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		// A silent or refusing device is reported as the walk it is, so callers
+		// render one shape either way -- the same contract TestDeviceSNMP has.
+		return walkResult(err)
+	}
+	return &resp, nil
+}
+
+// walkResult turns an API error carrying a walk body back into that walk.
+func walkResult(err error) (*SNMPWalkResponse, error) {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return nil, err
+	}
+
+	var resp SNMPWalkResponse
+	if decodeErr := json.Unmarshal([]byte(apiErr.Body), &resp); decodeErr != nil || resp.Root == "" {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // RemoveMIBFromDevice detaches a directly assigned MIB.
 func (c *Client) RemoveMIBFromDevice(ctx context.Context, deviceID, mibID int64) error {
 	return c.do(ctx, http.MethodDelete,
