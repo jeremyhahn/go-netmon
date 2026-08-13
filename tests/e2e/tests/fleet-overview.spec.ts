@@ -73,10 +73,39 @@ type FleetEntry = {
 
 // serveFleet answers /api/devices/status with a payload of our own, so a state
 // the live stack is not currently in can still be driven through the UI.
+//
+// It narrows and pages the way the server does, because the overview now asks
+// for a page rather than the whole fleet: a fixture that ignored limit, offset,
+// search and state would answer questions the browser did not ask and would
+// hide a paging defect rather than expose one. The summary counts every device
+// regardless of the filters, which is the contract the chips depend on.
 async function serveFleet(page: Page, devices: FleetEntry[]) {
-  await page.route('**/api/devices/status', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify({ devices }),
-  }));
+  await page.route('**/api/devices/status*', route => {
+    const params = new URL(route.request().url()).searchParams;
+    const search = (params.get('search') || '').toLowerCase();
+    const state = params.get('state') || '';
+    const limit = Number(params.get('limit') || 0);
+    const offset = Number(params.get('offset') || 0);
+
+    const summary: Record<string, number> = {};
+    for (const device of devices) {
+      summary[device.state] = (summary[device.state] || 0) + 1;
+    }
+
+    const matching = devices.filter(device => {
+      if (state && device.state !== state) return false;
+      if (!search) return true;
+      return `${device.name} ${device.address ?? ''} ${device.state}`.toLowerCase().includes(search);
+    });
+    const page_ = limit ? matching.slice(offset, offset + limit) : matching;
+
+    return route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        devices: page_, total: matching.length, configured: devices.length, summary,
+      }),
+    });
+  });
 }
 
 // rowFor returns the row of the named device.
@@ -475,7 +504,7 @@ test.describe('fleet overview', () => {
   test('a status endpoint that fails says so instead of showing an empty fleet', async ({ page }) => {
     let attempts = 0;
     await serveWorkingTree(page);
-    await page.route('**/api/devices/status', route => {
+    await page.route('**/api/devices/status*', route => {
       attempts += 1;
       return route.fulfill({
         status: 503, contentType: 'application/json',
@@ -503,7 +532,7 @@ test.describe('fleet overview', () => {
   test('a malformed payload leaves the surface standing', async ({ page }) => {
     const errors = consoleErrors(page);
     await serveWorkingTree(page);
-    await page.route('**/api/devices/status', route => route.fulfill({
+    await page.route('**/api/devices/status*', route => route.fulfill({
       status: 200, contentType: 'application/json', body: '{"devices": "not-a-list"',
     }));
     await page.goto(BASE, { waitUntil: 'domcontentloaded' });
@@ -537,7 +566,7 @@ test.describe('fleet overview', () => {
 
     let statusRequests = 0;
     await serveWorkingTree(page);
-    await page.route('**/api/devices/status', async route => {
+    await page.route('**/api/devices/status*', async route => {
       statusRequests += 1;
       await route.continue();
     });

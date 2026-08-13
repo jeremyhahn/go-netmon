@@ -119,7 +119,10 @@ async function serveManyModules(page: Page, mibs: ReturnType<typeof syntheticMib
     const merged = [...(body.all_mibs || []), ...mibs].sort((a, b) => a.name.localeCompare(b.name));
     await route.fulfill({ response, body: JSON.stringify({ ...body, all_mibs: merged }) });
   });
-  await page.route('**/api/mibs?filter=available', async route => {
+  // The availability check carries the device it is asking about
+  // (?filter=available&device=NAME), so the pattern has to admit a query
+  // string rather than pin the one it had when this was written.
+  await page.route(/\/api\/mibs\?filter=available/, async route => {
     const response = await route.fetch();
     const body = await response.json();
     await route.fulfill({ response, body: JSON.stringify({ mibs: [...(body.mibs || []), ...mibs] }) });
@@ -325,8 +328,14 @@ test.describe('paged list surfaces', () => {
     await footer.getByRole('button', { name: 'Next page' }).click();
     await expect(rows).toHaveCount(50);
     await expect(status).toContainText('Showing 51–100 of');
-    await expect(footer.getByRole('button', { name: 'Page 2 of 4' }))
+    await expect(footer.getByRole('button', { name: /^Page 2 of \d+$/ }))
       .toHaveAttribute('aria-current', 'page');
+
+    // How many modules are in the library is a property of the deployment, not
+    // of the pager, and it grows with every import. The pager has to report it
+    // correctly; pinning the number here only dates the test.
+    const total = (await status.textContent() || '').match(/of ([\d,]+) modules/)?.[1];
+    expect(total, `the pager did not state a total: ${await status.textContent()}`).toBeTruthy();
 
     // A search covers the whole library, not just the rows on screen, and it
     // re-pages from the first page rather than leaving the reader on a page
@@ -334,13 +343,13 @@ test.describe('paged list surfaces', () => {
     await search.fill('cisco-entity-vendortype');
     await expect(rows).toHaveCount(1);
     await expect(rows.first()).toContainText('CISCO-ENTITY-VENDORTYPE-OID-MIB');
-    await expect(status).toHaveText('Showing 1 of 1 modules matching, 170 in total');
+    await expect(status).toHaveText(`Showing 1 of 1 modules matching, ${total} in total`);
 
     // Tags are searchable too, and an unmatched term says so rather than
     // leaving an empty table.
     await search.fill('zzz-no-such-module');
     await expect(page.locator('#storedMibsListBody .empty-state')).toBeVisible();
-    await expect(status).toContainText('170 in total');
+    await expect(status).toContainText(`${total} in total`);
 
     expect(errors, `console errors: ${errors.join(' | ')}`).toHaveLength(0);
   });

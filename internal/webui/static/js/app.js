@@ -18,6 +18,9 @@ const MIB_EXPAND_ALL_CONCURRENCY = 4;
 // screen and the controls would be chrome rather than help.
 const LIST_PAGE = 50;
 const LIST_CONTROLS_MIN = 8;
+// How long a server-backed list waits before turning a typed search into a
+// request, so a word costs one round trip rather than one per letter.
+const LIST_SEARCH_DEBOUNCE = 250;
 
 // The MIB browser pages smaller than the other lists. Each of its rows is an
 // accordion that expands into a table of objects, so a screenful of them is far
@@ -93,6 +96,10 @@ class MonitoringApp {
     constructor() {
         this.ws = null;
         this.charts = {};
+        // The most recent reading for each subscribed query. A steady query is
+        // announced by name rather than re-sent, and this is what those names
+        // resolve back to.
+        this.lastReadings = new Map();
         this.reconnectInterval = 3000;
         this.currentView = 'dashboard';
         this.currentDevice = null;
@@ -124,7 +131,13 @@ class MonitoringApp {
         // server sent it, plus which state chip is filtering the list and when
         // the payload arrived. fetchedAt is what "updated 12s ago" is measured
         // against, so a stale surface says so instead of looking live.
-        this.fleet = { devices: [], stateFilter: '', fetchedAt: null, error: null };
+        // devices is the page on screen; total is how many match the current
+        // search and chip; configured and summary describe the whole fleet and
+        // come from the server, which is the only place that sees all of it.
+        this.fleet = {
+            devices: [], total: 0, configured: 0, summary: {},
+            stateFilter: '', fetchedAt: null, error: null
+        };
         this.fleetRequest = null;
         this.fleetBound = false;
 
@@ -312,22 +325,6 @@ class MonitoringApp {
         });
     }
 
-    appendChartData(chartName, seriesIndex, dataPoint) {
-        const chart = this.charts[chartName];
-        if (!chart) return;
-
-        const option = chart.getOption();
-        const data = option.series[seriesIndex].data;
-
-        data.push(dataPoint);
-
-        // Keep last 50 data points
-        if (data.length > 50) {
-            data.shift();
-        }
-
-        chart.setOption(option);
-    }
 
     // ========================================
     // WebSocket
@@ -342,9 +339,13 @@ class MonitoringApp {
         this.ws.onopen = () => {
             console.log('WebSocket connected');
             this.updateStatus(true);
-            this.subscribeToMetrics();
 
-            // Re-subscribe to active dashboards after reconnection
+            // Only the device on screen is subscribed to. There is deliberately
+            // no fleet-wide warm-up here: unqualified names like
+            // "snmp_sysUpTime" match every series on every device, so a
+            // ten-thousand-device fleet pushed roughly 1.5MB every five seconds
+            // to every open browser, whichever device it was showing -- and
+            // nothing ever read it.
             this.resubscribeActiveDashboards();
         };
 
@@ -365,60 +366,28 @@ class MonitoringApp {
         };
     }
 
-    subscribeToMetrics() {
-        // Warm-up subscriptions: the handful of objects the overview leans on,
-        // named after the MIB object the way the exporter names every series.
-        // Their row index, where they have one, is in labels, so one name here
-        // covers every row of the object.
-        const subscriptions = [
-            'snmp_sysUpTime',
-            'snmp_cpmCPUTotal5sec',
-            'snmp_ciscoMemoryPoolUsed',
-            'snmp_ciscoMemoryPoolFree',
-        ];
-
-        this.ws.send(JSON.stringify({
-            type: 'subscribe',
-            queries: subscriptions
-        }));
-    }
-
     handleMessage(message) {
-        console.log('WebSocket message received:', message.type, message.query, message.metrics?.length || 0, 'metrics');
         if (message.type === 'metric_update') {
-            // Handle both old MIB browser charts and new dashboard charts
-            this.updateChart(message.query, message.metrics, message.timestamp);
+            // The reading is kept so a later "still the same" can be replayed
+            // through this very path, rather than a second path that would
+            // drift away from it.
+            this.lastReadings.set(message.query, message.metrics);
             this.updateDashboardCharts(message.query, message.metrics, message.timestamp);
-        }
-    }
-
-    updateChart(query, metrics, timestamp) {
-        // Skip if metrics is not an array or is empty
-        if (!metrics || !Array.isArray(metrics) || metrics.length === 0) {
             return;
         }
 
-        const time = new Date(timestamp * 1000);
-
-        if (query.includes('1_3_6_1_2_1_1_3_0')) {
-            metrics.forEach(m => {
-                const days = (m.value / 100 / 86400).toFixed(2);
-                this.appendChartData('uptime', 0, [time, days]);
-            });
-        } else if (query.includes('1_3_6_1_4_1_9_9_109')) {
-            metrics.forEach(m => {
-                this.appendChartData('cpu', 0, [time, m.value]);
-            });
-        } else if (query.includes('1_3_6_1_4_1_9_9_48_1_1_1_5')) {
-            metrics.forEach(m => {
-                const mb = (m.value / 1024 / 1024).toFixed(2);
-                this.appendChartData('memory', 0, [time, mb]);
-            });
-        } else if (query.includes('1_3_6_1_4_1_9_9_48_1_1_1_6')) {
-            metrics.forEach(m => {
-                const mb = (m.value / 1024 / 1024).toFixed(2);
-                this.appendChartData('memory', 1, [time, mb]);
-            });
+        if (message.type === 'metrics_unchanged') {
+            // These queries were re-read and found exactly as we already have
+            // them, so the server sent their names instead of their numbers.
+            // The charts still have to reach this tick: a live view whose line
+            // stops at the last change reads as data having stopped, and the
+            // duration of a steady value is itself something to see.
+            for (const query of message.queries || []) {
+                const reading = this.lastReadings.get(query);
+                if (reading) {
+                    this.updateDashboardCharts(query, reading, message.timestamp);
+                }
+            }
         }
     }
 
@@ -829,7 +798,7 @@ class MonitoringApp {
         // A reorder is a different set in a different order: read from its
         // start, exactly as a new search term is.
         state.page = 0;
-        this.paintPagedList(mountId);
+        this.repagePagedList(mountId);
         this.restoreSortFocus(mountId, key);
     }
 
@@ -902,7 +871,19 @@ class MonitoringApp {
             // Both or neither: a repaint edits rows in place only when the list
             // can say which row is which and how to bring one up to date.
             rowKey: options.rowKey || null,
-            patchRow: options.patchRow || null
+            patchRow: options.patchRow || null,
+            // A list whose rows live on the server declares a source. The
+            // component then holds one page rather than the whole set, and
+            // searching, sorting and paging are questions asked of the server
+            // instead of of an array in the browser -- which is what lets a
+            // ten-thousand-device fleet be paged without shipping all of it.
+            source: options.source || null,
+            // What the server says matches, which the pager needs and the page
+            // in hand cannot tell it.
+            total: options.total || 0,
+            // And how many there are before any narrowing, so the pager can say
+            // "of 200 in total" while a filter is showing twelve of them.
+            grandTotal: options.grandTotal || 0
         };
         this.pagedLists.set(mountId, state);
 
@@ -965,22 +946,34 @@ class MonitoringApp {
             ? document.getElementById(options.searchInput)
             : mount.querySelector('.paged-list-search');
         if (searchBox) {
+            // Whatever is in the box right now is the term this render must
+            // honour, first render included. A reader who typed while the list
+            // was still loading has already said what they want, and starting
+            // them on the unfiltered set drops it silently -- which is what
+            // happened as the MIB library grew and its first render got slower.
+            state.search = searchBox.value || '';
+
             // An external box outlives the list it drives, so its listener is
             // registered once and remembered; re-registering on every rebuild
-            // would stack handlers and repaint once per past render.
+            // would stack handlers, and each stale one would drive the list
+            // through a state object that is no longer the live one.
+            const bindOnce = options.searchInput
+                && this.externalSearchBound.has(options.searchInput);
             if (options.searchInput) {
-                if (this.externalSearchBound.has(options.searchInput)) {
-                    state.search = searchBox.value || '';
-                } else {
-                    this.externalSearchBound.add(options.searchInput);
-                }
+                this.externalSearchBound.add(options.searchInput);
             }
-            searchBox.addEventListener('input', () => {
-                state.search = searchBox.value;
-                // A narrower set is a different set: it is read from its start.
-                state.page = 0;
-                this.paintPagedList(mountId);
-            });
+            if (!bindOnce) {
+                searchBox.addEventListener('input', () => {
+                    // The live state, not the one captured when this listener
+                    // was made: the list is rebuilt whenever its data changes.
+                    const live = this.pagedLists.get(mountId);
+                    if (!live) return;
+                    live.search = searchBox.value;
+                    // A narrower set is a different set: read from its start.
+                    live.page = 0;
+                    this.repagePagedList(mountId);
+                });
+            }
         }
 
         const sizeSelect = mount.querySelector('.pager-size-select');
@@ -993,16 +986,61 @@ class MonitoringApp {
                 state.page = Math.floor((state.page * state.size) / next);
                 state.size = next;
                 this.setPagerSize(state.sizeKey, next);
-                this.paintPagedList(mountId);
+                this.repagePagedList(mountId);
             });
         }
 
         this.bindPager(mount.querySelector('.paged-list-footer'), (page) => {
             state.page = page;
-            this.paintPagedList(mountId);
+            this.repagePagedList(mountId);
         });
 
         this.paintPagedList(mountId);
+    }
+
+    // repagePagedList redraws after the reader moved, searched or resorted.
+    //
+    // A list holding its own rows just repaints. A list whose rows live on the
+    // server has to ask for the new page first, and a search typed a character
+    // at a time must not put one request per keystroke on the wire, so the ask
+    // is coalesced: the latest intent wins and anything still in flight for an
+    // older one is discarded when it lands.
+    repagePagedList(mountId) {
+        const state = this.pagedLists.get(mountId);
+        if (!state) return;
+
+        if (!state.source) {
+            this.paintPagedList(mountId);
+            return;
+        }
+
+        const generation = (state.generation || 0) + 1;
+        state.generation = generation;
+
+        clearTimeout(state.pendingFetch);
+        state.pendingFetch = setTimeout(async () => {
+            try {
+                const answer = await state.source({
+                    search: state.search.trim(),
+                    page: state.page,
+                    size: state.size,
+                    sortKey: state.sortKey,
+                    sortDir: state.sortDir
+                });
+                // A later request has already been made; this answer describes
+                // a view the reader has moved on from.
+                if (state.generation !== generation) return;
+                if (answer) {
+                    state.items = answer.items || [];
+                    state.total = answer.total || 0;
+                    state.grandTotal = answer.grandTotal || answer.total || 0;
+                }
+            } catch (error) {
+                console.error(`Loading a page of ${mountId} failed:`, error);
+            } finally {
+                if (state.generation === generation) this.paintPagedList(mountId);
+            }
+        }, state.items.length ? LIST_SEARCH_DEBOUNCE : 0);
     }
 
     paintPagedList(mountId) {
@@ -1016,16 +1054,34 @@ class MonitoringApp {
         // The filter runs first and the search narrows what it left, so the two
         // compose instead of replacing one another, and the counts below
         // describe the set the reader can actually see.
-        const term = state.search.trim().toLowerCase();
-        const scoped = state.filter ? state.items.filter(state.filter) : state.items;
-        const matched = term ? scoped.filter(item => state.matches(item, term)) : scoped;
+        // Rows fetched for this page are already the answer to the search, the
+        // filter and the sort -- the server applied all three. Re-applying them
+        // here would narrow a page against itself and hide rows the server
+        // deliberately included.
+        const server = Boolean(state.source);
+        let ordered;
+        let slice;
+        let page;
+        if (server) {
+            ordered = state.items;
+            slice = this.pagerSlice(state.total, state.page, state.size);
+            state.page = slice.page;
+            page = state.items;
+        } else {
+            // The filter runs first and the search narrows what it left, so the
+            // two compose instead of replacing one another, and the counts below
+            // describe the set the reader can actually see.
+            const term = state.search.trim().toLowerCase();
+            const scoped = state.filter ? state.items.filter(state.filter) : state.items;
+            const matched = term ? scoped.filter(item => state.matches(item, term)) : scoped;
 
-        const ordered = state.sortKey ? this.sortItems(matched, state) : matched;
+            ordered = state.sortKey ? this.sortItems(matched, state) : matched;
 
-        const slice = this.pagerSlice(ordered.length, state.page, state.size);
-        state.page = slice.page;
+            slice = this.pagerSlice(ordered.length, state.page, state.size);
+            state.page = slice.page;
 
-        const page = ordered.slice(slice.from, slice.to);
+            page = ordered.slice(slice.from, slice.to);
+        }
 
         // A list that refreshes on a timer rewrites the same rows over and over.
         // Replacing the table wholesale throws away the row elements a reader is
@@ -1037,7 +1093,7 @@ class MonitoringApp {
         // touched. Everything else, including whatever the reader has focused or
         // selected, stays where it was.
         if (!this.patchPagedRows(state, body, page)) {
-            body.innerHTML = ordered.length === 0
+            body.innerHTML = page.length === 0
                 ? `<p class="empty-state">No ${this.escapeHtml(state.noun)} match “${this.escapeHtml(state.search.trim())}”</p>`
                 : state.wrap(state.renderRows(page), mountId);
         }
@@ -1046,11 +1102,13 @@ class MonitoringApp {
         // position to report and nowhere to step to, so it gets no footer.
         if (state.afterPaint) state.afterPaint();
 
-        footer.hidden = slice.pages <= 1 && ordered.length === state.items.length;
+        const matched = server ? state.total : ordered.length;
+        const total = server ? (state.grandTotal || state.total) : state.items.length;
+        footer.hidden = slice.pages <= 1 && matched === total;
         this.paintPager(`${mountId}Pager`, `${mountId}Status`, {
             slice,
-            matched: ordered.length,
-            total: state.items.length,
+            matched,
+            total,
             noun: state.noun,
             label: state.label
         });
@@ -1237,10 +1295,11 @@ class MonitoringApp {
 
         this.fleetRequest = (async () => {
             try {
-                const response = await fetch('/api/devices/status');
-                if (!response.ok) throw new Error(`the status endpoint answered ${response.status}`);
-                const data = await response.json();
+                const data = await this.fetchFleetPage();
                 this.fleet.devices = Array.isArray(data.devices) ? data.devices : [];
+                this.fleet.total = data.total || 0;
+                this.fleet.configured = data.configured || 0;
+                this.fleet.summary = data.summary || {};
                 this.fleet.error = null;
                 // Only a read that worked moves the clock, so a failed refresh
                 // cannot make stale rows look freshly taken.
@@ -1257,6 +1316,29 @@ class MonitoringApp {
         })();
 
         return this.fleetRequest;
+    }
+
+    // fetchFleetPage asks for the slice of the fleet on screen, plus the counts
+    // that describe the whole of it.
+    //
+    // The rows a reader cannot see were the overwhelming majority of this
+    // response -- about 3MB per refresh per open browser at ten thousand
+    // devices, every thirty seconds. The summary still covers every device,
+    // because "12 unreachable" is a statement about the fleet and not about
+    // page one, but it travels as a handful of numbers.
+    async fetchFleetPage() {
+        const list = this.pagedLists.get('fleetDeviceList');
+        const size = list ? list.size : LIST_PAGE;
+        const page = list ? list.page : 0;
+        const search = list ? list.search.trim() : '';
+
+        const params = new URLSearchParams({ limit: String(size), offset: String(page * size) });
+        if (search) params.set('search', search);
+        if (this.fleet.stateFilter) params.set('state', this.fleet.stateFilter);
+
+        const response = await fetch(`/api/devices/status?${params}`);
+        if (!response.ok) throw new Error(`the status endpoint answered ${response.status}`);
+        return response.json();
     }
 
     renderFleetOverview() {
@@ -1290,7 +1372,7 @@ class MonitoringApp {
         const header = document.getElementById('fleetUpdated');
         if (!header) return;
 
-        const count = this.fleet.devices.length;
+        const count = this.fleet.configured;
         const noun = `${count.toLocaleString()} configured device${count === 1 ? '' : 's'}`;
         // Every relative time on this surface is frozen between refreshes, so
         // the header says which read they all belong to and how often it moves.
@@ -1322,15 +1404,17 @@ class MonitoringApp {
         // A strip counting nothing is chrome. With no fleet on screen — because
         // none is configured, or because the read failed — the list below says
         // which of those two it is, and says it once.
-        if (this.fleet.devices.length === 0) {
+        if (this.fleet.configured === 0) {
             summary.innerHTML = '';
             return;
         }
 
+        // Counted across every configured device by the server. Counting the
+        // rows in hand would make each chip read as "how many of this page",
+        // which is not what a fleet tally means.
         const counts = new Map();
-        for (const device of this.fleet.devices) {
-            const key = this.fleetStateMeta(device.state).key;
-            counts.set(key, (counts.get(key) || 0) + 1);
+        for (const [state, count] of Object.entries(this.fleet.summary || {})) {
+            counts.set(this.fleetStateMeta(state).key, count);
         }
 
         // A chip whose devices have all left the fleet cannot stay selected, or
@@ -1344,7 +1428,7 @@ class MonitoringApp {
             if (!keys.includes(key)) keys.push(key);
         }
 
-        const total = this.fleet.devices.length;
+        const total = this.fleet.configured;
         summary.innerHTML = [
             this.renderFleetChip('', 'All devices', total, 'total'),
             ...keys.map(key => {
@@ -1375,6 +1459,8 @@ class MonitoringApp {
             // A refresh replaces the rows without disturbing the search term or
             // how far the reader has paged.
             state.items = this.fleet.devices;
+            state.total = this.fleet.total;
+            state.grandTotal = this.fleet.configured;
             this.paintPagedList('fleetDeviceList');
             return;
         }
@@ -1382,11 +1468,28 @@ class MonitoringApp {
         this.pagedLists.delete('fleetDeviceList');
         this.renderPagedList('fleetDeviceList', {
             items: this.fleet.devices,
+            total: this.fleet.total,
+            grandTotal: this.fleet.configured,
             noun: 'devices',
             placeholder: 'Search devices by name, address or state…',
-            filter: device => !this.fleet.stateFilter
-                || this.fleetStateMeta(device.state).key === this.fleet.stateFilter,
-            matches: (device, term) => this.fleetSearchText(device).includes(term),
+            // The fleet lives on the server. Searching, filtering and paging are
+            // asked of it rather than of an array here, so a browser holds the
+            // page on screen instead of every configured device.
+            source: async () => {
+                const data = await this.fetchFleetPage();
+                this.fleet.devices = Array.isArray(data.devices) ? data.devices : [];
+                this.fleet.total = data.total || 0;
+                this.fleet.configured = data.configured || 0;
+                this.fleet.summary = data.summary || {};
+                this.fleet.error = null;
+                this.renderFleetHeader();
+                this.renderFleetSummary();
+                return {
+                    items: this.fleet.devices,
+                    total: this.fleet.total,
+                    grandTotal: this.fleet.configured
+                };
+            },
             // The search box is always offered here, unlike the other lists.
             // This is the surface the app opens on and the one a reader arrives
             // at knowing the device they want, so the box is a destination
@@ -1657,8 +1760,9 @@ class MonitoringApp {
         this.fleetBound = true;
     }
 
-    // Toggling a chip repaints the rows; it never re-sorts them and never
-    // re-fetches. Clicking the active chip again clears the filter.
+    // Toggling a chip narrows the fleet to one state. The rows live on the
+    // server, so it asks for a new first page rather than filtering an array it
+    // no longer holds. Clicking the active chip again clears the filter.
     setFleetStateFilter(stateKey) {
         this.fleet.stateFilter = this.fleet.stateFilter === stateKey ? '' : stateKey;
 
@@ -1667,7 +1771,7 @@ class MonitoringApp {
         if (state) state.page = 0;
 
         this.renderFleetSummary();
-        this.paintPagedList('fleetDeviceList');
+        this.repagePagedList('fleetDeviceList');
     }
 
     // Opening a device goes through the selector, so the one place that knows
@@ -5060,6 +5164,10 @@ class MonitoringApp {
             return;
         }
 
+        // Every point on a chart is plotted at the tick that carried it. The
+        // dashboard is a live view on a timer, so the x axis is the timer --
+        // which is also what lets a steady reading be replayed at a later tick
+        // to carry its line forward.
         const time = new Date(timestamp * 1000);
         console.log('Active subscriptions count:', this.activeSubscriptions.size);
 
@@ -7992,6 +8100,13 @@ class MonitoringApp {
         const { metricQueries, statusQueries } = subscriptionData;
         const allQueries = [...metricQueries, ...statusQueries];
 
+        // The cards these fed are gone, so the readings held for them are dead
+        // weight -- and a reader moving between devices all day would otherwise
+        // accumulate one per query per device visited.
+        for (const query of allQueries) {
+            this.lastReadings.delete(query);
+        }
+
         console.log(`Unsubscribing from dashboard: ${key} with ${allQueries.length} queries`);
 
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -8016,7 +8131,11 @@ class MonitoringApp {
         });
 
         keysToRemove.forEach(key => {
-            const mibName = key.split('-')[1];
+            // The key is `${deviceId}-${mibName}`, and MIB names carry hyphens of
+            // their own -- HOST-RESOURCES-MIB, IF-MIB. Splitting on the hyphen
+            // recovered "HOST", so the lookup missed and the subscription was
+            // never released; the name is everything past the first hyphen.
+            const mibName = key.slice(String(deviceId).length + 1);
             this.unsubscribeFromDashboard(deviceId, mibName);
         });
     }

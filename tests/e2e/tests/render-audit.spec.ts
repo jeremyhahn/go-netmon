@@ -74,6 +74,16 @@ async function auditDevice(page: Page, deviceId: number) {
     }
   }
 
+  // A card that has just been built is legitimately "waiting": its no-data
+  // deadline is 30s away, and a row the device does not populate only reads as
+  // empty once that lands. Classifying before then reports a verdict the app
+  // has not reached yet, so settle first -- but only as long as it takes.
+  await page.waitForFunction(() => {
+    const cards = Array.from(document.querySelectorAll('.chart-container, .widget, .chart-card'));
+    return !cards.some(card =>
+      /waiting for data/i.test(card.textContent || '') && !card.classList.contains('is-nodata'));
+  }, undefined, { timeout: 45000 }).catch(() => { /* report whatever is left */ });
+
   return page.evaluate(() => {
     const app = (window as any).app;
     const out: CardState[] = [];
@@ -101,13 +111,23 @@ async function auditDevice(page: Page, deviceId: number) {
   });
 }
 
-const DEVICES: [number, string][] = [
+// One device per profile, plus every member of the Supermicro fleet: the BMCs
+// share a profile but not their firmware state, and a card that draws on one
+// board is not proof it draws on the next.
+const ALL_DEVICES: [number, string][] = [
   [1, 'core-01'], [3, 'pdu-03'], [4, 'bastion'],
-  [5, 'dist-01'], [9, 'lab-node-1-bmc'],
+  [5, 'dist-01'], [9, 'lab-node-1-bmc'], [14, 'lab-node-2-bmc'],
+  [15, 'lab-node-3-bmc'], [16, 'lab-node-4-bmc'], [17, 'lab-node-5-bmc'],
 ];
 
+// AUDIT_DEVICES narrows the run to named devices, which is how a device that
+// only fails late in a long session gets examined on its own.
+const DEVICES = process.env.AUDIT_DEVICES
+  ? ALL_DEVICES.filter(([, name]) => process.env.AUDIT_DEVICES!.split(',').includes(name))
+  : ALL_DEVICES;
+
 test('every device dashboard draws its cards, with none left waiting', async ({ page }) => {
-  test.setTimeout(600_000);
+  test.setTimeout(1_200_000);
 
   const failures: string[] = [];
   const report: string[] = [];

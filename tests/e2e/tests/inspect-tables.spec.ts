@@ -140,11 +140,20 @@ test('should check dashboard spec vs rendered output', async ({ page }) => {
     return mib.id;
   });
 
-  // Get dashboard spec from API
+  // The spec the page renders from, which is the device-scoped one.
+  //
+  // /api/mibs/{id}/dashboard on its own describes everything the module could
+  // show. The dashboard asks for it with ?device=NAME, which narrows it to the
+  // objects that device actually produces -- 12 of IF-MIB's 17 ifTable charts
+  // on core-01. Comparing the rendered page against the unnarrowed spec
+  // measured the availability filter rather than the renderer, and reported a
+  // mismatch every time the device did not implement every object.
   const dashboardSpec = await page.evaluate(async (id) => {
-    const res = await fetch(new URL(`/api/mibs/${id}/dashboard`, location.origin).toString());
+    const url = new URL(`/api/mibs/${id}/dashboard`, location.origin);
+    url.searchParams.set('device', 'core-01');
+    const res = await fetch(url.toString());
     if (!res.ok) {
-      throw new Error(`GET /api/mibs/${id}/dashboard failed: ${res.status}`);
+      throw new Error(`GET ${url.pathname}${url.search} failed: ${res.status}`);
     }
     return await res.json();
   }, ifMibId);

@@ -30,7 +30,15 @@ test('MIB browser loads collapsed and lazily', async ({ page }) => {
     console.log(`collapsed state: ${JSON.stringify(state)}`);
     console.log(`requests on tab open: ${requests.length - beforeTab}`);
 
-    expect(state.items, 'all modules should be listed').toBeGreaterThan(100);
+    // The library is paged rather than held in the document all at once -- that
+    // is the point of this surface, and rendering 179 accordion items to show
+    // eight is what it replaced. What has to be true is that one page is on
+    // screen and the pager accounts for the rest.
+    expect(state.items, 'a page of modules should be listed').toBeGreaterThan(0);
+    expect(state.items, 'the whole library is in the document again').toBeLessThanOrEqual(25);
+    const listed = await page.locator('#mibAccordionStatus').textContent();
+    expect(listed, `the pager does not account for the library: ${listed}`)
+      .toMatch(/of [\d,]+ modules/);
     expect(state.spinners, 'no permanent loading spinners').toBe(0);
     expect(state.height, 'page should not be tens of thousands of px').toBeLessThan(20000);
 

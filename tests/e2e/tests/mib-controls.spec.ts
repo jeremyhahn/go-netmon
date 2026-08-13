@@ -97,7 +97,11 @@ async function openDevice(page: Page) {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.locator('#devicesBtn').click();
 
-  const row = page.locator('#devicesList tr', { hasText: DEVICE_NAME });
+  // Matched on the name cell exactly, not by substring: the fleet also holds
+  // pdu-03-2, and "contains pdu-03" is true of both of them.
+  const row = page.locator('#devicesList tr').filter({
+    has: page.locator('td strong', { hasText: new RegExp(`^${DEVICE_NAME}$`) }),
+  });
   await expect(row).toBeVisible({ timeout: 20000 });
   await row.getByRole('button', { name: 'View' }).click();
 

@@ -43,8 +43,8 @@ func TestTimeoutBudgetOrdering(t *testing.T) {
 			outerName: "HandlerBudget", outer: HandlerBudget,
 		},
 		{
-			name:      "one device's fleet budget fits inside the whole fleet budget",
-			innerName: "FleetStatusDeviceBudget", inner: FleetStatusDeviceBudget,
+			name:      "the poller request timeout fits inside the fleet budget",
+			innerName: "PollerRequestTimeout", inner: PollerRequestTimeout,
 			outerName: "FleetStatusBudget", outer: FleetStatusBudget,
 		},
 		{
@@ -74,16 +74,13 @@ func TestTimeoutBudgetOrdering(t *testing.T) {
 		t.Errorf("only %v between HandlerBudget and ServerWriteTimeout; too little to write a response", slack)
 	}
 
-	// A device's budget inside a fleet request must expire before the poller
-	// client's own timeout, so that a hung poller is cut short once per device
-	// instead of running the client's retry ladder once per device.
-	if FleetStatusDeviceBudget >= PollerRequestTimeout {
-		t.Errorf("FleetStatusDeviceBudget (%v) does not expire before PollerRequestTimeout (%v); a hung poller would be retried once per device",
-			FleetStatusDeviceBudget, PollerRequestTimeout)
-	}
-
-	if FleetStatusConcurrency < 1 {
-		t.Errorf("FleetStatusConcurrency = %d; no device would ever be asked about", FleetStatusConcurrency)
+	// The fleet view makes one call to the poller however large the fleet is,
+	// so the client's own timeout must expire inside the fleet budget: the
+	// request then answers with every device marked unknown rather than being
+	// cut off mid-flight with nothing written.
+	if PollerRequestTimeout >= FleetStatusBudget {
+		t.Errorf("PollerRequestTimeout (%v) does not expire before FleetStatusBudget (%v); the fleet request would be cut off before it could answer",
+			PollerRequestTimeout, FleetStatusBudget)
 	}
 
 	if SNMPProbeAttempts != SNMPProbeRetries+1 {

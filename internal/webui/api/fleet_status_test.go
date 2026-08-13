@@ -40,10 +40,14 @@ func newServerWithPoller(t *testing.T, poller PollerClient) *Server {
 	return server
 }
 
-// tablePoller answers status requests from a fixed table.
+// tablePoller answers like a poller holding exactly these devices.
 //
-// A name that is in neither table is a device the poller has never picked up,
-// and is answered the way the real poller answers one: with a not-found error.
+// The fleet view reads the poller's whole listing in one call, so a device is
+// either in that listing or it is not: one in statuses appears with it, one in
+// failures appears without it -- the poller knows the device but has nothing to
+// say about it -- and one in neither is absent, which is what "not registered"
+// means. The per-device accessor answers from the same tables so the two can
+// never disagree.
 func tablePoller(statuses map[string]*client.DeviceStatus, failures map[string]error) *mockPollerClient {
 	return &mockPollerClient{
 		getDeviceStatusFunc: func(_ context.Context, name string) (*client.DeviceStatus, error) {
@@ -54,6 +58,16 @@ func tablePoller(statuses map[string]*client.DeviceStatus, failures map[string]e
 				return status, nil
 			}
 			return nil, errors.New("device not found")
+		},
+		listDevicesFunc: func(context.Context) ([]client.DeviceInfo, error) {
+			infos := make([]client.DeviceInfo, 0, len(statuses)+len(failures))
+			for name, status := range statuses {
+				infos = append(infos, client.DeviceInfo{Name: name, Status: status})
+			}
+			for name := range failures {
+				infos = append(infos, client.DeviceInfo{Name: name})
+			}
+			return infos, nil
 		},
 	}
 }
@@ -423,39 +437,22 @@ func TestFleetStatusCarriesDeviceIdentity(t *testing.T) {
 	}
 }
 
-// TestFleetStatusUnresponsiveDeviceDoesNotBlockTheFleet is the requirement that
-// motivated the per-device deadline: a device the poller never answers for is
-// reported as unknown and the healthy devices are reported in full.
-func TestFleetStatusUnresponsiveDeviceDoesNotBlockTheFleet(t *testing.T) {
-	poller := &mockPollerClient{
-		getDeviceStatusFunc: func(ctx context.Context, name string) (*client.DeviceStatus, error) {
-			if name == "blackhole" {
-				<-ctx.Done()
-				return nil, ctx.Err()
-			}
-			return &client.DeviceStatus{Name: name, Connected: true, LastPollSuccess: true, LastPollTime: time.Now()}, nil
-		},
-	}
-
-	server := newServerWithPoller(t, poller)
+// TestFleetStatusSilentDeviceIsReportedNotHidden covers the device the poller
+// holds no status for. It is registered, so it is not "not registered"; nothing
+// is known about it, so it is unknown -- and its neighbors are unaffected.
+func TestFleetStatusSilentDeviceIsReportedNotHidden(t *testing.T) {
+	healthy := &client.DeviceStatus{Connected: true, LastPollSuccess: true, LastPollTime: time.Now()}
+	server := newServerWithPoller(t, tablePoller(
+		map[string]*client.DeviceStatus{"alpha": healthy, "gamma": healthy},
+		map[string]error{"blackhole": errors.New("no status held")},
+	))
 	for _, name := range []string{"alpha", "blackhole", "gamma"} {
 		mustCreateDevice(t, server.storage, name)
 	}
 
-	// A caller deadline shorter than the endpoint's own budget keeps the test
-	// quick; it is the same cancellation the per-device budget applies.
-	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
-	defer cancel()
-
-	start := time.Now()
-	w, fleet := requestFleetStatus(ctx, t, server)
-	elapsed := time.Since(start)
-
+	w, fleet := requestFleetStatus(t.Context(), t, server)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: one silent device must not fail the request", w.Code, http.StatusOK)
-	}
-	if elapsed > FleetStatusDeviceBudget {
-		t.Errorf("request took %v, longer than one device's budget of %v", elapsed, FleetStatusDeviceBudget)
 	}
 	if len(fleet.Devices) != 3 {
 		t.Fatalf("got %d rows, want 3", len(fleet.Devices))
@@ -470,19 +467,19 @@ func TestFleetStatusUnresponsiveDeviceDoesNotBlockTheFleet(t *testing.T) {
 	}
 }
 
-// TestFleetStatusBeyondConcurrencyLimitReportsEveryDevice covers the devices
-// that are still queued behind the concurrency limit when the budget runs out:
-// they must be reported as unknown, not dropped.
-func TestFleetStatusBeyondConcurrencyLimitReportsEveryDevice(t *testing.T) {
+// TestFleetStatusAnswersWhenThePollerWillNot is the endpoint's hard deadline. A
+// poller that never replies must not hold the request open: every configured
+// device still gets a row, promptly, saying nothing is known.
+func TestFleetStatusAnswersWhenThePollerWillNot(t *testing.T) {
 	poller := &mockPollerClient{
-		getDeviceStatusFunc: func(ctx context.Context, _ string) (*client.DeviceStatus, error) {
+		listDevicesFunc: func(ctx context.Context) ([]client.DeviceInfo, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
 	}
 
 	server := newServerWithPoller(t, poller)
-	total := FleetStatusConcurrency + 4
+	const total = 20
 	for i := range total {
 		mustCreateDevice(t, server.storage, "device-"+formatDeviceID(int64(i)))
 	}
@@ -495,7 +492,7 @@ func TestFleetStatusBeyondConcurrencyLimitReportsEveryDevice(t *testing.T) {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 	if len(fleet.Devices) != total {
-		t.Fatalf("got %d rows, want %d: devices queued behind the limit were dropped", len(fleet.Devices), total)
+		t.Fatalf("got %d rows, want %d: devices were dropped when the poller went quiet", len(fleet.Devices), total)
 	}
 	for _, entry := range fleet.Devices {
 		if entry.State != StateUnknown {

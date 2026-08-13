@@ -222,6 +222,13 @@ services:
 docker-compose up
 ```
 
+> **Bind these ports privately.** The API is unauthenticated by design and
+> `GET /api/devices` returns SNMP community strings in clear text. Publish the
+> ports only behind an authenticating reverse proxy, or bind them to an
+> interface only trusted clients can reach. The `"8080:8080"` above binds to
+> every interface; `"127.0.0.1:8080:8080"` does not. See
+> [operations/security-posture.md](operations/security-posture.md).
+
 ## Environment Variables
 
 ```bash

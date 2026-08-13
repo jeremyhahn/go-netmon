@@ -56,6 +56,11 @@ func (w *webUI) handler(t *testing.T) http.Handler {
 	mux.Handle("/api/devices/1/mibs", respond(`{"direct_mibs":[{"id":7}]}`))
 	mux.Handle("/api/devices/1/profiles", respond(`{"profiles":[{"id":3}]}`))
 	mux.Handle("/api/devices/1/mibs/7/assignment", respond(`{"enabled":true,"oid_filters":["1.3.6.1.2.1.2"]}`))
+	// A second device, for the tests that check the walk covers more than the
+	// first one. It has no profiles, which 404s and is an absence rather than a
+	// failure.
+	mux.Handle("/api/devices/2/mibs", respond(`{"direct_mibs":[{"id":7}]}`))
+	mux.Handle("/api/devices/2/mibs/7/assignment", respond(`{"enabled":true}`))
 	mux.Handle("/api/profiles/3/mibs", respond(`{"mibs":[{"id":7}]}`))
 	mux.Handle("/api/profiles/3/mibs/7/assignment", respond(`{"enabled":false}`))
 	return mux
@@ -236,5 +241,85 @@ func TestLogicalExportIsSkippedWithoutAWebUI(t *testing.T) {
 	}
 	if ok, _ := dst.Exists(logicalDir); ok {
 		t.Error("a skipped export created a logical/ directory")
+	}
+}
+
+// TestLogicalExportReportsAFailedRelationshipWalk covers the per-device and
+// per-profile walks.
+//
+// These are where the state that exists nowhere else lives: which MIBs a device
+// is assigned, whether each is enabled, and the OID filters on it. A collection
+// endpoint that answers while the relationship endpoints do not would otherwise
+// produce an export that lists every device and knows nothing about any of
+// them -- which reads as a fleet with no MIB assignments at all.
+func TestLogicalExportReportsAFailedRelationshipWalk(t *testing.T) {
+	tests := []struct {
+		name string
+		fail string
+	}{
+		{"a device's MIB list", "/api/devices/1/mibs"},
+		{"a device's assignment record", "/api/devices/1/mibs/7/assignment"},
+		{"a profile's MIB list", "/api/profiles/3/mibs"},
+		{"a profile's assignment record", "/api/profiles/3/mibs/7/assignment"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ui := fullWebUI()
+			ui.fail = tt.fail
+
+			info, _ := exportInto(t, ui)
+
+			if info.Status != logicalUnavailable {
+				t.Errorf("status = %q, want %q: a walk that could not complete must not "+
+					"be recorded as a good export", info.Status, logicalUnavailable)
+			}
+		})
+	}
+}
+
+// TestLogicalExportReportsAMalformedCollection covers the decode. A body that
+// is not the shape expected cannot be walked, and guessing at it would produce
+// an export that silently covers nothing.
+func TestLogicalExportReportsAMalformedCollection(t *testing.T) {
+	ui := fullWebUI()
+	ui.devices = `{"devices": "not-a-list"}`
+
+	info, _ := exportInto(t, ui)
+
+	if info.Status != logicalUnavailable {
+		t.Errorf("status = %q, want %q for a collection that could not be decoded",
+			info.Status, logicalUnavailable)
+	}
+}
+
+// TestLogicalExportWalksEveryDevice guards the loop rather than the first
+// iteration: an export that stops after device one is the failure this is most
+// likely to have, and it looks like a success.
+func TestLogicalExportWalksEveryDevice(t *testing.T) {
+	ui := fullWebUI()
+	ui.devices = `{"devices":[{"id":1,"name":"core-01"},{"id":2,"name":"core-02"}]}`
+
+	info, dst := exportInto(t, ui)
+	if info.Status != logicalOK {
+		t.Fatalf("status = %q, want %q", info.Status, logicalOK)
+	}
+	if info.Counts["devices"] != 2 {
+		t.Errorf("counted %d devices, want 2", info.Counts["devices"])
+	}
+
+	// Device 2 has no profiles, which answers 404 -- an absence the walk
+	// tolerates. What it must not do is drop the device.
+	body, err := dst.ReadFile(logicalDir + "/device-mibs.json")
+	if err != nil {
+		t.Fatalf("read device-mibs.json: %v", err)
+	}
+	var exported []deviceExport
+	if unmarshalErr := json.Unmarshal(body, &exported); unmarshalErr != nil {
+		t.Fatalf("decode device-mibs.json: %v", unmarshalErr)
+	}
+	if len(exported) != 2 {
+		t.Errorf("device-mibs.json holds %d devices, want both: an export that stops "+
+			"after the first device still reports success", len(exported))
 	}
 }

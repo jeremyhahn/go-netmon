@@ -28,8 +28,31 @@ type tarUnsupportedEntryError struct {
 }
 
 func (e *tarUnsupportedEntryError) Error() string {
-	return "backup: " + e.Name + " is a " + e.Mode.Type().String() +
+	return "backup: " + e.Name + " is a " + entryKind(e.Mode) +
 		", which cannot be carried in an archive"
+}
+
+// entryKind names a file type in words.
+//
+// fs.FileMode.Type().String() renders the permission-string form -- a socket
+// prints as "S---------" -- which tells an operator deciding whether a skipped
+// entry matters almost nothing.
+func entryKind(mode fs.FileMode) string {
+	switch {
+	case mode&fs.ModeSocket != 0:
+		return "socket"
+	case mode&fs.ModeNamedPipe != 0:
+		return "named pipe"
+	case mode&fs.ModeDevice != 0:
+		if mode&fs.ModeCharDevice != 0 {
+			return "character device"
+		}
+		return "block device"
+	case mode&fs.ModeIrregular != 0:
+		return "irregular file"
+	default:
+		return mode.Type().String()
+	}
 }
 
 // digestWriter counts and hashes everything written through it.

@@ -9,8 +9,7 @@ import "time"
 //
 //	SNMPProbeTimeout × SNMPProbeAttempts ≤ SNMPProbeBudget ≤ HandlerBudget < ServerWriteTimeout
 //	PollerRequestTimeout                  < PollerSyncBudget ≤ HandlerBudget < ServerWriteTimeout
-//	FleetStatusDeviceBudget < PollerRequestTimeout
-//	FleetStatusDeviceBudget ≤ FleetStatusBudget  ≤ HandlerBudget < ServerWriteTimeout
+//	PollerRequestTimeout                  < FleetStatusBudget ≤ HandlerBudget < ServerWriteTimeout
 //
 // When it does not, the failure is not a slow response — it is no response at
 // all. net/http closes a connection whose write deadline expires before the
@@ -46,20 +45,11 @@ const (
 	// must never be what makes a request time out.
 	PollerSyncBudget = 5 * time.Second
 
-	// FleetStatusDeviceBudget caps the wait for one device's status inside a
-	// bulk fleet request.
-	//
-	// It is deliberately shorter than PollerRequestTimeout so that it, and not
-	// the poller client's own timeout, is what expires first. The client retries
-	// a failed call three times with backoff; letting that ladder run once per
-	// device would multiply a hung poller by the size of the fleet. Cutting the
-	// call at this deadline turns "the poller is not answering" into one
-	// unknown row per device, promptly, instead of a request that never returns.
-	FleetStatusDeviceBudget = 2 * time.Second
-
-	// FleetStatusBudget caps an entire bulk fleet request. Devices still
-	// waiting when it expires are reported as unknown, so the response arrives
-	// on time with every configured device in it either way.
+	// FleetStatusBudget caps an entire bulk fleet request, which is one call to
+	// the poller's device listing however large the fleet is. It exceeds
+	// PollerRequestTimeout so the poller client's own deadline and retries are
+	// what expire first; if the poller never answers, every configured device
+	// still gets a row saying so, on time.
 	FleetStatusBudget = 8 * time.Second
 
 	// HandlerBudget caps the outbound work one request may do. It is the

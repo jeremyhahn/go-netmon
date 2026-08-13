@@ -138,21 +138,34 @@ func (e *logicalExport) run(ctx context.Context) (LogicalInfo, error) {
 	if err != nil {
 		return LogicalInfo{}, err
 	}
-	if _, err := e.save(ctx, "/api/poller/config", "poller-config.json"); err != nil {
+	if _, pollerErr := e.save(ctx, "/api/poller/config", "poller-config.json"); pollerErr != nil {
+		return LogicalInfo{}, pollerErr
+	}
+
+	deviceIDs, err := ids("/api/devices", devices)
+	if err != nil {
+		return LogicalInfo{}, err
+	}
+	profileIDs, err := ids("/api/profiles", profiles)
+	if err != nil {
+		return LogicalInfo{}, err
+	}
+	mibIDs, err := ids("/api/mibs", mibs)
+	if err != nil {
 		return LogicalInfo{}, err
 	}
 
-	if err := e.exportDeviceMIBs(ctx, ids(devices).Devices); err != nil {
+	if err := e.exportDeviceMIBs(ctx, deviceIDs.Devices); err != nil {
 		return LogicalInfo{}, err
 	}
-	if err := e.exportProfileMIBs(ctx, ids(profiles).Profiles); err != nil {
+	if err := e.exportProfileMIBs(ctx, profileIDs.Profiles); err != nil {
 		return LogicalInfo{}, err
 	}
 
 	counts := map[string]int{
-		"devices":  len(ids(devices).Devices),
-		"profiles": len(ids(profiles).Profiles),
-		"mibs":     len(ids(mibs).MIBs),
+		"devices":  len(deviceIDs.Devices),
+		"profiles": len(profileIDs.Profiles),
+		"mibs":     len(mibIDs.MIBs),
 	}
 	e.svc.info("  logical export: %d devices, %d profiles, %d MIBs",
 		counts["devices"], counts["profiles"], counts["mibs"])
@@ -323,8 +336,17 @@ func (e *logicalExport) writeRaw(name string, data []byte) error {
 // ids decodes the id-bearing arrays out of a collection response. A body that
 // does not parse yields no ids, which the caller records as a count of zero
 // rather than failing the backup.
-func ids(body []byte) idList {
+// ids decodes the ids out of a collection response.
+//
+// A body that will not decode is an error rather than an empty list. Swallowing
+// it meant a web UI answering with something unexpected produced an export that
+// walked no relationships at all and was still recorded as good -- so the
+// backup claimed a fleet with no MIB assignments, which is exactly what a
+// restore would then reproduce.
+func ids(path string, body []byte) (idList, error) {
 	var list idList
-	_ = json.Unmarshal(body, &list)
-	return list
+	if err := json.Unmarshal(body, &list); err != nil {
+		return idList{}, &LogicalDecodeError{Path: path, Err: err}
+	}
+	return list, nil
 }

@@ -38,7 +38,7 @@ func silentAgent(t *testing.T) string {
 }
 
 // newTestServer builds a Server backed by a temporary store.
-func newTestServer(t *testing.T) *Server {
+func newTestServer(t testing.TB) *Server {
 	t.Helper()
 
 	store, err := storage.New(filepath.Join(t.TempDir(), "webui.db"))

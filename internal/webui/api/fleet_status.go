@@ -4,22 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"sync"
+	"strconv"
+	"strings"
 
 	"github.com/jeremyhahn/go-netmon/internal/webui/client"
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
-
-// FleetStatusConcurrency bounds the poller requests one fleet status request
-// has in flight at once.
-//
-// The status of a device costs the poller a map lookup, so the limit is not
-// about load; it is about sockets. An unbounded fan-out over a large fleet
-// would open one connection per device at once, and Go's default transport
-// pools only a couple per host, so the rest would be built and torn down on
-// every page load. Devices still queued behind the limit when the budget
-// expires are reported as unknown rather than dropped.
-const FleetStatusConcurrency = 16
 
 // DeviceState summarizes a device's health for a fleet overview.
 //
@@ -94,9 +84,93 @@ type FleetDeviceStatus struct {
 // FleetStatusResponse is the body of GET /api/devices/status.
 //
 // Devices is always an array, empty when nothing is configured, so a client can
-// iterate it without a null check.
+// iterate it without a null check. It carries one page when the caller asked
+// for one and the whole fleet otherwise.
 type FleetStatusResponse struct {
 	Devices []FleetDeviceStatus `json:"devices"`
+
+	// Total is how many devices match the search and state filter — what a
+	// pager needs to know how far it can go.
+	Total int `json:"total"`
+
+	// Configured is how many devices exist at all, regardless of any filter.
+	Configured int `json:"configured"`
+
+	// Summary counts every configured device by state, so a fleet-wide tally
+	// travels as a handful of numbers rather than as the rows behind them. It
+	// ignores the filters deliberately: "12 unreachable" is a statement about
+	// the fleet, and a chip that recounted itself against its own filter would
+	// always read as the number of rows on screen.
+	Summary map[DeviceState]int `json:"summary"`
+}
+
+// FleetQuery is the narrowing a caller asked for.
+type FleetQuery struct {
+	// Search matches a device's name, address or state, case-insensitively.
+	Search string
+	// State keeps only devices in one state, as the summary chips do.
+	State string
+	// Limit is the page size; zero means the whole fleet, which is what a CLI
+	// or a script wants and what this endpoint has always returned.
+	Limit int
+	// Offset is how many matching devices to skip.
+	Offset int
+}
+
+// parseFleetQuery reads the narrowing parameters, refusing values it cannot act
+// on rather than guessing at them.
+func parseFleetQuery(r *http.Request) (FleetQuery, error) {
+	query := FleetQuery{
+		Search: strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search"))),
+		State:  strings.TrimSpace(r.URL.Query().Get("state")),
+	}
+
+	for _, spec := range []struct {
+		name  string
+		field *int
+	}{
+		{"limit", &query.Limit},
+		{"offset", &query.Offset},
+	} {
+		raw := strings.TrimSpace(r.URL.Query().Get(spec.name))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			return FleetQuery{}, &QueryParameterError{Parameter: spec.name, Value: raw}
+		}
+		*spec.field = value
+	}
+
+	return query, nil
+}
+
+// matches says whether a row survives the caller's narrowing.
+func (q FleetQuery) matches(entry FleetDeviceStatus) bool {
+	if q.State != "" && string(entry.State) != q.State {
+		return false
+	}
+	if q.Search == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(entry.Name), q.Search) ||
+		strings.Contains(strings.ToLower(entry.Address), q.Search) ||
+		strings.Contains(strings.ToLower(string(entry.State)), q.Search)
+}
+
+// page returns the slice of rows the caller asked for. An offset past the end
+// is an empty page rather than an error: a fleet can shrink under a reader who
+// has already paged into it.
+func (q FleetQuery) page(entries []FleetDeviceStatus) []FleetDeviceStatus {
+	if q.Limit == 0 {
+		return entries
+	}
+	if q.Offset >= len(entries) {
+		return []FleetDeviceStatus{}
+	}
+	end := min(q.Offset+q.Limit, len(entries))
+	return entries[q.Offset:end]
 }
 
 // handleFleetStatus handles GET /api/devices/status: live status for every
@@ -106,61 +180,111 @@ type FleetStatusResponse struct {
 // request per device on every page load, which is invisible at four devices and
 // is not at a hundred.
 func (s *Server) handleFleetStatus(w http.ResponseWriter, r *http.Request) {
+	query, err := parseFleetQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	devices, err := s.storage.ListDevices(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, http.StatusOK, FleetStatusResponse{Devices: s.fleetStatus(r.Context(), devices)})
+	// Every device is classified, because the summary counts all of them and
+	// the poller answers for all of them in the one call either way. What the
+	// narrowing saves is the serialization and the transfer, which is where the
+	// cost actually was.
+	all := s.fleetStatus(r.Context(), devices)
+
+	summary := make(map[DeviceState]int, len(all))
+	matching := make([]FleetDeviceStatus, 0, len(all))
+	for _, entry := range all {
+		summary[entry.State]++
+		if query.matches(entry) {
+			matching = append(matching, entry)
+		}
+	}
+
+	respondJSON(w, http.StatusOK, FleetStatusResponse{
+		Devices:    query.page(matching),
+		Total:      len(matching),
+		Configured: len(all),
+		Summary:    summary,
+	})
 }
 
-// fleetStatus collects each device's status concurrently, in the order given.
+// fleetStatus collects every device's status in the order given.
 //
-// Three properties matter here and each is bought deliberately. Order comes
-// from the caller's slice — the storage layer already sorts devices by name,
-// and results are written back into the slot a device came from rather than
-// appended as they arrive, so repeated requests return the same order and the
-// UI does not reshuffle. Isolation comes from every device having its own
-// deadline and its own error: a device the poller cannot answer for costs that
-// row its status and nothing else. And boundedness comes from the whole
-// collection sharing one budget, so the response arrives whether or not the
-// poller does.
+// It asks the poller once. The poller builds its device listing from in-memory
+// worker state, so one response already carries the status of everything it
+// polls; asking per device instead cost a round trip per device, and since
+// every open overview repeats that every 30 seconds the load on the poller was
+// devices times sessions. At 10,000 devices and 25 operators that was 250,000
+// requests a tick, which queued past the collection budget and left 85% of the
+// rows blank — an overview reporting a fleet-wide outage that was not
+// happening. One request per refresh is flat in both directions.
+//
+// Order comes from the caller's slice: the storage layer sorts devices by name
+// and rows are filled in that order, so repeated requests do not reshuffle. A
+// device the poller has no record of is reported as such rather than as an
+// error, and if the poller cannot be reached at all every row says so.
 func (s *Server) fleetStatus(ctx context.Context, devices []storage.Device) []FleetDeviceStatus {
 	ctx, cancel := context.WithTimeout(ctx, FleetStatusBudget)
 	defer cancel()
 
-	entries := make([]FleetDeviceStatus, len(devices))
-	inFlight := make(chan struct{}, FleetStatusConcurrency)
 	polling := s.polling()
+	entries := make([]FleetDeviceStatus, len(devices))
 
-	var wg sync.WaitGroup
-	for i, device := range devices {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			select {
-			case inFlight <- struct{}{}:
-				defer func() { <-inFlight }()
-			case <-ctx.Done():
-				// The budget ran out while this device was still queued. It is
-				// still a device, so it gets a row saying nothing is known.
-				entries[i] = newFleetDeviceStatus(device, nil,
-					&PollerUnavailableError{Device: device.Name, Err: ctx.Err()}, polling)
-				return
-			}
-
-			deviceCtx, cancelDevice := context.WithTimeout(ctx, FleetStatusDeviceBudget)
-			defer cancelDevice()
-
-			status, err := s.deviceStatus(deviceCtx, device.Name)
-			entries[i] = newFleetDeviceStatus(device, status, err, polling)
-		}()
+	known, err := s.pollerFleet(ctx)
+	if err != nil {
+		// Nothing could be learned about anything. Every device still gets a
+		// row, carrying the reason.
+		for i, device := range devices {
+			entries[i] = newFleetDeviceStatus(device, nil, err, polling)
+		}
+		return entries
 	}
-	wg.Wait()
+
+	for i, device := range devices {
+		status, found := known[device.Name]
+		switch {
+		case !found:
+			entries[i] = newFleetDeviceStatus(device, nil,
+				&DeviceNotPolledError{Device: device.Name}, polling)
+		case status == nil:
+			// Registered, but the poller carried nothing about it. That is not
+			// the same as not being polled, and the row has to say which.
+			entries[i] = newFleetDeviceStatus(device, nil,
+				&PollerStatusMissingError{Device: device.Name}, polling)
+		default:
+			entries[i] = newFleetDeviceStatus(device, status, nil, polling)
+		}
+	}
 
 	return entries
+}
+
+// pollerFleet returns the poller's view of every device it polls, by name.
+func (s *Server) pollerFleet(ctx context.Context) (map[string]*client.DeviceStatus, error) {
+	if s.pollerClient == nil {
+		return nil, &PollerUnconfiguredError{}
+	}
+
+	infos, err := s.pollerClient.ListDevices(ctx)
+	if err != nil {
+		return nil, &PollerUnavailableError{Err: err}
+	}
+
+	known := make(map[string]*client.DeviceStatus, len(infos))
+	for _, info := range infos {
+		// The poller always fills a status, falling back to a never-polled one
+		// for a worker that has not run yet. A nil here would read as unknown,
+		// which is the honest answer for a listing that carried no status.
+		known[info.Name] = info.Status
+	}
+	return known, nil
 }
 
 // newFleetDeviceStatus builds one row from a device record and what the poller

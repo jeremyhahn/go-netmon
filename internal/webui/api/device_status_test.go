@@ -19,6 +19,7 @@ import (
 // mockPollerClient is a mock implementation of PollerClient for testing
 type mockPollerClient struct {
 	getDeviceStatusFunc func(ctx context.Context, deviceName string) (*client.DeviceStatus, error)
+	listDevicesFunc     func(ctx context.Context) ([]client.DeviceInfo, error)
 }
 
 func (m *mockPollerClient) RegisterDevice(
@@ -47,6 +48,9 @@ func (m *mockPollerClient) GetDeviceStatus(ctx context.Context, deviceName strin
 }
 
 func (m *mockPollerClient) ListDevices(ctx context.Context) ([]client.DeviceInfo, error) {
+	if m.listDevicesFunc != nil {
+		return m.listDevicesFunc(ctx)
+	}
 	return nil, nil
 }
 

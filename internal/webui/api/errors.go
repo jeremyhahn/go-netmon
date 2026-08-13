@@ -131,7 +131,12 @@ type PollerUnavailableError struct {
 }
 
 func (e *PollerUnavailableError) Error() string {
-	msg := "poller: status for device " + strconv.Quote(e.Device) + " is unavailable"
+	// The fleet view asks about the whole fleet at once, so it has no one
+	// device to name when the poller does not answer.
+	msg := "poller: the poller is unavailable"
+	if e.Device != "" {
+		msg = "poller: status for device " + strconv.Quote(e.Device) + " is unavailable"
+	}
 	if e.Err != nil {
 		msg += ": " + e.Err.Error()
 	}
@@ -139,6 +144,20 @@ func (e *PollerUnavailableError) Error() string {
 }
 
 func (e *PollerUnavailableError) Unwrap() error { return e.Err }
+
+// PollerStatusMissingError reports that the poller listed a device but carried
+// no status for it.
+//
+// It sits between "not registered" and "the poller is down": the device is
+// being polled, and the poller simply had nothing to say about it this time. A
+// fleet row shows it as unknown, and this is the reason it shows alongside.
+type PollerStatusMissingError struct {
+	Device string
+}
+
+func (e *PollerStatusMissingError) Error() string {
+	return "poller: device " + strconv.Quote(e.Device) + " is registered but the poller holds no status for it"
+}
 
 // QueryParameterError reports a narrowing parameter the server will not act on:
 // a limit that is not a number, a negative offset, a flag that is not a
