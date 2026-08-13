@@ -453,9 +453,42 @@ If the backup came from a differently named project, either set
 ## Testing
 
 ```bash
-make test-scripts     # 52 tests, no Docker daemon, no live stack
-make lint-scripts     # shellcheck, including test/integration/run-tests.sh
+make test              # unit: the tool against a fake runtime, no daemon
+make integration-test  # the same operations against a real Docker daemon
+make test-scripts      # 52 tests, no Docker daemon, no live stack
+make lint-scripts      # shellcheck, including test/integration/run-tests.sh
 ```
+
+### Against a real daemon, without handing anything the host's
+
+Most of this tool's coverage runs against a fake runtime implementing the same
+interface, which proves the right `docker` argument vectors are built. It cannot
+prove the daemon does what those vectors say — that a tar written by one
+container reads back byte for byte in another, that a volume is genuinely
+emptied before it is extracted into, that numeric ownership survives. Those are
+what a restore rests on and they only exist at the daemon.
+
+Getting a daemon into the test container has two obvious answers and both are
+bad. Mounting `/var/run/docker.sock` gives the test container effective root on
+the host — exactly what this package's containment tests exist to prevent.
+Running the suite on the host instead breaks the rule that integration tests run
+in a container.
+
+The third answer is a **sibling daemon**: `docker-compose.test.yml` runs a
+`dind` service and points the test container at it with
+`DOCKER_HOST=tcp://dind:2375`. The test container stays unprivileged and has no
+host socket; only the throwaway daemon is privileged, and it starts empty.
+
+That is a stronger guarantee than a convention. The inner daemon cannot see the
+host's containers or volumes at all, so a backup test cannot reach the live
+`go-netmon` deployment even if its project resolution were wrong — the isolation
+does not depend on the code under test being correct. Everything it creates dies
+with the stack; after a run, `docker volume ls` on the host shows none of it.
+
+`test/integration/backup_test.go` covers the volume round trip, replace-rather-
+than-merge, numeric ownership surviving, and volume ownership read from labels a
+daemon actually applied. With `DOCKER_HOST` unset they **skip**, saying so, so a
+run without a daemon does not look like it obtained this coverage.
 
 `scripts/tests/run-tests.sh` runs everything against a stub Docker CLI
 (`scripts/tests/fake-docker`) and a throwaway repository tree under `$TMPDIR`.

@@ -44,6 +44,39 @@ services:
       start_period: 5s
 
   # Integration test runner
+  # A Docker daemon of its own, for the tests that drive one.
+  #
+  # netmon-backup exports and imports volumes, stops and starts services, and
+  # empties directories inside containers. Testing that needs a real daemon, and
+  # the two obvious ways to get one are both bad: mounting the host socket gives
+  # the test container root on the host, and running the suite on the host
+  # breaks the rule that integration tests run in a container.
+  #
+  # This is the third way. The daemon is a sibling container, privileged but
+  # ephemeral and empty: it sees none of the host's containers or volumes, so a
+  # backup test cannot reach the live go-netmon deployment even if its project
+  # resolution were wrong. Everything it creates dies with the stack.
+  dind:
+    image: docker:27-dind
+    container_name: go-netmon-integration-dind
+    privileged: true
+    environment:
+      # Plain TCP on an internal bridge network with no published ports. TLS
+      # here would only protect the test container from itself.
+      - DOCKER_TLS_CERTDIR=
+    command: ["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"]
+    volumes:
+      # Its own storage, so overlay2 is not stacked on the test image's overlay.
+      - dind-storage:/var/lib/docker
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
   integration-test:
     build:
       context: .
@@ -54,10 +87,15 @@ services:
         condition: service_healthy
       snmp-simulator:
         condition: service_healthy
+      dind:
+        condition: service_healthy
     environment:
       - PROMETHEUS_URL=http://prometheus:9090
       - SNMP_HOST=snmp-simulator
       - SNMP_PORT=161
+      # The sibling daemon. Its presence is what enables the backup tests; with
+      # it unset they skip rather than fail, so the suite still runs anywhere.
+      - DOCKER_HOST=tcp://dind:2375
     networks:
       - test-network
     command: go test -v -tags=integration ./test/integration/...
@@ -68,3 +106,4 @@ networks:
 
 volumes:
   prometheus-data:
+  dind-storage:

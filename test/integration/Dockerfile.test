@@ -1,7 +1,12 @@
 FROM golang:1.26-alpine
 
-# Install dependencies including net-snmp for snmptranslate
-RUN apk add --no-cache git make bash curl net-snmp net-snmp-tools
+# Install dependencies including net-snmp for snmptranslate.
+#
+# docker-cli is here for the backup/restore tests, which drive a real daemon.
+# That daemon is the sibling "dind" service, not the host's: this container is
+# unprivileged and has no access to the host socket, so a backup test cannot
+# reach the deployment it is testing a backup of.
+RUN apk add --no-cache git make bash curl net-snmp net-snmp-tools docker-cli docker-cli-compose
 
 # Set working directory
 WORKDIR /workspace
