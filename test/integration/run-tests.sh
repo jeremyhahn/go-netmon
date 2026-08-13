@@ -103,6 +103,28 @@ echo "Compose file:    $COMPOSE_FILE"
 echo "Building and starting services..."
 compose up -d --build --wait --remove-orphans "${SERVICES[@]}"
 
+# The sibling Docker daemon, for the backup/restore tests.
+#
+# It is privileged, and a runner that is itself unprivileged or rootless cannot
+# start one. That is a fact about where the suite is running, not a defect in
+# the code under test, so it must not fail the run -- the rest of the
+# integration tests have nothing to do with Docker.
+#
+# So it is attempted, and DOCKER_HOST is passed to the tests only if it comes
+# up. Without that variable the backup tests skip and say so, which is the
+# honest outcome: the coverage was not obtained, and the log says which.
+DIND_ENV=()
+echo "Starting the sibling Docker daemon (for backup/restore coverage)..."
+if compose --profile dind up -d --wait dind 2>/dev/null; then
+    DIND_ENV=(-e "DOCKER_HOST=tcp://dind:2375")
+    echo "  sibling daemon is up; backup/restore will be tested against a real daemon"
+else
+    echo "  WARNING: could not start the sibling Docker daemon." >&2
+    echo "  WARNING: backup/restore will NOT be covered against a real daemon in this run." >&2
+    echo "  WARNING: this usually means the runner cannot start a privileged container." >&2
+    compose --profile dind rm -sf dind >/dev/null 2>&1 || true
+fi
+
 # The test image bakes the source in at build time, so it has to be rebuilt on
 # every run or the suite executes whatever the tests looked like when the image
 # was last built. Plain "compose run" only builds when no image exists yet,
@@ -129,7 +151,7 @@ else
 fi
 
 TEST_EXIT_CODE=0
-compose run --rm --build integration-test "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+compose run --rm --build "${DIND_ENV[@]}" integration-test "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
 
 echo "Tests completed with exit code: $TEST_EXIT_CODE"
 

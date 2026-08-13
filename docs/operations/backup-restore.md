@@ -487,8 +487,18 @@ with the stack; after a run, `docker volume ls` on the host shows none of it.
 
 `test/integration/backup_test.go` covers the volume round trip, replace-rather-
 than-merge, numeric ownership surviving, and volume ownership read from labels a
-daemon actually applied. With `DOCKER_HOST` unset they **skip**, saying so, so a
-run without a daemon does not look like it obtained this coverage.
+daemon actually applied.
+
+The `dind` service sits behind a compose profile and `run-tests.sh` **tries** to
+start it. A runner that is itself unprivileged or rootless cannot start a
+privileged container, and that is a fact about where the suite is running rather
+than a defect in the code — so it degrades instead of failing: the script warns,
+`DOCKER_HOST` is not passed, and those four tests skip. The rest of the
+integration suite has nothing to do with Docker and still runs.
+
+That distinction is deliberate. A skipped test that announces itself is honest;
+a suite that goes red because an optional capability is unavailable trains
+people to ignore it.
 
 `scripts/tests/run-tests.sh` runs everything against a stub Docker CLI
 (`scripts/tests/fake-docker`) and a throwaway repository tree under `$TMPDIR`.

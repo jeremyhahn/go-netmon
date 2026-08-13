@@ -59,6 +59,14 @@ services:
   dind:
     image: docker:27-dind
     container_name: go-netmon-integration-dind
+    # Behind a profile, so it is started only when something asks for it.
+    #
+    # A privileged container is not available everywhere -- a CI runner that is
+    # itself unprivileged or rootless cannot start one. That must degrade to
+    # "this coverage was not obtained", announced, rather than failing the whole
+    # suite: the other integration tests have nothing to do with Docker.
+    # run-tests.sh tries to start it and passes DOCKER_HOST only if it comes up.
+    profiles: ["dind"]
     privileged: true
     environment:
       # Plain TCP on an internal bridge network with no published ports. TLS
@@ -87,15 +95,10 @@ services:
         condition: service_healthy
       snmp-simulator:
         condition: service_healthy
-      dind:
-        condition: service_healthy
     environment:
       - PROMETHEUS_URL=http://prometheus:9090
       - SNMP_HOST=snmp-simulator
       - SNMP_PORT=161
-      # The sibling daemon. Its presence is what enables the backup tests; with
-      # it unset they skip rather than fail, so the suite still runs anywhere.
-      - DOCKER_HOST=tcp://dind:2375
     networks:
       - test-network
     command: go test -v -tags=integration ./test/integration/...
