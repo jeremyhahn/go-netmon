@@ -164,31 +164,34 @@ func TestAConfigFileThatIsGoneIsWarnedAboutAndNotClaimed(t *testing.T) {
 	}
 }
 
-// TestABackupIntoAnUnwritableDirectoryFails covers the whole write path at
-// once: the archive directory, its members, the config copies and the manifest.
+// TestABackupIntoAnUnusableDirectoryFails covers the whole write path at once:
+// the archive directory, its members, the config copies and the manifest.
 //
-// A full disk and a directory owned by someone else both look like this, and
-// both are things that happen to a backup that runs unattended on a schedule.
-// The one outcome that must not occur is a directory that exists, is named like
-// a backup, and is not one.
-func TestABackupIntoAnUnwritableDirectoryFails(t *testing.T) {
+// A full disk, a path that is not what the operator thought, and a directory
+// owned by someone else all end here, and all of them happen to a backup that
+// runs unattended on a schedule. The one outcome that must not occur is a
+// directory that exists, is named like a backup, and is not one.
+//
+// The destination is blocked by putting a regular file where a directory has to
+// be, rather than by removing write permission. An earlier version of this test
+// used chmod 0500 and asserted "tests do not run as root, so this holds" --
+// which is false in CI, where the job runs as uid 0 and the kernel lets root
+// write through the permission bits. It passed locally and failed in CI on
+// every run. ENOTDIR is refused for root too.
+func TestABackupIntoAnUnusableDirectoryFails(t *testing.T) {
 	h := newHarness(t)
 
-	if err := h.root.MkdirAll("locked", 0o755); err != nil {
+	if err := h.root.WriteFile("blocked", []byte("a file, not a directory\n"), 0o644); err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	// Read and traverse but not write. Tests do not run as root, so this holds.
-	if err := h.root.Chmod("locked", 0o500); err != nil {
-		t.Fatalf("lock the directory: %v", err)
-	}
-	t.Cleanup(func() { _ = h.root.Chmod("locked", 0o755) })
 
 	_, err := h.svc.Backup(context.Background(), backup.Options{
-		OutputDir: filepath.Join(h.base, "locked"),
+		// Below a regular file: creating anything here is ENOTDIR whoever asks.
+		OutputDir: filepath.Join(h.base, "blocked", "backups"),
 		Name:      "attempt",
 	})
 	if err == nil {
-		t.Fatal("a backup into a directory it cannot write reported success")
+		t.Fatal("a backup into a directory that cannot exist reported success")
 	}
 
 	// And the stack is back up regardless.
