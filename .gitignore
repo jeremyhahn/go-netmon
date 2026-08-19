@@ -41,6 +41,11 @@ Thumbs.db
 # auth) are held in the web UI's store, not here, but this file still describes
 # one host's deployment rather than the project.
 config.yaml
+# deploy/config.yaml is the opposite: it is the tracked starting configuration
+# shipped to a deployment target, and it holds no credentials because devices
+# live in the web UI's store. The rule above matches at every level, so it has
+# to be exempted by name or `make deploy` fails on a clean checkout.
+!deploy/config.yaml
 *.local.yaml
 .env
 .env.local

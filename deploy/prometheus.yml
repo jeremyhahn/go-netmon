@@ -1,0 +1,37 @@
+# Prometheus scrape configuration — native appliance install.
+#
+# Installed to /etc/go-netmon/prometheus.yml by `make deploy` and not
+# overwritten on re-deploy.
+#
+# Note what is NOT here: the device metrics. Those arrive by remote write from
+# the poller, which needs no scrape config — only
+# --web.enable-remote-write-receiver on the server, set in prometheus.service.
+# Everything below is self-monitoring of the appliance itself.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  # - "rules/*.yml"
+
+scrape_configs:
+  # The poller's internal metrics: poll counts, poll durations, SNMP errors.
+  # metrics.listen_address in config.yaml.
+  - job_name: 'go-netmon'
+    static_configs:
+      - targets: ['127.0.0.1:9100']
+        labels:
+          service: 'go-netmon'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['127.0.0.1:9090']
+        labels:
+          service: 'prometheus'

@@ -105,6 +105,17 @@ func runUntilSignal(cfg *config.Config, webuiURL string) error {
 	return run(ctx, cfg, webuiURL)
 }
 
+// dashboardPath is the directory generated Grafana dashboards are written to.
+// The default is the container mount point; a native install has no /app and
+// sets DASHBOARD_PATH to a directory the service user can write, the same way
+// MIB_UPLOADED_PATH relocates the MIB tree.
+func dashboardPath() string {
+	if envPath := os.Getenv("DASHBOARD_PATH"); envPath != "" {
+		return envPath
+	}
+	return "/app/dashboards"
+}
+
 func run(ctx context.Context, cfg *config.Config, webuiURL string) error {
 	// Ensure uploaded MIBs path is included in MIB search paths
 	// This is shared with the WebUI via Docker volume
@@ -267,7 +278,7 @@ func run(ctx context.Context, cfg *config.Config, webuiURL string) error {
 	})
 
 	// Dashboard endpoints
-	dashboardHandler := NewDashboardHandler(mibLoader, "/app/dashboards")
+	dashboardHandler := NewDashboardHandler(mibLoader, dashboardPath())
 	apiMux.HandleFunc("/api/dashboards/generate", dashboardHandler.HandleGenerate)
 	apiMux.HandleFunc("/api/dashboards/list", dashboardHandler.HandleList)
 

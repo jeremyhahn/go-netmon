@@ -1,4 +1,4 @@
-.PHONY: validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
+.PHONY: deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
 
 # Variables
 BINARY_NAME=go-netmon
@@ -318,6 +318,57 @@ restore-help: ## Explain the restore flags, including the ./mibs overwrite gate
 	@echo ""
 	@echo "make restore FROM=backups/<name> YES=1 RESTORE_ARGS='--skip mibs'"
 	@echo "    Restore everything except the MIB source tree."
+
+# --- native deployment ------------------------------------------------------
+# Deploys go-netmon to a host as systemd services. The target needs SSH and
+# sudo and nothing else — no Docker, no Go toolchain. See docs/deployment/.
+#
+# HOST is the target; everything else has a working default. The scripts own
+# the defaults, so an unset variable here means "the script decides".
+HOST ?=
+DEPLOY_ARGS ?=
+MIGRATE_ARGS ?=
+# The backup directory to migrate is named by FROM, already declared above for
+# `make restore` and meaning the same thing here. Not BACKUP — that is the
+# netmon-backup binary's name.
+# The metrics backend. go-netmon stores no samples itself, so a standalone
+# appliance needs this; leave it empty only when remote_write points at a
+# Prometheus that already exists elsewhere.
+WITH_PROMETHEUS ?= 1
+PROMETHEUS_IMAGE ?= prom/prometheus:latest
+
+deploy: ## Deploy go-netmon as native systemd services. HOST=<host> [USER=<user>] [WITH_PROMETHEUS=]
+	@test -n "$(HOST)" || (echo "HOST=<host> is required, e.g. make deploy HOST=monitor.example USER=ops" && exit 1)
+	@./scripts/deploy.sh --host "$(HOST)" \
+		$(if $(USER),--user "$(USER)",) \
+		$(if $(WITH_PROMETHEUS),--with-prometheus,) $(DEPLOY_ARGS)
+
+deploy-dry-run: ## Show what 'make deploy' would do, changing nothing. HOST=<host>
+	@test -n "$(HOST)" || (echo "HOST=<host> is required" && exit 1)
+	@./scripts/deploy.sh --host "$(HOST)" \
+		$(if $(USER),--user "$(USER)",) \
+		$(if $(WITH_PROMETHEUS),--with-prometheus,) --dry-run $(DEPLOY_ARGS)
+
+prometheus-bin: ## Extract the Prometheus binary from its image into dist/
+	@mkdir -p dist
+	@echo "Extracting prometheus from $(PROMETHEUS_IMAGE)"
+	@cid=$$(docker create $(PROMETHEUS_IMAGE)) && \
+		docker cp $$cid:/bin/prometheus dist/prometheus && \
+		docker rm $$cid >/dev/null
+	@chmod 0755 dist/prometheus
+	@./dist/prometheus --version 2>&1 | head -1
+
+migrate: ## Restore a backup of the containerised deployment onto the appliance. HOST=<host> FROM=<dir>
+	@test -n "$(HOST)" || (echo "HOST=<host> is required, e.g. make migrate HOST=monitor.example FROM=backups/prod" && exit 1)
+	@test -n "$(FROM)" || (echo "FROM=<dir> is required" && exit 1)
+	@./scripts/migrate.sh --host "$(HOST)" --backup "$(FROM)" \
+		$(if $(USER),--user "$(USER)",) $(MIGRATE_ARGS)
+
+migrate-dry-run: ## Show the migration plan without moving anything. HOST=<host> FROM=<dir>
+	@test -n "$(HOST)" || (echo "HOST=<host> is required" && exit 1)
+	@test -n "$(FROM)" || (echo "FROM=<dir> is required" && exit 1)
+	@./scripts/migrate.sh --host "$(HOST)" --backup "$(FROM)" \
+		$(if $(USER),--user "$(USER)",) --dry-run $(MIGRATE_ARGS)
 
 stack-capture: ## Capture the running stack's state as JSON. OUT=<file> (default: stdout)
 	@./scripts/verify-stack.sh capture $(if $(OUT),"$(OUT)",-)

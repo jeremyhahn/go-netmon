@@ -1,0 +1,70 @@
+# go-netmon configuration — native appliance install.
+#
+# Installed to /etc/go-netmon/config.yaml by `make deploy`, and NOT overwritten
+# on re-deploy: this file is operator data once the appliance is running.
+# Use FORCE_CONFIG=1 to replace it deliberately.
+#
+# Devices are NOT listed here. They live in the web UI's store
+# (/var/lib/go-netmon/webui/webui.db) and the poller pulls them from it at
+# startup — which is why migrating a deployment means moving that store, not
+# copying this file.
+#
+# The tunables below match the containerised deployment this appliance
+# replaces. The paths deliberately do not: there is no /app on a host.
+
+global:
+  default_poll_interval: 30
+  max_workers: 10
+  snmp_timeout: 10
+  snmp_retries: 3
+
+prometheus:
+  # Prometheus runs on this host, bound to loopback. It is the sole store for
+  # every sample the poller produces; the poller keeps none itself and refuses
+  # to start if this is empty.
+  remote_write_url: "http://127.0.0.1:9090/api/v1/write"
+  batch_size: 1000
+  flush_interval: 10
+
+api:
+  # Device registration and dashboard generation. Consumed by the web UI over
+  # loopback.
+  listen_address: ":9080"
+  enabled: true
+
+metrics:
+  # The poller's OWN internal metrics (poll counts, durations), scraped by
+  # Prometheus. Not the device metrics — those go out by remote write.
+  listen_address: ":9100"
+  enabled: true
+
+mib:
+  paths:
+    # The MIB store this appliance owns. Modules land here when they are
+    # imported and both services read it. Set for the poller by
+    # MIB_UPLOADED_PATH in the unit file as well, so the two agree.
+    - "/var/lib/go-netmon/poller/uploaded"
+    # The IETF base set, so a fresh install with an empty store can still
+    # parse the standard modules.
+    - "/usr/local/share/go-netmon/mibs/standard"
+    - "/usr/share/snmp/mibs"
+  # The poller's MIB metadata store. Pebble admits a single writer, so this
+  # belongs to the poller alone; the web UI keeps its own catalog and is
+  # pointed at it with -mib-catalog in go-netmon-webui.service.
+  storage_path: "/var/lib/go-netmon/poller/mib-storage"
+  # A bootstrap list, not a limit. These are parsed at startup before any
+  # device is known; every other module a device needs is parsed on demand.
+  auto_load:
+    - "SNMPv2-MIB"
+    - "IF-MIB"
+    - "CISCO-BGP4-MIB"
+
+logging:
+  # debug turns on per-OID and per-query tracing; info keeps it silent.
+  level: "info"
+  format: "json"
+  # stdout is the right answer under systemd: the journal captures it, rotates
+  # it, and `journalctl -u go-netmon` is where an operator will look.
+  output: "stdout"
+
+devices: []

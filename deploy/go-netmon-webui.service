@@ -1,0 +1,79 @@
+# go-netmon web UI — native systemd unit.
+#
+# Installed to /etc/systemd/system/go-netmon-webui.service by `make deploy`.
+#
+# The web UI owns the device registry: the poller asks it for the device list at
+# startup and on every sync. That makes this unit the one holding the data an
+# operator would actually miss, and -db below the path a backup has to cover.
+#
+# UNAUTHENTICATED. Every endpoint is open to whoever reaches the port, and
+# GET /api/devices returns each device's SNMP community string in clear text.
+# ListenAddress is deliberately not bound to a public interface by default; see
+# docs/operations/security-posture.md before exposing it.
+
+[Unit]
+Description=go-netmon web UI
+Documentation=https://github.com/jeremyhahn/go-netmon
+After=network-online.target
+Wants=network-online.target
+# Not Requires: the UI is useful for inspecting stored devices even when the
+# poller is down, and refusing to start would remove the operator's only view
+# at exactly the moment they need it.
+After=go-netmon.service
+
+[Service]
+Type=simple
+User=go-netmon
+Group=go-netmon
+
+# The same file the poller reads. Two copies drift, and the pair disagreeing
+# about default_poll_interval is how the UI came to report one interval while
+# the poller used another.
+Environment=CONFIG_PATH=/etc/go-netmon/config.yaml
+Environment=GOMAXPROCS=4
+
+ExecStart=/usr/local/bin/go-netmon-webui \
+    -listen=:8080 \
+    -prometheus=http://127.0.0.1:9090 \
+    -poller=http://127.0.0.1:9080 \
+    -db=/var/lib/go-netmon/webui/webui.db \
+    -mib-storage=/var/lib/go-netmon/poller \
+    -mib-catalog=/var/lib/go-netmon/webui/mib.db
+
+Restart=always
+RestartSec=5s
+StartLimitIntervalSec=0
+
+# Smaller ceiling than the poller: this process serves HTTP and reads Pebble,
+# it does not parse MIB modules.
+MemoryMax=512M
+MemoryHigh=448M
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/go-netmon
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

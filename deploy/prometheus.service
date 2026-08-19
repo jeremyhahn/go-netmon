@@ -1,0 +1,80 @@
+# Prometheus — native systemd unit, deployed as part of the go-netmon appliance.
+#
+# WHY THIS UNIT EXISTS. go-netmon is a remote-write PRODUCER, not a store: the
+# poller turns SNMP walks into samples and pushes them to a Prometheus
+# remote-write endpoint. It keeps no time series of its own, and
+# config.Validate rejects an empty prometheus.remote_write_url outright. So
+# this is not an optional dashboard component that can be dropped to simplify
+# the appliance — without it there is nowhere for the metrics to go and the
+# poller does not start. All monitoring history lives here.
+#
+# Grafana, by contrast, WAS a dashboard layer over this data and is not
+# deployed: go-netmon serves its own web UI and generates Grafana dashboard
+# JSON on demand for anyone who wants to import it elsewhere.
+#
+# Installed to /etc/systemd/system/prometheus.service by `make deploy`.
+
+[Unit]
+Description=Prometheus time-series database (go-netmon metrics backend)
+Documentation=https://prometheus.io/docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+
+ExecStart=/usr/local/bin/prometheus \
+    --config.file=/etc/go-netmon/prometheus.yml \
+    --storage.tsdb.path=/var/lib/prometheus \
+    --storage.tsdb.retention.time=15d \
+    --web.listen-address=127.0.0.1:9090 \
+    --web.enable-remote-write-receiver \
+    --web.enable-lifecycle
+
+# SIGTERM lets Prometheus checkpoint the head block and close the WAL cleanly.
+# Killing it instead costs a WAL replay on the next start, and on a box this
+# size that replay is minutes, not seconds.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+Restart=always
+RestartSec=10s
+StartLimitIntervalSec=0
+
+# RUNAWAY GUARD, and the largest single allocation on the appliance. Head-block
+# memory scales with active series: this deployment carries roughly 35k, which
+# sits comfortably inside this ceiling with room for query and compaction
+# spikes. Raise it — and only it — if series count grows; the poller and web UI
+# ceilings are not the ones under pressure.
+MemoryMax=1536M
+MemoryHigh=1280M
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/prometheus
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
