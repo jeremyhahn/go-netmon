@@ -16,10 +16,14 @@ Description=go-netmon web UI
 Documentation=https://github.com/jeremyhahn/go-netmon
 After=network-online.target
 Wants=network-online.target
-# Not Requires: the UI is useful for inspecting stored devices even when the
-# poller is down, and refusing to start would remove the operator's only view
-# at exactly the moment they need it.
-After=go-netmon.service
+# Deliberately NOT ordered against go-netmon.service. The dependency runs the
+# other way: this service owns the device registry and the poller waits for it.
+# Ordering them the other way round is how the poller comes up first, finds no
+# device list, and monitors nothing.
+
+# Never stop retrying: the appliance is unattended and this service holds the
+# only view an operator has.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -42,10 +46,12 @@ ExecStart=/usr/local/bin/go-netmon-webui \
 
 Restart=always
 RestartSec=5s
-StartLimitIntervalSec=0
 
-# Smaller ceiling than the poller: this process serves HTTP and reads Pebble,
-# it does not parse MIB modules.
+# This service does parse MIB modules — it builds its own catalog at startup,
+# which is what makes a cold start take minutes — but it parses them one at a
+# time into Pebble rather than holding a whole resolved tree the way the poller
+# does. Measured at ~100 MB steady state with 183 modules imported, so this has
+# room; it is a runaway guard, not a target.
 MemoryMax=512M
 MemoryHigh=448M
 

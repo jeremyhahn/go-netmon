@@ -93,7 +93,34 @@ Pebble admits one writer per directory. Three stores, three owners:
 A change that points two processes at one Pebble directory for writing will
 corrupt it. There is no locking that will save you.
 
-## 6. Resource ceilings
+## 6. Startup ordering, and the silent failure it prevents
+
+**The web UI must be serving before the poller starts.** Not merely started —
+serving. This is the one ordering rule on the appliance and getting it wrong
+fails quietly rather than loudly:
+
+- The poller fetches its device list from the web UI at startup.
+- Its own config sync retries five times over roughly 30 seconds, then logs
+  `Continuing with local configuration...` and carries on.
+- The local configuration lists no devices, so the poller comes up **healthy,
+  active, and monitoring nothing.** No unit fails, no alert fires.
+- The web UI needs far longer than 30 seconds on a cold start because it parses
+  the whole MIB catalog before it listens — minutes, with a large module set.
+
+`After=go-netmon-webui.service` alone does not fix this: systemd considers a
+`Type=simple` service started the moment it forks, not when it binds. So
+`go-netmon.service` carries an `ExecStartPre` that polls
+`http://127.0.0.1:8080/api/poller/config` until it answers, bounded by
+`TimeoutStartSec=900`. The dependency is `Wants=`, not `Requires=`, so a
+permanently broken web UI does not hold the poller's own API down with it.
+
+Symptom to recognise: `Poller started successfully with 0 enabled devices` in
+the journal on a deployment that certainly has devices.
+
+Note also that `StartLimitIntervalSec` belongs in `[Unit]`, not `[Service]`.
+systemd ignores it in the wrong section and says so — quietly, at load time.
+
+## 7. Resource ceilings
 
 The appliance is sized for 4 GB. Every unit carries `MemoryMax` as a runaway
 guard, because on a box this small an unbounded process does not just die, it

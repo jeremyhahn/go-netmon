@@ -20,6 +20,10 @@ Documentation=https://prometheus.io/docs/
 After=network-online.target
 Wants=network-online.target
 
+# Never stop retrying: this is the store, and an appliance without it records
+# nothing at all.
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 User=prometheus
@@ -41,7 +45,6 @@ TimeoutStopSec=300
 
 Restart=always
 RestartSec=10s
-StartLimitIntervalSec=0
 
 # RUNAWAY GUARD, and the largest single allocation on the appliance. Head-block
 # memory scales with active series: this deployment carries roughly 35k, which

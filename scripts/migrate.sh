@@ -134,7 +134,12 @@ fi
 say "Checking target state"
 for m in "${members[@]}"; do
     IFS=: read -r component member dest _owner <<<"$m"
-    if run_remote "sudo test -n \"\$(ls -A '$dest' 2>/dev/null)\""; then
+    # The listing has to happen INSIDE sudo. Written as `sudo test -n "$(ls
+    # ...)"` the substitution runs as the login user, who cannot read a 0750
+    # directory owned by a service account — so it returns nothing, every
+    # destination looks empty, and the guard below never fires on the exact
+    # data it exists to protect.
+    if run_remote "sudo sh -c \"test -n \\\"\\\$(ls -A '$dest' 2>/dev/null)\\\"\""; then
         if [[ -z "$replace" ]]; then
             echo "$dest on $target is not empty. Pass --replace to overwrite it." >&2
             exit 1

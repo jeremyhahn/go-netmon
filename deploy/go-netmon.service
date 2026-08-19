@@ -18,6 +18,15 @@ Documentation=https://github.com/jeremyhahn/go-netmon
 # running network stack.
 After=network-online.target
 Wants=network-online.target
+# The device list lives in the web UI's store and the poller fetches it at
+# startup. Wants, not Requires: if the web UI is genuinely broken the poller
+# should still come up and serve its API rather than be held down with it.
+Wants=go-netmon-webui.service
+After=go-netmon-webui.service
+
+# Never stop retrying. The appliance is unattended, and a poller that gives up
+# leaves the network unmonitored until somebody happens to look.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -37,14 +46,23 @@ Environment=WEBUI_URL=http://127.0.0.1:8080
 # The appliance has four cores and runs the web UI and go-sysmon besides.
 Environment=GOMAXPROCS=4
 
+# WAIT FOR THE DEVICE LIST, do not race it. The poller's own config sync gives
+# up after five attempts spanning about 30 seconds and then continues with the
+# local config — which lists no devices — so losing that race does not fail
+# loudly, it silently monitors nothing. The web UI needs far longer than 30
+# seconds on first start because it parses the whole MIB catalog before it
+# listens, so After= alone is not enough: systemd considers a Type=simple
+# service started the moment it forks, not when it serves.
+ExecStartPre=/bin/sh -c 'until curl -fsS -o /dev/null http://127.0.0.1:8080/api/poller/config; do sleep 5; done'
+
 ExecStart=/usr/local/bin/go-netmon
 Restart=always
 RestartSec=5s
 
-# A poller that dies repeatedly at startup is a configuration problem, not a
-# transient one, but the appliance is unattended: keep retrying rather than
-# giving up and leaving the network unmonitored until someone notices.
-StartLimitIntervalSec=0
+# Generous, because the wait above is bounded by the web UI's MIB parse and
+# that is minutes on a cold catalog. Hitting this means the web UI is not
+# coming up at all, which is worth failing over rather than waiting forever.
+TimeoutStartSec=900
 
 # RUNAWAY GUARD. The box has 4 GB and shares it with the web UI, Prometheus and
 # go-sysmon. A MIB parse over a large module set is the memory-hungry path, and
