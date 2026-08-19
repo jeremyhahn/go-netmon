@@ -13,7 +13,7 @@ and `USER` is an SSH account on it that can `sudo` without a password.
 - Roughly 4 GB of RAM and 4 cores for a fleet of this size.
 - Disk for the metric history. Budget from measurement, not hope: this
   deployment writes about **180 MB of TSDB per day** at ~35k active series, so
-  90 days is roughly 16 GB.
+  the configured 90-day retention needs roughly 16 GB.
 - Nothing else. No Docker, no Go toolchain, no checkout of this repository.
 
 The machine that runs `make deploy` needs a Go toolchain and, for
@@ -167,6 +167,7 @@ raise the ceiling in the unit.
 under `ProtectSystem=strict`; anything writable has to be named in
 `ReadWritePaths`.
 
-**Metric history older than a couple of weeks disappears.** That is retention
-doing its job: `--storage.tsdb.retention.time=15d` in `prometheus.service`.
-Raise it before you need the data, not after — expired blocks are gone.
+**Metric history older than 90 days disappears.** That is retention doing its
+job: `--storage.tsdb.retention.time=90d` in `prometheus.service`. Raise it
+before you need the data, not after — expired blocks are gone, and no backup
+you take afterwards will bring them back. Budget ~180 MB per day.

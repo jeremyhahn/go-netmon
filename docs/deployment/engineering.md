@@ -140,12 +140,17 @@ on Prometheus.
 
 ## 7. Retention
 
-`prometheus.service` sets `--storage.tsdb.retention.time=15d`, carried over
-from the containerised deployment. **This is a data-loss setting.** Measured on
-the production deployment: roughly 180 MB of TSDB per day at ~35k active
-series. Sizing the retention window is a deliberate choice, not a default to
-inherit by accident — a migrated history older than the window ages out
-silently on first compaction.
+`prometheus.service` sets `--storage.tsdb.retention.time=90d`.
+
+That number is a deliberate choice, not an inherited default, and it is worth
+keeping deliberate: **retention is a data-loss setting**, and history older
+than the window ages out silently on the next compaction. The containerised
+deployment this replaces used `15d`, which would have quietly discarded a
+migrated history within a fortnight.
+
+The arithmetic, measured rather than assumed: roughly **180 MB of TSDB per day**
+at ~35k active series, so 90 days is about **16 GB**. Budget disk against that
+figure before raising it further.
 
 ## 8. Failure modes
 

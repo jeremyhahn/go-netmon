@@ -25,6 +25,14 @@ anything outside should connect; a host firewall is the right place to say so.
 **Deploying alongside another service on the same host?** These four ports are
 the ones this feature claims.
 
+Watch **9100** in particular: it is the conventional `node_exporter` port, so
+it is the one most likely to collide with a host-metrics agent someone adds
+later. Here it serves the poller's own counters, not node metrics. If you need
+to move it, change `metrics.listen_address` in `config.yaml` **and** the
+`go-netmon` scrape target in `prometheus.yml` — changing one without the other
+leaves the poller exporting to a port nothing reads, which looks like working
+software right up until you go looking for the data.
+
 ## 2. Trust
 
 **The management API on 8080 is unauthenticated.** There is no login, no token,
