@@ -1,0 +1,14 @@
+# actionlint only knows GitHub's hosted runner labels, so every label served by
+# a self-hosted runner has to be declared here or `runs-on:` fails the lint.
+# These two are company review runners on the Gitea plane (conventions/sdlc.md
+# §8): `codex` mounts the Codex review credential, `claude` the Claude session
+# credential. Source of truth for the workflows that use them:
+# software/templates/github-actions/ in the company-repo repo.
+self-hosted-runner:
+  labels:
+    - claude
+    - codex
+
+# No repository or organization configuration variables are defined, so any
+# `vars.*` reference is a typo.
+config-variables: []
