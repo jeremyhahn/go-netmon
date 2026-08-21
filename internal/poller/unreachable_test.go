@@ -416,30 +416,63 @@ func TestFirstPollFailureIsReportedAsAFailedPoll(t *testing.T) {
 		t.Fatalf("AddDevice: %v", err)
 	}
 
-	select {
-	case result := <-p.Results():
-		if result.Error == nil {
-			t.Fatal("the first poll of a silent device reported success")
-		}
-		if result.Timestamp.IsZero() {
-			t.Error("the failed poll carries no timestamp, so it reads as never having happened")
-		}
-	case <-time.After(testPollTimeout):
-		t.Fatal("a device that answers nothing produced no poll result at all")
+	result := nextResult(t, p.Results())
+	if result.Error == nil {
+		t.Fatal("the first poll of a silent device reported success")
+	}
+	if result.Timestamp.IsZero() {
+		t.Error("the failed poll carries no timestamp, so it reads as never having happened")
 	}
 
-	status, polling := p.WorkerStatus("bastion")
-	if !polling {
-		t.Fatal("the poller has no worker for the device it just added")
-	}
+	// Unreachable and ConsecutiveFailures are readable the moment the result
+	// arrives, because the worker calls health.silent() before it reports.
+	// NextPoll is not: see awaitScheduledRetry.
+	status := awaitScheduledRetry(t, p, "bastion")
 	if !status.Unreachable {
 		t.Error("WorkerStatus does not report the device as unreachable")
 	}
 	if status.ConsecutiveFailures == 0 {
 		t.Error("WorkerStatus reports no consecutive failures for a device that answered nothing")
 	}
-	if !status.NextPoll.After(time.Now()) {
-		t.Errorf("WorkerStatus.NextPoll = %s, want the retry it is scheduled for", status.NextPoll)
+
+	// The claim is that the failed poll earned a retry, so the retry must fall
+	// after the poll that earned it. Comparing against time.Now() instead would
+	// assert something about the runner: the worker schedules NextPoll one poll
+	// interval out, so a test that stalls longer than that between the result
+	// and this line reports a bug that is not there. That is what turned this
+	// test red on a loaded CI host.
+	if !status.NextPoll.After(result.Timestamp) {
+		t.Errorf("WorkerStatus.NextPoll = %s, want a retry later than the poll that failed at %s",
+			status.NextPoll, result.Timestamp)
+	}
+}
+
+// awaitScheduledRetry returns the device's worker status once the worker has
+// recorded when it will next try the device.
+//
+// The wait is necessary because a worker reports its poll result BEFORE it
+// schedules the retry -- reachability.schedule() runs after worker.poll()
+// returns -- and reachability.due() reports the zero time until it does. So a
+// status read straight after a result legitimately carries a zero NextPoll, and
+// an assertion on it fails whenever the worker goroutine has not been scheduled
+// yet. Waiting for the value under test, rather than for the result that merely
+// precedes it, is what makes that deterministic.
+func awaitScheduledRetry(t *testing.T, p *Poller, device string) WorkerStatus {
+	t.Helper()
+
+	deadline := time.Now().Add(testPollTimeout)
+	for {
+		status, polling := p.WorkerStatus(device)
+		if !polling {
+			t.Fatalf("the poller has no worker for %s, which it was just given", device)
+		}
+		if !status.NextPoll.IsZero() {
+			return status
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the worker for %s scheduled no retry within %s", device, testPollTimeout)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

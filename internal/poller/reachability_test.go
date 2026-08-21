@@ -218,11 +218,23 @@ func TestReachabilityBacksOffAndRecovers(t *testing.T) {
 	if r.unreachable() {
 		t.Error("a newly registered device starts out unreachable")
 	}
-	if got := r.schedule(); got != interval {
+	before := time.Now()
+	got := r.schedule()
+	after := time.Now()
+	if got != interval {
 		t.Errorf("first schedule = %s, want the device's own interval %s", got, interval)
 	}
-	if due := r.due(); !due.After(time.Now()) {
-		t.Errorf("due = %s, want a time in the future", due)
+
+	// due() must report the instant schedule() computed: its own time.Now(),
+	// which lies between the two readings taken around the call, plus the delay
+	// it returned. Bracketing it that way is deterministic and says more than
+	// the "is it in the future" check this replaces, which passed for any
+	// later-but-wrong value and, at a short interval, would fail on a stalled
+	// runner for reasons unrelated to the code (see unreachable_test.go's
+	// awaitScheduledRetry for where that shape actually bit).
+	earliest, latest := before.Add(got), after.Add(got)
+	if due := r.due(); due.Before(earliest) || due.After(latest) {
+		t.Errorf("due = %s, want the scheduled instant within [%s, %s]", due, earliest, latest)
 	}
 
 	for i, want := range []time.Duration{interval, 2 * interval, 4 * interval} {
