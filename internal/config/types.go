@@ -29,11 +29,17 @@ type PrometheusConfig struct {
 	FlushInterval  int    `yaml:"flush_interval"` // seconds
 }
 
-// APIConfig contains API server settings
+// APIConfig contains API server settings.
+//
+// It once also carried enable_cors and jwt_secret. Nothing ever read either:
+// there is no JWT dependency in the module, no authentication middleware, and
+// the CLI sends no credential, so jwt_secret described an authentication layer
+// that was never built. A secret-shaped setting nobody reads is worse than an
+// absent one — it reads as though the API is protected. Both are removed; see
+// issue #3. Config files still carrying the keys load unchanged, because the
+// decoder ignores unknown fields.
 type APIConfig struct {
 	ListenAddress string `yaml:"listen_address"`
-	EnableCORS    bool   `yaml:"enable_cors"`
-	JWTSecret     string `yaml:"jwt_secret"`
 }
 
 // MetricsConfig contains metrics endpoint settings

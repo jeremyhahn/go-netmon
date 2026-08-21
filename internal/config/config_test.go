@@ -25,7 +25,16 @@ prometheus:
   flush_interval: 10
 
 api:
-  listen_address: "0.0.0.0:8080"
+  # Deliberately NOT the "0.0.0.0:8080" default that applyDefaults would
+  # backfill. With the default value here, the assertion below passes whether
+  # the field was parsed or silently never bound at all -- breaking the
+  # yaml tag still yields "0.0.0.0:8080" via the default and the test stays
+  # green. A distinctive value is what makes it a test.
+  listen_address: "127.0.0.1:18080"
+  # enable_cors and jwt_secret were removed from APIConfig (issue #3) after it
+  # turned out nothing read either. They stay in this fixture on purpose: a
+  # deployed config file still carrying them must keep loading, and this is
+  # what proves it. Do not delete them to "tidy" the fixture.
   enable_cors: true
   jwt_secret: "test-secret"
 
@@ -66,6 +75,17 @@ logging:
 	// Verify Prometheus config
 	if config.Prometheus.RemoteWriteURL != "http://prometheus:9090/api/v1/write" {
 		t.Errorf("Expected RemoteWriteURL, got %s", config.Prometheus.RemoteWriteURL)
+	}
+
+	// Verify the API block. The fixture's api section also carries enable_cors
+	// and jwt_secret, which APIConfig no longer declares (issue #3), so this
+	// doubles as the check that a config file written against the old struct
+	// still loads and still yields the settings that do survive.
+	//
+	// The expected value is not the default: see the fixture comment. If this
+	// ever reads "0.0.0.0:8080" the field was defaulted, not parsed.
+	if config.API.ListenAddress != "127.0.0.1:18080" {
+		t.Errorf("Expected API ListenAddress '127.0.0.1:18080', got %s", config.API.ListenAddress)
 	}
 
 	// Verify devices
