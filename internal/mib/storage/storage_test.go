@@ -933,38 +933,71 @@ func TestStorage_GetTableColumns_EmptyResult(t *testing.T) {
 	}
 }
 
-func TestStorage_QueryMethods_Performance(t *testing.T) {
+// TestStorage_GetMetricColumns_ScopedToModuleAtScale fills the store with two
+// same-sized modules and checks that a lookup returns one module's metric
+// columns and nothing else.
+//
+// What it verifies is the SCOPE of the result: drop either filter and the
+// other module's objects or the status columns come back with it. What it
+// deliberately does not verify is HOW the scope was reached — a full store
+// scan that then filtered by module would satisfy it too. That is a cost
+// question, and it belongs to BenchmarkGetMetricColumns and
+// BenchmarkModuleLookup in storage_bench_test.go, which measure the index
+// against the scan it replaced.
+func TestStorage_GetMetricColumns_ScopedToModuleAtScale(t *testing.T) {
 	storage, cleanup := getTestStorage(t)
 	defer cleanup()
 
-	// Store a moderate number of OIDs to test performance
-	for i := 0; i < 100; i++ {
+	const perModule = 100
+
+	store := func(module, name string, class mib.ObjectClass) {
+		t.Helper()
 		oid := &mib.OIDMetadata{
-			OID:         fmt.Sprintf("1.3.6.1.2.1.2.2.1.%d", i),
-			Name:        fmt.Sprintf("testColumn%d", i),
-			Module:      "TEST-MIB",
+			OID:         fmt.Sprintf("1.3.6.1.2.1.2.2.1.%s", name),
+			Name:        name,
+			Module:      module,
 			Type:        "Counter32",
 			Access:      "read-only",
 			Status:      "current",
 			IsColumn:    true,
-			ObjectClass: mib.ObjectClassMetricColumn,
+			ObjectClass: class,
 			TableOID:    "1.3.6.1.2.1.2.2",
 		}
 		if err := storage.StoreOID(oid); err != nil {
-			t.Fatalf("Failed to store OID: %v", err)
+			t.Fatalf("store %s/%s: %v", module, name, err)
 		}
 	}
 
-	// Test that query completes within reasonable time (<10ms as per spec)
-	start := time.Now()
-	_, err := storage.GetMetricColumns("TEST-MIB")
-	elapsed := time.Since(start)
+	want := make(map[string]bool, perModule)
+	for i := range perModule {
+		name := fmt.Sprintf("testColumn%d", i)
+		store("TEST-MIB", name, mib.ObjectClassMetricColumn)
+		want[name] = true
 
-	if err != nil {
-		t.Fatalf("GetMetricColumns failed: %v", err)
+		// Same scale in a second module, and status columns in the module
+		// under test, so neither the module nor the class filter can pass by
+		// there being nothing to exclude.
+		store("OTHER-MIB", fmt.Sprintf("otherColumn%d", i), mib.ObjectClassMetricColumn)
+		store("TEST-MIB", fmt.Sprintf("testStatus%d", i), mib.ObjectClassStatusColumn)
 	}
 
-	if elapsed > 10*time.Millisecond {
-		t.Errorf("Query took too long: %v (expected <10ms)", elapsed)
+	metrics, err := storage.GetMetricColumns("TEST-MIB")
+	if err != nil {
+		t.Fatalf("GetMetricColumns: %v", err)
+	}
+
+	if len(metrics) != perModule {
+		t.Fatalf("got %d metric columns, want %d", len(metrics), perModule)
+	}
+
+	for _, metric := range metrics {
+		if !want[metric.Name] {
+			t.Errorf("unexpected object %q (module %s, class %s)", metric.Name, metric.Module, metric.ObjectClass)
+		}
+		delete(want, metric.Name)
+	}
+
+	if len(want) != 0 {
+		t.Errorf("%d stored metric columns missing from the result", len(want))
 	}
 }

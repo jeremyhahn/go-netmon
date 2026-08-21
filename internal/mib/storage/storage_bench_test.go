@@ -125,6 +125,33 @@ func BenchmarkModuleLookup(b *testing.B) {
 	}
 }
 
+// BenchmarkGetMetricColumns measures the call the web UI makes to build a
+// module's chart list.
+//
+// It sits on top of the indexed lookup BenchmarkModuleLookup already covers,
+// and adds what that one does not measure: GetMetricColumns returns values,
+// not pointers, so every kept object is copied out of the slice
+// ListModuleOIDs allocated. Report allocations — the copy, not the read, is
+// what this call adds.
+func BenchmarkGetMetricColumns(b *testing.B) {
+	for _, total := range []int{2000, 29000} {
+		store := benchStore(b, total)
+
+		b.Run(fmt.Sprintf("store=%d", total), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				got, err := store.GetMetricColumns(targetModule)
+				if err != nil {
+					b.Fatalf("GetMetricColumns: %v", err)
+				}
+				if len(got) != targetOIDs {
+					b.Fatalf("got %d objects, want %d", len(got), targetOIDs)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkGetPollableOIDs measures the call the poller makes per module.
 func BenchmarkGetPollableOIDs(b *testing.B) {
 	for _, total := range []int{2000, 29000} {
