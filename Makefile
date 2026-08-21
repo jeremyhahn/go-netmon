@@ -1,4 +1,4 @@
-.PHONY: deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts
+.PHONY: deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version
 
 # Variables
 BINARY_NAME=go-netmon
@@ -134,7 +134,7 @@ validate-mibs: build-cli ## Check that each bundled MIB tree parses and resolves
 	@echo "Validating the Dell tree..."
 	@$(BUILD_DIR)/$(CLI) mib validate --quiet mibs/r640 mibs/standard
 
-ci-fast: check-tracked fmt-check vet lint test build-all validate-mibs ## Everything that does not need Docker
+ci-fast: check-tracked fmt-check vet lint test-toolchain test build-all validate-mibs ## Everything that does not need Docker
 	@echo "ci-fast: passed"
 
 ci: ci-fast integration-test ## Everything a pull request must pass
@@ -239,15 +239,68 @@ coverage-grafana-template: ## Generate Grafana template package coverage
 	$(GOCOVER) -html=$(COVERAGE_DIR)/coverage-grafana-template.out -o $(COVERAGE_DIR)/coverage-grafana-template.html
 	@echo "Grafana template coverage: $(COVERAGE_DIR)/coverage-grafana-template.html"
 
+# The golangci-lint version this repository lints with. MUST match the pin in
+# .github/workflows/ci.yml, which installs its own copy -- if you change one,
+# change the other. The pin is deliberate (devops.md 9): v2.13.0 ships
+# honnef.co/go/tools v0.8.0-rc.1, whose nilness pass panics ("unhandled builtin
+# recover"), producing a RED run with ZERO findings.
+GOLANGCI_LINT_VERSION := v2.12.2
+
 # GOPATH/bin is where "make install-tools" puts golangci-lint, but it is not on
 # every shell's PATH. Looking there explicitly means "make lint" works straight
 # after "make install-tools" without the caller having to fix their profile.
 GOBIN_DIR := $(shell $(GOCMD) env GOPATH)/bin
-GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null || echo $(GOBIN_DIR)/golangci-lint)
+
+# GOBIN_DIR is searched BEFORE PATH, which is the opposite of the usual
+# preference and is the point: GOPATH/bin holds the copy install-tools pinned,
+# while PATH holds whatever the machine happens to have. On a shared
+# workstation GOPATH/bin is itself shared between every checkout and every
+# agent, so neither location is trustworthy on its own -- which is why lint
+# verifies the version rather than assuming either.
+GOLANGCI_LINT := $(shell test -x $(GOBIN_DIR)/golangci-lint && echo $(GOBIN_DIR)/golangci-lint || command -v golangci-lint 2>/dev/null || echo $(GOBIN_DIR)/golangci-lint)
+
+# Where install-tools fetches the installer from. A variable so the guard tests
+# can point it at a URL that fails, rather than reaching the network to prove
+# that a failed download is refused.
+GOLANGCI_LINT_INSTALLER_URL ?= https://raw.githubusercontent.com/golangci/golangci-lint/main/install.sh
+
+# version_of <path> prints the version the binary reports, and FAILS if the
+# binary is missing, not executable, or exits nonzero.
+#
+# The exit status is captured before the output is parsed. Piping the binary
+# straight into awk yields awk's status, not the binary's, so a binary that
+# prints a plausible banner and then fails its own version command would be
+# accepted as good -- a fail-open of exactly the kind these targets exist to
+# close. Callers treat empty output as "could not determine" and refuse.
+VERSION_OF = version_of() { test -x "$$1" || return 1; out=$$("$$1" version 2>/dev/null) || return 1; printf '%s\n' "$$out" | awk '{ for (i = 1; i < NF; i++) if ($$i == "version") { print $$(i+1); exit } }'; }
 
 lint: ## Run linters
 	@echo "Running linters..."
 	@test -x "$(GOLANGCI_LINT)" || (echo "golangci-lint not installed. Run: make install-tools" && exit 1)
+	@# Refuse to lint with an unpinned version rather than report its results.
+	@# A lint run at the wrong version is worse than none, because it is
+	@# believed: v2.13.x fails red with zero findings, so the reader goes
+	@# looking for a defect that is not there.
+	@#
+	@# The version is read as the field after the literal word "version"
+	@# ("golangci-lint has version 2.12.2 built with go1.26.6 from ...") rather
+	@# than by column, so a change to the surrounding wording does not silently
+	@# turn this check into a no-op. version_of also fails on a binary that
+	@# prints a banner and then exits nonzero; see its definition.
+	@$(VERSION_OF); \
+	have=$$(version_of "$(GOLANGCI_LINT)") || have=""; \
+	want="$(GOLANGCI_LINT_VERSION:v%=%)"; \
+	if [ -z "$$have" ]; then \
+		echo "Could not read a version from $(GOLANGCI_LINT)."; \
+		echo "Refusing to lint with an unidentified binary. Run: make install-tools"; \
+		exit 1; \
+	fi; \
+	if [ "$$have" != "$$want" ]; then \
+		echo "golangci-lint is $$have, but this repository pins $$want."; \
+		echo "  binary: $(GOLANGCI_LINT)"; \
+		echo "Run 'make install-tools' to install the pinned version."; \
+		exit 1; \
+	fi
 	"$(GOLANGCI_LINT)" run --timeout=10m ./...
 
 fmt: ## Format code
@@ -380,9 +433,18 @@ stack-verify: ## Compare two stack captures. BEFORE=<file> AFTER=<file>
 test-scripts: ## Run the backup/restore script tests (no Docker daemon, no live stack)
 	@./scripts/tests/run-tests.sh $(RUN)
 
+test-toolchain: ## Run the golangci-lint pin guard tests (no network, no shared GOPATH/bin)
+	@./scripts/tests/toolchain-tests.sh $(RUN)
+
+# print-golangci-version exists so the guard tests can read the pin rather than
+# hardcode it: a test carrying its own copy of the version stops covering the
+# pin the moment the pin moves.
+print-golangci-version: ## Print the pinned golangci-lint version, without the leading v
+	@echo "$(GOLANGCI_LINT_VERSION:v%=%)"
+
 lint-scripts: ## Shellcheck every shell script in the repository
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not installed" && exit 1)
-	@shellcheck -x -P scripts scripts/*.sh scripts/lib/*.sh scripts/tests/run-tests.sh scripts/tests/fake-docker
+	@shellcheck -x -P scripts scripts/*.sh scripts/lib/*.sh scripts/tests/run-tests.sh scripts/tests/toolchain-tests.sh scripts/tests/fake-docker
 	@shellcheck test/integration/run-tests.sh
 	@echo "shellcheck: clean"
 
@@ -676,7 +738,45 @@ integration-shell: ## Open shell in integration test environment
 install-tools: ## Install development tools
 	@echo "Installing development tools..."
 	@# .golangci.yml uses the v2 config schema, which only golangci-lint v2 reads.
-	@which golangci-lint > /dev/null || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/main/install.sh | sh -s -- -b $$(go env GOPATH)/bin v2.11.4
+	@#
+	@# Installs whenever GOPATH/bin does not ALREADY hold the pinned version --
+	@# the question is "is the right version here", not "is something here".
+	@# The old check was `which golangci-lint > /dev/null ||`, which asked the
+	@# second question: with any golangci-lint on PATH it installed nothing and
+	@# still printed "Tools installed", so someone running this precisely to get
+	@# the pinned version was told it had worked while the wrong one stayed.
+	@# The installer is downloaded to a file and run as a separate step rather
+	@# than piped into sh. `curl ... | sh` reports the exit status of sh, and sh
+	@# given empty stdin exits 0, so a failed download printed "Tools installed"
+	@# and left nothing behind -- the same fail-open this target exists to close.
+	@# Measured: `curl -sSfL https://nonexistent.invalid/x | sh -s -- args` exits 0.
+	@#
+	@# The installed binary is then asked its version, so a download that
+	@# succeeds while delivering the wrong build cannot pass either.
+	@$(VERSION_OF); \
+	want="$(GOLANGCI_LINT_VERSION:v%=%)"; \
+	if [ "$$(version_of $(GOBIN_DIR)/golangci-lint || true)" = "$$want" ]; then \
+		echo "golangci-lint $$want already installed"; \
+	else \
+		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) into $(GOBIN_DIR)..."; \
+		installer=$$(mktemp) || exit 1; \
+		trap 'rm -f "$$installer"' EXIT INT TERM; \
+		if ! curl -sSfL $(GOLANGCI_LINT_INSTALLER_URL) -o "$$installer"; then \
+			echo "Could not download the golangci-lint installer."; \
+			exit 1; \
+		fi; \
+		if ! sh "$$installer" -b $(GOBIN_DIR) $(GOLANGCI_LINT_VERSION); then \
+			echo "The golangci-lint installer failed."; \
+			exit 1; \
+		fi; \
+		got=$$(version_of $(GOBIN_DIR)/golangci-lint) || got=""; \
+		if [ "$$got" != "$$want" ]; then \
+			echo "Installed golangci-lint reports '$$got', want '$$want'."; \
+			echo "  binary: $(GOBIN_DIR)/golangci-lint"; \
+			exit 1; \
+		fi; \
+		echo "Installed golangci-lint $$want"; \
+	fi
 	@echo "Tools installed"
 
 .DEFAULT_GOAL := help
