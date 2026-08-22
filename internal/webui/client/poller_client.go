@@ -72,7 +72,37 @@ type DeviceStatus struct {
 	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
 
 	// NextPollTime is when the poller will next try the device.
+	//
+	// ABSENT from the JSON means no retry is scheduled yet -- the state a device
+	// is in for the whole of its first poll. Treat a missing next_poll_time as
+	// "not yet known", not as an error. See MarshalJSON.
 	NextPollTime time.Time `json:"next_poll_time,omitempty"`
+}
+
+// MarshalJSON omits next_poll_time while no retry has been scheduled.
+//
+// The `omitempty` tag cannot do this by itself: encoding/json treats only
+// false, 0, nil pointers and interfaces, and empty arrays, slices, maps and
+// strings as empty, and time.Time is a struct, so a zero value would marshal as
+// "0001-01-01T00:00:00Z". This mirrors internal/api.DeviceStatus.MarshalJSON --
+// the two shapes are one wire contract and must not drift.
+//
+// LastPollTime keeps its always-present zero deliberately: that is what
+// distinguishes "never polled" from "polled and failed".
+func (s DeviceStatus) MarshalJSON() ([]byte, error) {
+	// The local type sheds the method set so this does not recurse; the
+	// shadowing pointer field at depth 0 wins over the embedded one at depth 1.
+	type alias DeviceStatus
+	out := struct {
+		alias
+		NextPollTime *time.Time `json:"next_poll_time,omitempty"`
+	}{alias: alias(s)}
+
+	if !s.NextPollTime.IsZero() {
+		out.NextPollTime = &s.NextPollTime
+	}
+
+	return json.Marshal(out)
 }
 
 // ListDevicesResponse represents the response from listing devices
