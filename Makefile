@@ -1,4 +1,4 @@
-.PHONY: deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version
+.PHONY: deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown
 
 # Variables
 BINARY_NAME=go-netmon
@@ -134,7 +134,7 @@ validate-mibs: build-cli ## Check that each bundled MIB tree parses and resolves
 	@echo "Validating the Dell tree..."
 	@$(BUILD_DIR)/$(CLI) mib validate --quiet mibs/r640 mibs/standard
 
-ci-fast: check-tracked fmt-check vet lint test-toolchain test build-all validate-mibs ## Everything that does not need Docker
+ci-fast: check-tracked fmt-check vet lint test-toolchain test-teardown test build-all validate-mibs ## Everything that does not need Docker
 	@echo "ci-fast: passed"
 
 ci: ci-fast integration-test ## Everything a pull request must pass
@@ -433,6 +433,9 @@ stack-verify: ## Compare two stack captures. BEFORE=<file> AFTER=<file>
 test-scripts: ## Run the backup/restore script tests (no Docker daemon, no live stack)
 	@./scripts/tests/run-tests.sh $(RUN)
 
+test-teardown: ## Test the integration cleanup trap (stub docker, no daemon)
+	@./test/integration/teardown-tests.sh $(RUN)
+
 test-toolchain: ## Run the golangci-lint pin guard tests (no network, no shared GOPATH/bin)
 	@./scripts/tests/toolchain-tests.sh $(RUN)
 
@@ -445,7 +448,7 @@ print-golangci-version: ## Print the pinned golangci-lint version, without the l
 lint-scripts: ## Shellcheck every shell script in the repository
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not installed" && exit 1)
 	@shellcheck -x -P scripts scripts/*.sh scripts/lib/*.sh scripts/tests/run-tests.sh scripts/tests/toolchain-tests.sh scripts/tests/fake-docker
-	@shellcheck test/integration/run-tests.sh
+	@shellcheck -x test/integration/run-tests.sh test/integration/teardown-tests.sh
 	@echo "shellcheck: clean"
 
 # The compose project this repository deploys into. Every docker compose

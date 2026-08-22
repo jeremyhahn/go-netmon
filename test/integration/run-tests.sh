@@ -82,7 +82,15 @@ cleanup() {
     echo "Cleaning up test services (project $PROJECT_NAME)..."
     # Scoped to this project by the pinned -p above; --remove-orphans therefore
     # only reaches services this compose file used to define.
-    compose down -v --remove-orphans >/dev/null 2>&1 || true
+    #
+    # --profile dind is REQUIRED, not tidiness: "compose down" does not remove a
+    # profile-gated service, so without it the privileged dind container
+    # survives every teardown -- this trap included, on successful runs.
+    # Measured 2026-08-21: eight of them up on this workstation (one per
+    # integration run of the day), three on the build-01 runner with one up two
+    # days, one on gpu-host. They hold a Docker daemon and a storage volume
+    # each, and accumulate on a runner until somebody looks.
+    compose --profile dind down -v --remove-orphans >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
