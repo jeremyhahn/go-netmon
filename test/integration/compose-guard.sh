@@ -46,6 +46,50 @@ integration_manual_project() {
     printf '%s' "${NETMON_INTEGRATION_PROJECT-go-netmon-integration-manual}"
 }
 
+# integration_require_disposable_project <project> <compose-file>
+#
+# For an entry point that CREATES AND DESTROYS a stack of its own -- today,
+# run-tests.sh, whose EXIT trap runs "down -v --remove-orphans" over whatever
+# project it was given. Everything integration_require_safe_project refuses,
+# plus the MANUAL project.
+#
+# This is a rule, not a knob, and the distinction is the whole reason it lives
+# here rather than in a test. run-tests.sh was briefly given an environment
+# override so a bad project name could be fed to it; that WIDENED what a caller
+# could set, and it promptly let a test run adopt the manual stack's name and
+# delete it. A refusal NARROWS what a caller can get away with: no environment
+# variable under any name, no flag and no future typo can produce the manual
+# project at a call site that checks this, because the rule does not care where
+# the name came from.
+#
+# stack.sh deliberately calls the base function instead. It is the one entry
+# point entitled to the manual name -- creating and removing that stack is its
+# entire job.
+integration_require_disposable_project() {
+    local project="$1" compose_file="$2"
+
+    local manual
+    manual="$(integration_manual_project)"
+    # -n "$project" first: an EXPLICITLY EMPTY override makes
+    # integration_manual_project empty too, so a bare "" would match it and be
+    # refused as "that is the manual stack" when the operator in fact set
+    # nothing. The empty case is one this codebase deliberately preserves --
+    # the "-" rather than ":-" exists for it -- so it is the one case where
+    # rule 1's message is load-bearing, and it must reach rule 1 to get it.
+    if [ -n "$project" ] && [ "$project" = "$manual" ]; then
+        echo "compose-guard: refusing to use compose project '$project'." >&2
+        echo "  That is the MANUAL stack: what 'make integration-up' creates, and" >&2
+        echo "  what someone may be part way through using -- stack.sh's header" >&2
+        echo "  notes that two people on one host share it." >&2
+        echo "  This entry point tears its project down on the way out, so running" >&2
+        echo "  here would delete that stack and its volumes underneath them." >&2
+        echo "  Remove the manual stack with 'make integration-down' instead." >&2
+        return 1
+    fi
+
+    integration_require_safe_project "$project" "$compose_file"
+}
+
 # integration_require_safe_project <project> <compose-file>
 #
 # Refuses to proceed unless the project is safe to create and destroy:

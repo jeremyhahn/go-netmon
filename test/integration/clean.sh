@@ -57,9 +57,17 @@ PROJECT_PREFIX="go-netmon-integration"
 # and delete its volumes underneath them. It has its own teardown, "make
 # integration-down"; recovery cleanup is for runs killed past their trap.
 #
-# Read from the shared library so this and stack.sh cannot drift, and so an
-# operator who overrides NETMON_INTEGRATION_PROJECT is protected by the same
-# override on both sides.
+# Read from the shared library so this and stack.sh cannot drift: stack.sh
+# CREATES this project and honours NETMON_INTEGRATION_PROJECT, and reading the
+# same function here means an operator who overrides it is protected under the
+# name they actually used rather than the default.
+#
+# run-tests.sh deliberately has no such override and never names this project.
+# It was briefly given one, and that is precisely how the two sides drifted:
+# the seam that was supposed to keep the destroying side and the keeping side
+# in agreement let run-tests.sh adopt the manual stack's name and tear it down.
+# guard-tests.sh pins the pair against this one definition now, both directions
+# in one test, rather than each side testing only its own half.
 # shellcheck source=test/integration/compose-guard.sh
 source "$SCRIPT_DIR/compose-guard.sh"
 MANUAL_PROJECT="$(integration_manual_project)"

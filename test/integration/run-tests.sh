@@ -50,12 +50,26 @@ set -euo pipefail
 # guarantees uniqueness; the run id and attempt are carried so a failed run's
 # containers can still be traced back to the job that left them.
 #
-# The override exists so the guard below is REACHABLE from here. Without it
-# this script can only ever pass rules 1 and 2, and they were consequently
-# never exercised at this call site -- which is how the cd-ordering defect
-# below survived. "-" rather than ":-", matching stack.sh: an explicitly empty
-# value stays empty and is refused rather than silently replaced.
-PROJECT_NAME="${NETMON_INTEGRATION_PROJECT-go-netmon-integration-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$$}"
+# There is deliberately NO environment override here, and stack.sh's
+# NETMON_INTEGRATION_PROJECT does not reach this script.
+#
+# One was added and removed within a day. It was introduced to make the guard
+# below reachable from this call site -- rules 1 and 2 can never fire against a
+# name this script generates -- and it did that by replacing the WHOLE default,
+# including the -$$ two lines above. That deleted the only thing keeping a test
+# run off a stack somebody else is using: with the variable exported and a
+# manual stack up, this script passed all three guard rules and its EXIT trap
+# then ran "down -v --remove-orphans" over it. The guard cannot catch that, and
+# compose-guard.sh's header says why -- rule 3 is satisfied by any project
+# built from this compose file, which the manual stack is.
+#
+# The lesson generalises: do not add a production knob to make a control
+# reachable. The property that needed testing was "the guard runs with the
+# repository root current", and that is observable at the stub, where
+# guard-tests.sh now asserts it. Reachability of the guard's rules is tested by
+# calling the library directly. Neither needs this script to accept a project
+# name from the environment.
+PROJECT_NAME="go-netmon-integration-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$$"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -107,7 +121,11 @@ cd "$PROJECT_ROOT"
 #
 # It is deliberately NOT what keeps concurrent runs apart: two runs of THIS
 # file match each other and pass it. That is the per-run PROJECT_NAME's job.
-integration_require_safe_project "$PROJECT_NAME" "$COMPOSE_FILE" || exit 1
+# _disposable_, not _safe_: this script destroys its project on the way out, so
+# it must additionally refuse the MANUAL stack. That refusal is a production
+# rule rather than a test fixture on purpose -- it holds whatever the name came
+# from, which an environment-dimension test never can.
+integration_require_disposable_project "$PROJECT_NAME" "$COMPOSE_FILE" || exit 1
 
 # --- teardown -------------------------------------------------------------
 
