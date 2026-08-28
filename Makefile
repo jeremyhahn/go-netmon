@@ -451,13 +451,36 @@ test-toolchain: ## Run the golangci-lint pin guard tests (no network, no shared 
 print-golangci-version: ## Print the pinned golangci-lint version, without the leading v
 	@echo "$(GOLANGCI_LINT_VERSION:v%=%)"
 
+# The file lists come from git rather than being written out here.
+#
+# The hardcoded version named scripts/, scripts/lib/, scripts/tests/ and
+# test/integration/ -- and missed six tracked scripts including deploy/install.sh,
+# start.sh, stop.sh and restart.sh. This target's own summary line said "every
+# shell script in the repository" and it was not true, which is the failure mode
+# a hardcoded list has: it is correct when written and silently wrong afterwards.
+# Deriving it means a script added anywhere is linted the day it lands.
+#
+# fake-docker is named separately because it has no .sh extension. The scripts/
+# group carries -P so that "-x" can resolve the sourced lib; the others source
+# relative to their own directory and do not need it.
+#
+# .claude/scripts/validate-bash.sh is linted like everything else. It is agent
+# harness configuration rather than product code, and the argument for exempting
+# it is that something outside this repository might rewrite it and redden the
+# gate. If that is ever actually true the answer is to UNTRACK it, not to
+# exempt it: a file tracked here is this repository's, and a gate going red
+# would be surfacing exactly that mismatch rather than manufacturing noise.
+# "Every tracked script" is a rule with no exception to remember, and every
+# exception in this tree has so far been a place something hid.
+SHELLCHECK_SCRIPTS = $(shell git ls-files 'scripts/*.sh' 'scripts/lib/*.sh' 'scripts/tests/*.sh')
+SHELLCHECK_INTEGRATION = $(shell git ls-files 'test/integration/*.sh')
+SHELLCHECK_OTHER = $(shell git ls-files '*.sh' | grep -vE '^(scripts/|test/integration/)')
+
 lint-scripts: ## Shellcheck every shell script in the repository
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not installed" && exit 1)
-	@shellcheck -x -P scripts scripts/*.sh scripts/lib/*.sh scripts/tests/run-tests.sh scripts/tests/toolchain-tests.sh scripts/tests/fake-docker
-	@shellcheck -x test/integration/run-tests.sh test/integration/teardown-tests.sh \
-		test/integration/harness-tests.sh test/integration/clean.sh \
-		test/integration/stack.sh test/integration/compose-guard.sh \
-		test/integration/guard-tests.sh
+	@shellcheck -x -P scripts $(SHELLCHECK_SCRIPTS) scripts/tests/fake-docker
+	@shellcheck -x $(SHELLCHECK_INTEGRATION)
+	@shellcheck -x $(SHELLCHECK_OTHER)
 	@echo "shellcheck: clean"
 
 # The compose project this repository deploys into. Every docker compose

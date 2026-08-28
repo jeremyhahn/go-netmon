@@ -350,8 +350,8 @@ test_no_entry_point_ever_addresses_the_deployment_project() {
             printf '%s %s %s\n' dep1 "$deployment" "$COMPOSE_FILE" >"$ROOT/containers"
         fi
 
-        # shellcheck disable=SC2086
         set +e
+        # shellcheck disable=SC2086  # $entry is a verb list ("stack.sh up") and must word-split
         env PATH="$BIN:$PATH" GITHUB_RUN_ID=tabletest "$SCRIPT_DIR"/$entry >/dev/null 2>&1
         set -e
 
@@ -393,19 +393,221 @@ test_no_entry_point_ever_addresses_the_deployment_project() {
 # this scan locally. It is not invisible in CI, where the checkout is what git
 # knows about, so the gate still catches it before the change lands -- just one
 # step later than the author would like.
+# scan_compose_docs <repo-root>
+#
+# Prints one line per tracked file that STARTS a compose invocation naming
+# docker-compose.test.yml without -p. Exit 0 means the scan ran; non-zero means
+# it could not, and the caller must never read that as "found nothing".
+#
+# It is a function taking a root rather than inline code over $REPO_ROOT so its
+# failure modes can be EXERCISED rather than argued about. Those modes had been
+# demonstrated by hand and written into a commit message, which is evidence for
+# one commit and no protection afterwards: a regression converting any of them
+# back into a clean result would have left the suite green. That is the same
+# gap as a control that cannot fail, one level up -- the control could fail,
+# and nothing would notice if it stopped being able to.
+#
+# "It found nothing" must be reachable only by searching and not matching. Two
+# facts are needed and neither implies the other:
+#
+#   THE CORPUS IS NON-EMPTY. git grep cannot supply this -- measured, it exits
+#   1 both for "no tracked files" and for "tracked files, no match", so an
+#   empty corpus reads as clean. git ls-files answers it, status checked.
+#
+#   THE SCAN RAN. git grep answers this: 0 found, 1 searched-and-no-match, >1
+#   could not search. The cd is its own statement exiting 3, outside that
+#   range, so it can never be mistaken for a result.
+#
+# Three earlier versions each moved this hole rather than closing it: a failed
+# cd read as clean; a trailing "|| true" over a whole pipeline that pipefail
+# made nonzero; and a "cd X && git grep" whose failed cd exits 1, colliding
+# with git grep's no-match.
+scan_compose_docs() {
+    local root="$1"
+    local matched status=0
+
+    # ONE cd, and a distinct exit code per failure.
+    #
+    # This was two subshells, each with its own cd, and review found the second
+    # one's "cd || exit 3" branch was unreachable by any test: an unreachable
+    # root fails in the FIRST subshell's git ls-files, so the second cd never
+    # runs. Regressed to the colliding "cd "$root" && git grep ..." form -- where
+    # a failed cd exits 1, indistinguishable from git grep's no-match -- all six
+    # scan tests still passed. A branch no test reaches is a branch that can be
+    # deleted, and this one is the fail-closed guarantee.
+    #
+    # So there is one cd now, and the failures are told apart by exit code
+    # rather than by which of two guards happened to fire first:
+    #
+    #   3  cannot enter the root
+    #   4  git ls-files failed -- not a repository, or git is unusable
+    #   5  the corpus is empty. git grep cannot report this: measured, it exits
+    #      1 both for "no tracked files" and "tracked files, no match", so an
+    #      empty corpus would read as clean
+    #   6  the search itself failed
+    #   0  searched; matches (if any) on stdout
+    #
+    # git grep's own exit 1 means searched-and-no-match, which is success here
+    # and is mapped to 0 inside the subshell.
+    matched="$(
+        cd "$root" || exit 3
+        tracked="$(git ls-files | wc -l)" || exit 4
+        [ "${tracked:-0}" -gt 0 ] || exit 5
+        git grep -nE -- '^[[:space:]]*(\$ )?docker[- ]compose '
+        rc=$?
+        [ "$rc" -le 1 ] || exit 6
+        exit 0
+    )" || status=$?
+
+    case "$status" in
+        0) ;;
+        3) echo "cannot enter $root; the scan did not run" >&2; return 1 ;;
+        4) echo "could not list tracked files under $root; the scan has no corpus" >&2; return 1 ;;
+        5) echo "no tracked files under $root, so the scan would search nothing" >&2; return 1 ;;
+        6) echo "the search failed under $root; it searched nothing" >&2; return 1 ;;
+        *) echo "the scan failed under $root (exit $status)" >&2; return 1 ;;
+    esac
+
+    # Filtering a string already in hand: nothing here can fail in a way that
+    # means "did not search".
+    printf '%s\n' "$matched" \
+        | grep -F -- 'docker-compose.test.yml' \
+        | grep -vE -- '-p [^-][^ ]*' || true
+}
+
 test_no_documented_command_addresses_the_deployment_project() {
     local offenders
-    offenders="$(cd "$REPO_ROOT" && git ls-files -z \
-        | xargs -0 grep -nE '^[[:space:]]*(\$ )?docker[- ]compose ' 2>/dev/null \
-        | grep -F -- 'docker-compose.test.yml' \
-        | grep -vE -- '-p [^-][^ ]*' \
-        || true)"
+    offenders="$(scan_compose_docs "$REPO_ROOT")" || {
+        fail "the documentation scan could not run over this repository" || return 1
+    }
 
     if [ -n "$offenders" ]; then
         printf '    FAIL: compose commands on the test compose file with no -p:\n' >&2
         printf '      %s\n' "$offenders" >&2
         return 1
     fi
+}
+
+# THE FAIL-CLOSED PATHS, EXERCISED. Codex blocked the previous head for having
+# none of this: every mode below had been shown to work by mutating the file by
+# hand, which protects the commit that did it and nothing after. A regression
+# turning any of these back into a clean result would have left the suite green
+# -- in a guard standing in front of commands that can delete a deployment.
+#
+# Each case builds its own repository, so nothing here depends on the state of
+# the one being tested.
+test_scan_refuses_an_unreachable_root() {
+    local out
+    if out="$(scan_compose_docs /nonexistent-scan-root 2>&1)"; then
+        fail "the scan accepted an unreachable root; got: $out" || return 1
+    fi
+    # A DISTINCT message from the non-repository case below. Both used to
+    # assert "has no corpus", so either could have been satisfied by the
+    # other's guard and neither pinned its own.
+    case "$out" in
+        *"cannot enter"*) ;;
+        *) fail "wrong reason for an unreachable root: $out"; return 1 ;;
+    esac
+}
+
+test_scan_refuses_a_directory_that_is_not_a_repository() {
+    local dir out
+    dir="$(mktemp -d)"
+    if out="$(scan_compose_docs "$dir" 2>&1)"; then
+        rm -rf "$dir"
+        fail "the scan accepted a non-repository; got: $out" || return 1
+    fi
+    rm -rf "$dir"
+    case "$out" in
+        *"has no corpus"*) ;;
+        *) fail "wrong reason for a non-repository: $out"; return 1 ;;
+    esac
+}
+
+# The case git grep cannot distinguish on its own: nothing to search looks
+# exactly like nothing found.
+test_scan_refuses_an_empty_corpus() {
+    local dir out
+    dir="$(mktemp -d)"
+    git init -q "$dir"
+    if out="$(scan_compose_docs "$dir" 2>&1)"; then
+        rm -rf "$dir"
+        fail "the scan accepted a repository with no tracked files; got: $out" || return 1
+    fi
+    rm -rf "$dir"
+    case "$out" in
+        *"search nothing"*) ;;
+        *) fail "wrong reason for an empty corpus: $out"; return 1 ;;
+    esac
+}
+
+# The branch none of the cases above can reach: git ls-files SUCCEEDS and the
+# search itself fails. A non-repository fails at the listing stage, so without
+# fault injection the "git grep exited >1" arm has no test and could be deleted
+# with the suite still green.
+#
+# The stub answers ls-files normally and fails only for grep, which is the one
+# shape that isolates that arm.
+test_scan_refuses_when_the_search_itself_fails() {
+    local dir bin out
+    dir="$(mktemp -d)"
+    git init -q "$dir"
+    printf 'nothing interesting\n' >"$dir/doc.md"
+    (cd "$dir" && git add doc.md)
+
+    bin="$(mktemp -d)"
+    cat >"$bin/git" <<'STUB'
+#!/usr/bin/env bash
+# Real git for everything except the search, which fails the way an unreadable
+# object or a broken index would.
+if [ "${1:-}" = "grep" ]; then
+    echo "fatal: unable to read tree" >&2
+    exit 128
+fi
+exec /usr/bin/git "$@"
+STUB
+    chmod +x "$bin/git"
+
+    if out="$(PATH="$bin:$PATH" scan_compose_docs "$dir" 2>&1)"; then
+        rm -rf "$dir" "$bin"
+        fail "the scan accepted a failed search; got: ${out:-<empty>}" || return 1
+    fi
+    rm -rf "$dir" "$bin"
+    case "$out" in
+        *"searched nothing"*) ;;
+        *) fail "wrong reason for a failed search: $out"; return 1 ;;
+    esac
+}
+
+# The positive control. Without it every case above is satisfied by a scan that
+# refuses everything, which is its own kind of useless.
+test_scan_reports_a_real_offender() {
+    local dir out
+    dir="$(mktemp -d)"
+    git init -q "$dir"
+    printf 'docker compose -f docker-compose.test.yml up -d\n' >"$dir/doc.md"
+    (cd "$dir" && git add doc.md)
+
+    out="$(scan_compose_docs "$dir")" || { rm -rf "$dir"; fail "the scan failed on a healthy repository" || return 1; }
+    rm -rf "$dir"
+    case "$out" in
+        *"doc.md"*) ;;
+        *) fail "the scan missed an unguarded command; got: ${out:-<nothing>}"; return 1 ;;
+    esac
+}
+
+# And the other half of the control: a guarded command is NOT an offender, so
+# the scan is not simply reporting every compose line it sees.
+test_scan_passes_a_guarded_command() {
+    local dir out
+    dir="$(mktemp -d)"
+    git init -q "$dir"
+    printf 'docker compose -p go-netmon-integration-manual -f docker-compose.test.yml up -d\n' >"$dir/doc.md"
+    (cd "$dir" && git add doc.md)
+
+    out="$(scan_compose_docs "$dir")" || { rm -rf "$dir"; fail "the scan failed on a healthy repository" || return 1; }
+    rm -rf "$dir"
+    [ -z "$out" ] || { fail "a guarded command was reported as an offender: $out"; return 1; }
 }
 
 # THE CALL SITE THE SUITE COULD NOT SEE.
@@ -467,6 +669,7 @@ test_guard_rules_hold_from_any_directory() {
         # would make the assertion X == X: a version returning a constant would
         # still be refused and this would still pass.
         set +e
+        # shellcheck disable=SC2016  # $1/$2/$3 belong to the inner bash -c, not this one
         out="$(cd "$dir" && env PATH="$BIN:$PATH" bash -c '
             source "$1/compose-guard.sh"
             integration_require_safe_project "$3" "$2"
@@ -481,6 +684,7 @@ test_guard_rules_hold_from_any_directory() {
 
         # Rule 1: an empty name is how compose falls back to that default.
         set +e
+        # shellcheck disable=SC2016  # $1/$2 belong to the inner bash -c, not this one
         out="$(cd "$dir" && env PATH="$BIN:$PATH" bash -c '
             source "$1/compose-guard.sh"
             integration_require_safe_project "" "$2"
@@ -541,6 +745,7 @@ test_run_tests_can_never_address_the_project_clean_protects() {
 
         # What clean.sh would refuse to remove, under this environment.
         # shellcheck disable=SC2086
+        # shellcheck disable=SC2016  # $1 is the inner shell's positional, passed after --
         protected="$(env $env_assign bash -c 'source "$1/compose-guard.sh"; integration_manual_project' _ "$SCRIPT_DIR")"
 
         # What run-tests.sh actually passes to docker, under the same
@@ -615,6 +820,7 @@ test_run_tests_refuses_the_manual_project_by_rule() {
     manual="$(integration_manual_project)"
 
     set +e
+    # shellcheck disable=SC2016  # $1/$2/$3 belong to the inner bash -c, not this one
     out="$(cd "$REPO_ROOT" && env PATH="$BIN:$PATH" bash -c '
         source "$1/compose-guard.sh"
         integration_require_disposable_project "$3" "$2"
@@ -630,6 +836,7 @@ test_run_tests_refuses_the_manual_project_by_rule() {
 
     # And the same name is fine for stack.sh's guard, which owns it.
     set +e
+    # shellcheck disable=SC2016  # $1/$2/$3 belong to the inner bash -c, not this one
     out="$(cd "$REPO_ROOT" && env PATH="$BIN:$PATH" bash -c '
         source "$1/compose-guard.sh"
         integration_require_safe_project "$3" "$2"
@@ -715,6 +922,7 @@ test_an_empty_project_is_refused_as_empty_not_as_the_manual_stack() {
 
     local out rc
     set +e
+    # shellcheck disable=SC2016  # $1/$2 are the inner shell's positionals, passed after --
     out="$(cd "$REPO_ROOT" && env PATH="$BIN:$PATH" NETMON_INTEGRATION_PROJECT= bash -c '
         source "$1/compose-guard.sh"
         integration_require_disposable_project "" "$2"

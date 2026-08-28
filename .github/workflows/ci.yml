@@ -134,6 +134,28 @@ jobs:
       - name: Shell test suites
         run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard
 
+      # The linter, which this job left behind when it was created.
+      #
+      # "make lint-scripts" has always existed and named all seven scripts, and
+      # no workflow ran it -- so shellcheck ran nowhere. That is the same defect
+      # this job was added to fix, one notch over: it wired up the shell SUITES
+      # and not the shell LINTER, which is harder to notice because the job now
+      # exists and reads as coverage.
+      #
+      # It was excluded until now for a real reason: shellcheck was not in the
+      # runner image, and installing it at job time is what that image exists to
+      # prevent. The image carries shellcheck 0.9.0 now, so the reason is gone.
+      #
+      # Findings are suppressed per site with a reason on the line, never with
+      # --severity or a .shellcheckrc: a blanket silences the next real finding
+      # as well as this one. Every suppression in the tree has been shown to
+      # suppress something -- the finding present without the directive, absent
+      # with it -- because a misplaced directive silently suppresses nothing
+      # while reading as a settled question, which is how one of them sat
+      # broken in guard-tests.sh.
+      - name: Lint shell scripts
+        run: make lint-scripts
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest

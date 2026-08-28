@@ -99,11 +99,13 @@ while [ \$# -gt 0 ]; do
 done
 EOF
     {
+        # shellcheck disable=SC2016  # writing a script; $dir expands when IT runs, not here
         printf 'cat > "$dir/golangci-lint" <<INNER\n'
         printf '#!/bin/sh\n'
         printf 'echo "golangci-lint has version %s built with go1.26.6"\n' "$version"
         printf 'exit %s\n' "$exit_status"
         printf 'INNER\n'
+        # shellcheck disable=SC2016  # same: $dir belongs to the generated script
         printf 'chmod +x "$dir/golangci-lint"\n'
     } >>"$path"
     chmod +x "$path"
