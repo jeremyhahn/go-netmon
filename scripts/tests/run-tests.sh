@@ -112,7 +112,11 @@ new_fixture() {
         >"$FAKE_DOCKER_ROOT/compose-volumes"
     write_services_json "$MIB_TREE"
     printf '%s\n' go-netmon webui prometheus grafana >"$FAKE_DOCKER_ROOT/running"
-    : >"$FAKE_DOCKER_ROOT/foreign"
+    # The containers the fake models, "<id> <project> <config_files>". The
+    # baseline is a project holding only containers this compose file created,
+    # which is what the ownership check must PERMIT.
+    printf '%s go-netmon %s\n' ours1 "$NETMON_COMPOSE_FILE" \
+        >"$FAKE_DOCKER_ROOT/containers"
 
     local v
     for v in webui-data go-netmon-data prometheus-data grafana-data; do
@@ -248,10 +252,183 @@ test_backup_rejects_unlabelled_target_volume() {
     assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1"
 }
 
+# A container that IS in the project and was created from a DIFFERENT compose
+# file. Described by its labels, not by writing the answer into a "foreign"
+# file: the fake has to be asked the question the code actually asks, or the
+# test passes against a check that cannot refuse -- which is what it did.
 test_backup_rejects_foreign_containers_in_project() {
-    printf 'deadbeef\n' >"$FAKE_DOCKER_ROOT/foreign"
+    # EXITED, deliberately. A foreign container in the project need not be
+    # running, and "docker ps" without -a would not see it -- so this fixture
+    # is what makes the -a in the ownership query load-bearing rather than
+    # decorative. Measured against a real daemon: a stopped container is
+    # returned by "ps -aq" and not by "ps -q".
+    printf '%s go-netmon %s exited\n' theirs1 /elsewhere/docker-compose.yml \
+        >>"$FAKE_DOCKER_ROOT/containers"
     expect_failure "foreign containers" "$BACKUP" --name b1 || return 1
     assert_contains "refusal message" "$OUT" "does not own" || return 1
+    assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1"
+}
+
+# THE FAKE'S OWN REFUSALS, PINNED.
+#
+# The stub is the instrument these ownership tests are measured with, and it
+# has been wrong three times in the same direction -- each time answering a
+# question it was not asked, so a broken ownership check passed:
+#
+#   returning a canned file whatever filter it was handed;
+#   then falling through to match-all for an unrecognised filter;
+#   then silently ignoring "-f", which is docker's own alias for --filter.
+#
+# Each was found by review and fixed, and none of those fixes left anything
+# behind that would notice the property being lost again. A demonstrated
+# instrument is not a maintained one, so the refusals are asserted here.
+#
+# The valid shapes are asserted too: a stub that refuses everything would pass
+# every case below and make the whole suite vacuous.
+test_fake_docker_refuses_queries_it_does_not_understand() {
+    local root out failed=0
+    root="$(mktemp -d)"
+    printf 'c1 go-netmon /x/docker-compose.yml\n' >"$root/containers"
+
+    _fake_ps() { FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" ps "$@" 2>&1; }
+
+    # Shapes docker really honours must work, including the -f alias.
+    local shape
+    for shape in "--filter" "-f"; do
+        if ! out="$(_fake_ps -aq "$shape" 'label=com.docker.compose.project=go-netmon')" \
+            || [ "$out" != "c1" ]; then
+            fail "the fake rejected a valid '$shape' query: $out" || failed=1
+        fi
+    done
+
+    # Malformed filters, each paired with a VALID project filter.
+    #
+    # The pairing is load-bearing. Sent alone, a rejected filter leaves no
+    # project set and the stub refuses for that reason instead -- so the
+    # assertion would pass with the filter validation deleted, satisfied by a
+    # different guard. With a good filter present the project IS set, and only
+    # the validation can still refuse.
+    local bad
+    for bad in 'label=com.docker.compose.project.config_files!=/x.yml' \
+               'label=com.docker.compose.project_name=go-netmon'; do
+        for shape in "--filter" "-f"; do
+            if out="$(_fake_ps -aq --filter 'label=com.docker.compose.project=go-netmon' "$shape" "$bad")"; then
+                fail "the fake accepted a malformed filter via $shape alongside a valid one: $bad" || failed=1
+            fi
+        done
+    done
+
+    if out="$(_fake_ps -aq --no-trunc --filter 'label=com.docker.compose.project=go-netmon')"; then
+        fail "the fake accepted an argument it does not model: --no-trunc" || failed=1
+    fi
+    if out="$(_fake_ps -aq)"; then
+        fail "the fake answered a match-all listing" || failed=1
+    fi
+
+    # Two project filters is a conflict, not an override: docker would apply
+    # both and match neither, so an answer decided by argument order is a
+    # dropped filter wearing different clothes.
+    if out="$(_fake_ps -aq --filter 'label=com.docker.compose.project=other' \
+                            --filter 'label=com.docker.compose.project=go-netmon')"; then
+        fail "the fake accepted two conflicting project filters: $out" || failed=1
+    fi
+
+    # State. Without -a, docker shows only running containers, so the stub must
+    # too -- otherwise an ownership query that lost its -a still sees stopped
+    # foreign containers here and passes, while production goes blind to them.
+    printf 'c2 go-netmon /x/docker-compose.yml exited\n' >>"$root/containers"
+    out="$(_fake_ps -aq --filter 'label=com.docker.compose.project=go-netmon')"
+    case "$out" in
+        *c2*) ;;
+        *) fail "the fake hid a stopped container from 'ps -aq': $out" || failed=1 ;;
+    esac
+    # The negative half needs a positive control INSIDE it. Asserting only that
+    # c2 is absent cannot tell "the stub correctly hid the stopped container"
+    # from "the stub failed and printed an error that happens not to contain
+    # c2" -- measured: delete the -q branch, the stub dies on an unknown
+    # argument, and an absence-only assertion passes. So: the command must
+    # SUCCEED, the running container must be listed, and the stopped one must
+    # not be.
+    if ! out="$(_fake_ps -q --filter 'label=com.docker.compose.project=go-netmon')"; then
+        fail "the fake rejected a valid 'ps -q' query: $out" || failed=1
+    else
+        case "$out" in
+            *c1*) ;;
+            *) fail "'ps -q' listed no running container, so its output proves nothing: $out" || failed=1 ;;
+        esac
+        case "$out" in
+            *c2*) fail "the fake showed a stopped container to 'ps -q', which real docker does not" || failed=1 ;;
+        esac
+    fi
+
+    # The inspect arm's template is compared exactly, not by substring. A key
+    # typo'd to one CONTAINING the real label used to return the correct value
+    # anyway, so the suite could not see it -- verified by mutation at the time
+    # and, until now, pinned by nothing.
+    if out="$(FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" inspect \
+        --format '{{index .Config.Labels "com.docker.compose.project.config_files_TYPO"}}' c1 2>&1)"; then
+        fail "the fake answered a template it does not model: $out" || failed=1
+    fi
+    if ! out="$(FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" inspect \
+        --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' c1 2>&1)"; then
+        fail "the fake rejected the template production actually uses: $out" || failed=1
+    elif [ "$out" != "/x/docker-compose.yml" ]; then
+        fail "the fake returned the wrong field for the config_files template: $out" || failed=1
+    fi
+
+    unset -f _fake_ps
+    rm -rf "$root"
+    [ "$failed" -eq 0 ]
+}
+
+
+# The other half of the fail-closed path, and the half that had no injection
+# point at all until now: "docker ps" listed a container and the "docker
+# inspect" that asks who owns it fails. That happens when a container
+# disappears between the two calls, and on any daemon or permission error.
+#
+# Measured before this existed: swallow the inspect failure in
+# compose_foreign_containers and the whole suite still passed, 54 of 54. The
+# branch is the fail-closed guarantee on a path that overwrites volumes, and
+# nothing reached it.
+test_backup_refuses_when_a_container_cannot_be_inspected() {
+    printf '%s go-netmon %s exited\n' theirs1 /elsewhere/docker-compose.yml \
+        >>"$FAKE_DOCKER_ROOT/containers"
+    printf '1\n' >"$FAKE_DOCKER_ROOT/inspect-status"
+
+    expect_failure "uninspectable container" "$BACKUP" --name b1 || { rm -f "$FAKE_DOCKER_ROOT/inspect-status"; return 1; }
+    rm -f "$FAKE_DOCKER_ROOT/inspect-status"
+
+    # The OUTER message is the same for either docker call failing, so
+    # asserting only it does not prove the inspect branch is what refused --
+    # and "no archive written" is equally true of a backup that stopped one
+    # step earlier. Both are satisfied by the ps-failure path.
+    #
+    # So pin the inner message, which only the inspect branch emits, and
+    # require the ps one to be ABSENT. Together they say which of the two
+    # calls refused, which is the whole point of a test named for one of them.
+    assert_contains "refusal names the cause" "$OUT" "could not establish ownership" || return 1
+    assert_contains "the INSPECT branch is what refused" "$OUT" \
+        "could not read the compose file behind container" || return 1
+    case "$OUT" in
+        *"could not list the containers in project"*)
+            fail "the ps path refused, so this test did not exercise inspect" || return 1 ;;
+    esac
+
+    # And nothing was produced. A refusal that still wrote an archive would be
+    # a refusal in the message only.
+    assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1"
+}
+
+# The second defect, independent of the filter: "2>/dev/null || true" turned a
+# FAILED docker query into an empty result, and empty meant "nothing foreign".
+# A question that could not be asked was answered "yes, it is yours" -- on the
+# path that overwrites volumes.
+test_backup_refuses_when_ownership_cannot_be_established() {
+    printf '1\n' >"$FAKE_DOCKER_ROOT/ps-status"
+    expect_failure "unanswerable ownership query" "$BACKUP" --name b1 || return 1
+    rm -f "$FAKE_DOCKER_ROOT/ps-status"
+    assert_contains "refusal names the cause" "$OUT" "could not establish ownership" || return 1
     assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1"
 }
 
@@ -538,7 +715,13 @@ test_restore_warns_when_webui_and_poller_are_split() {
 
 test_restore_rejects_foreign_containers_in_project() {
     make_backup b1 || fail "backup failed"
-    printf 'deadbeef\n' >"$FAKE_DOCKER_ROOT/foreign"
+    # EXITED, deliberately. A foreign container in the project need not be
+    # running, and "docker ps" without -a would not see it -- so this fixture
+    # is what makes the -a in the ownership query load-bearing rather than
+    # decorative. Measured against a real daemon: a stopped container is
+    # returned by "ps -aq" and not by "ps -q".
+    printf '%s go-netmon %s exited\n' theirs1 /elsewhere/docker-compose.yml \
+        >>"$FAKE_DOCKER_ROOT/containers"
     local before out
     before="$(volume_fingerprint go-netmon_webui-data)"
     expect_failure "guarded restore" "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --yes --no-safety-backup || return 1

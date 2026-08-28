@@ -12,7 +12,14 @@
 #   volumes/<name>/data/...   volume contents
 #   volumes/<name>/project    compose project label (absent = unlabelled)
 #   running                   services currently "running"
-#   foreign                   container ids reported as foreign to the project
+#   containers                one per line:
+#                             "<id> <project> <config_files> [running|exited]"
+#                             The state defaults to "running" when omitted. It
+#                             exists because "docker ps" WITHOUT -a shows only
+#                             running containers, and a stopped foreign
+#                             container is still a foreign container.
+#   ps-status                 if present, "docker ps" fails with this exit code
+#   inspect-status            if present, "docker inspect" fails with this code
 #   compose-volumes           logical volume names the compose file defines
 #   services.json             compose service -> image mapping
 #   log                       every invocation, for assertions about behaviour
@@ -24,6 +31,29 @@ mkdir -p "$root"
 printf '%s\n' "$*" >>"$root/log"
 
 vol_dir() { printf '%s/volumes/%s/data' "$root" "$1"; }
+
+# ps_filter validates one "docker ps" filter VALUE and records it. Exactly one
+# shape is understood; everything else is fatal, including docker's negated
+# label spelling, which a real daemon parses as a literal value and matches
+# nothing with. Silence there is what let the original defect through.
+ps_filter() {
+    case "$1" in
+        "label=com.docker.compose.project="*)
+            # A second project filter is a CONFLICT, not an override. Silently
+            # keeping the last one means a query with two filters gets an
+            # answer decided by argument order -- the same "dropped filter"
+            # family this stub exists to refuse.
+            if [ -n "${ps_want_project:-}" ]; then
+                die "ps: two project filters given ('$ps_want_project' then '${1#label=com.docker.compose.project=}'); docker would apply both and match neither"
+            fi
+            ps_want_project="${1#label=com.docker.compose.project=}" ;;
+        *)
+            die "unsupported ps filter '$1'. This stub understands only
+  label=com.docker.compose.project=<name>. Docker has no negated label filter,
+  and a mistyped label key matches nothing on a real daemon -- both look like
+  'no foreign containers' to a caller." ;;
+    esac
+}
 
 die() {
     printf 'fake-docker: %s\n' "$*" >&2
@@ -190,12 +220,144 @@ volume)
     cmd_volume "$@"
     ;;
 ps)
-    # The ownership check asks for foreign container ids, then for a listing.
-    if [[ "$*" == *"-aq"* ]]; then
-        cat "$root/foreign" 2>/dev/null || true
-    else
-        sed 's/^/  /' "$root/foreign" 2>/dev/null || true
+    # A forced failure, for the fail-open case: a query that could not be
+    # answered must never be read as "nothing foreign".
+    if [ -f "$root/ps-status" ]; then
+        printf 'Cannot connect to the Docker daemon\n' >&2
+        exit "$(cat "$root/ps-status")"
     fi
+
+    # MODELS CONTAINERS AND THEIR LABELS, and REFUSES EVERY ARGV IT DOES NOT
+    # UNDERSTAND.
+    #
+    # Three versions of this, each less wrong than the last:
+    #
+    #  1. It returned the contents of a "foreign" file whatever filter it was
+    #     handed, so it could not tell a correct ownership query from a
+    #     malformed one -- and the code under test used "label=KEY!=VALUE",
+    #     which a real daemon matches nothing with. Two tests asserted the
+    #     ownership check refuses foreign containers, and passed, against a
+    #     function that could never refuse.
+    #  2. It recognised the good filter and let anything unrecognised fall
+    #     through to MATCH-ALL, so a check regressed to a typo in the label key
+    #     still saw every container and the tests still passed.
+    #  3. It recognised only "--filter" and silently ignored "-f" -- docker's
+    #     own alias for it, "-f, --filter filter" in docker ps --help. A bad
+    #     filter spelled with -f was dropped while a good --filter still
+    #     returned matches, so the tests passed against a malformed query
+    #     again. Same defect, third spelling.
+    #
+    # So argv is parsed exhaustively and anything unrecognised is fatal. The
+    # cost is that a test needing a new query shape must teach this stub about
+    # it, and that cost IS the mechanism: it is the moment somebody checks the
+    # shape is one docker honours.
+    shift
+    ps_want_project=""
+    ps_quiet=0
+    ps_all=0
+    ps_expect_filter=0
+    while [ $# -gt 0 ]; do
+        if [ "$ps_expect_filter" -eq 1 ]; then
+            ps_filter "$1"
+            ps_expect_filter=0
+            shift
+            continue
+        fi
+        case "$1" in
+            -aq|-qa)     ps_quiet=1; ps_all=1 ;;
+            -a|--all)    ps_all=1 ;;
+            -q|--quiet)  ps_quiet=1 ;;
+            --filter|-f) ps_expect_filter=1 ;;
+            --filter=*)  ps_filter "${1#--filter=}" ;;
+            -f=*)        ps_filter "${1#-f=}" ;;
+            *)
+                die "unsupported 'ps' argument '$1'. This stub understands -a, -q,
+  -aq, --all, --quiet and a project filter via --filter or -f. Anything else is
+  refused rather than ignored: a filter this stub drops is a filter the code
+  under test believes it applied, which is how an ownership check that could
+  never refuse passed its tests three times." ;;
+        esac
+        shift
+    done
+    [ "$ps_expect_filter" -eq 0 ] || die "ps: a filter option was given with no value"
+    [ -n "$ps_want_project" ] || die "ps: no project filter given; this stub refuses a match-all listing"
+
+    # WITHOUT -a, only running containers. Real "docker ps" defaults to running
+    # only, and -a is what includes stopped ones -- measured against the daemon:
+    # a stopped container in the project is returned by "ps -aq" and NOT by
+    # "ps -q". Modelling that is what stops a regression from "ps -aq" to
+    # "ps -q" passing here while shipping a guard blind to stopped foreign
+    # containers.
+    while read -r cid cproject cconfig cstate; do
+        [ -n "${cid:-}" ] || continue
+        [ "$cproject" = "$ps_want_project" ] || continue
+        [ "$ps_all" -eq 1 ] || [ "${cstate:-running}" = "running" ] || continue
+        if [ "$ps_quiet" -eq 1 ]; then
+            printf '%s\n' "$cid"
+        else
+            printf '  %s  (%s)\n' "$cid" "$cconfig"
+        fi
+    done <"$root/containers" 2>/dev/null || true
+    ;;
+inspect)
+    # A forced failure, for the other half of the fail-closed path. A container
+    # can disappear between the "ps" that listed it and the "inspect" that asks
+    # who owns it, and a daemon or permission error can fail the inspect alone.
+    # Both must refuse, not be read as "nothing foreign".
+    if [ -f "$root/inspect-status" ]; then
+        printf 'Error response from daemon: no such container\n' >&2
+        exit "$(cat "$root/inspect-status")"
+    fi
+
+    # The ownership check asks each container which compose file created it.
+    #
+    # The FORMAT STRING IS COMPARED EXACTLY, not matched as a substring. It was
+    # "case $* in *config_files*", which cannot tell the real label from one
+    # containing it: a key typo'd to "...config_files_TYPO" still matched, the
+    # stub returned the correct value, and all 54 tests passed -- while real
+    # docker returns empty for a label that does not exist. The stub validated
+    # the format only by accident of spelling.
+    #
+    # Same rule as the ps arm: model it or refuse it. A format this stub does
+    # not know is a question it cannot answer, and answering anyway is how the
+    # previous four defects on this branch worked.
+    shift
+    insp_format=""
+    insp_id=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --format) insp_format="${2:-}"; shift 2 ;;
+            --format=*) insp_format="${1#--format=}"; shift ;;
+            -*) die "unsupported 'inspect' option '$1'" ;;
+            *)
+                [ -z "$insp_id" ] || die "inspect: more than one object named ('$insp_id' then '$1')"
+                insp_id="$1"; shift ;;
+        esac
+    done
+    [ -n "$insp_id" ] || die "inspect: no object named"
+
+    case "$insp_format" in
+        '{{index .Config.Labels "com.docker.compose.project.config_files"}}') insp_field=config ;;
+        '{{index .Config.Labels "com.docker.compose.project"}}')              insp_field=project ;;
+        *) die "unsupported 'inspect --format' template: ${insp_format:-<none>}. This
+  stub answers exactly two, the compose project and config_files labels. A
+  template it does not know is a question it cannot answer -- and a label key
+  that does not exist returns EMPTY on a real daemon, which is not what
+  answering anyway would produce." ;;
+    esac
+
+    while read -r cid cproject cconfig cstate; do
+        [ -n "${cid:-}" ] || continue
+        if [ "$cid" = "$insp_id" ]; then
+            case "$insp_field" in
+                config)  printf '%s\n' "$cconfig" ;;
+                project) printf '%s\n' "$cproject" ;;
+            esac
+            exit 0
+        fi
+    done <"$root/containers" 2>/dev/null || true
+    printf 'Error: No such object: %s\n' "$insp_id" >&2
+    exit 1
     ;;
 image)
     printf 'sha256:%s\n' "$(printf '%s' "$*" | sha256sum | cut -c1-64)"
