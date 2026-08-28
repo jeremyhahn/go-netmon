@@ -317,8 +317,25 @@ func (c *CLI) VolumeBytes(ctx context.Context, volume string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// "du -sb" prints "<bytes>\t<path>", so the byte count is everything before
+	// the first tab and ParseInt is handed it directly.
+	//
+	// This used to read strings.Fields(field + " ")[0]. The appended space was
+	// there to guarantee Fields returned at least one element, and it does not:
+	// Fields splits around whitespace and discards it, so a whitespace-only
+	// string yields an empty slice and [0] panicked. An idiom that reads as a
+	// guard and is not one is worse than no guard, because the next reader
+	// stops looking -- and it panicked one line ABOVE the DockerOutputError
+	// below, whose Reason is "expected a byte count", leaving that error
+	// unreachable for precisely the case it was written for.
+	//
+	// Measured: the helper container exiting 0 with empty stdout is reachable
+	// on a loaded or degraded daemon, and it took down a CI run that way.
+	// Empty, whitespace-only and unparseable output now all take the same
+	// route, because they are the same thing to the caller: docker did not
+	// answer the question.
 	field, _, _ := strings.Cut(strings.TrimSpace(out), "\t")
-	size, convErr := strconv.ParseInt(strings.Fields(field + " ")[0], 10, 64)
+	size, convErr := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
 	if convErr != nil {
 		return 0, &DockerOutputError{Command: "run du", Reason: "expected a byte count", Output: out}
 	}

@@ -332,8 +332,13 @@ func TestVolumeProjectSeparatesAbsentFromUnanswered(t *testing.T) {
 	}
 }
 
-// TestVolumeBytesReadsTheHelpersAnswer covers the size probe and its bad-output
-// case: a manifest that records a wrong size is worse than one that records none.
+// TestVolumeBytesReadsTheHelpersAnswer covers the size probe's ARGUMENT VECTOR
+// and that a real answer parses, which is this file's subject.
+//
+// The bad-output cases moved to TestVolumeBytesTreatsAnUnanswerableReplyAsAnError
+// in dockercli_output_test.go, which asserts the error TYPE, its Reason and the
+// reply carried verbatim, where the version here only asserted err != nil. Two
+// tests over one behavior drift; the weaker one went.
 func TestVolumeBytesReadsTheHelpersAnswer(t *testing.T) {
 	t.Parallel()
 
@@ -352,11 +357,6 @@ func TestVolumeBytesReadsTheHelpersAnswer(t *testing.T) {
 		"-v", "go-netmon_webui-data:/src:ro", "busybox:1.36",
 		"du", "-sb", "/src",
 	})
-
-	garbled := &fakeExec{stdout: map[string]string{"du": "not a number\t/src\n"}}
-	if _, err := cliWith(t, garbled).VolumeBytes(ctx, "go-netmon_webui-data"); err == nil {
-		t.Error("output that is not a byte count was accepted as a size")
-	}
 }
 
 // TestForeignContainersSpotsWhatThisComposeFileDidNotCreate covers the check
