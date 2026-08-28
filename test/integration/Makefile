@@ -44,11 +44,12 @@ test-pipeline:
 test-index:
 	@$(RUN_TESTS) TestTableIndexExtraction
 
-# Remove the test stack. run-tests.sh already does this on every exit path; this
-# target is for a run that was killed hard enough to skip the trap.
+# Remove any test stack left behind. run-tests.sh cleans up on every exit path;
+# this target is for a run killed hard enough to skip the trap.
 #
-# It deliberately does not delete anything on the host. The previous version ran
-# "rm -rf ../../test-data" against a directory in the repository, to clean up
-# directories its own setup target created and no container ever mounted.
+# The logic lives in clean.sh because it is safety-critical and needs tests:
+# selecting projects by "holds a container of ours" alone would select the
+# DEPLOYMENT's project, since make integration-up can place test services in
+# it. See the script's header.
 clean:
-	@docker compose -p go-netmon-integration -f ../../docker-compose.test.yml down -v --remove-orphans 2>/dev/null || true
+	@./clean.sh

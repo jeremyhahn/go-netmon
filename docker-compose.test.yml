@@ -4,9 +4,12 @@ services:
     build:
       context: .
       dockerfile: test/integration/Dockerfile.prometheus
-    container_name: go-netmon-test-prometheus
+    # Published on an ephemeral host port, not a fixed one: the tests reach
+    # prometheus as "prometheus:9090" over test-network, so a fixed host port
+    # serves only local poking while making two concurrent stacks collide on
+    # the bind. Find it with: docker compose -p <project> port prometheus 9090
     ports:
-      - "9090:9090"
+      - "9090"
     volumes:
       - prometheus-data:/prometheus
     command:
@@ -29,9 +32,10 @@ services:
     build:
       context: .
       dockerfile: test/integration/Dockerfile.snmpsim
-    container_name: go-netmon-test-snmp
+    # Ephemeral for the same reason as prometheus; the tests use
+    # SNMP_HOST=snmp-simulator on test-network.
     ports:
-      - "1161:161/udp"
+      - "161/udp"
     environment:
       - SNMPSIM_AGENT_UDPV4_ENDPOINT=0.0.0.0:161
     networks:
@@ -58,7 +62,6 @@ services:
   # resolution were wrong. Everything it creates dies with the stack.
   dind:
     image: docker:27-dind
-    container_name: go-netmon-integration-dind
     # Behind a profile, so it is started only when something asks for it.
     #
     # A privileged container is not available everywhere -- a CI runner that is
@@ -89,7 +92,6 @@ services:
     build:
       context: .
       dockerfile: test/integration/Dockerfile.test
-    container_name: go-netmon-integration-test
     depends_on:
       prometheus:
         condition: service_healthy

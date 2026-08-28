@@ -399,11 +399,19 @@ func TestDashboardEndpoint_IFMIB(t *testing.T) {
 
 set -e
 
-# Start test environment
-docker-compose -f docker-compose.test.yml up -d
-
-# Wait for services
-sleep 5
+# Start test environment.
+#
+# Through the make target, never "docker compose -f docker-compose.test.yml"
+# directly: with no -p, compose infers the project from the directory --
+# "go-netmon", which is the project a DEPLOYED stack occupies -- so "up"
+# recreates the live prometheus against the test configuration and the "down"
+# at the bottom of this script deletes the deployment's volumes. The target
+# runs test/integration/stack.sh, which pins a project of its own and refuses
+# to start if it is the directory default.
+#
+# It also waits for health rather than sleeping: --wait blocks until every
+# started service reports healthy, and fails if any does not.
+make integration-up
 
 # Import MIBs
 curl -X POST http://localhost:8080/api/mibs/import \
@@ -441,7 +449,7 @@ fi
 echo "E2E test passed!"
 
 # Cleanup
-docker-compose -f docker-compose.test.yml down
+make integration-down
 ```
 
 ### 4. Performance Tests

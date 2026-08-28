@@ -16,23 +16,38 @@
 # This script destroys containers and volumes. Everything it destroys must
 # belong to a project created by this script and nothing else.
 #
-# The compose project name is pinned rather than inherited from the directory
-# name. Inherited, the project is "go-netmon" — the same project a deployed
-# stack from this repository occupies. Compose would then treat the running
-# go-netmon, go-netmon-webui and grafana containers as orphans of this file and
-# remove them, "down -v" would delete their volumes (MIB catalog, device
-# configuration, metric history), and the live prometheus container would be
-# recreated against the test configuration. A pinned project makes the test
-# stack a separate namespace; the preflight below makes that a checked fact
-# rather than an assumption a later edit can quietly break.
+# The compose project name is chosen here rather than inherited from the
+# directory name. Inherited, the project is "go-netmon" — the same project a
+# deployed stack from this repository occupies. Compose would then treat the
+# running go-netmon, go-netmon-webui and grafana containers as orphans of this
+# file and remove them, "down -v" would delete their volumes (MIB catalog,
+# device configuration, metric history), and the live prometheus container
+# would be recreated against the test configuration. Choosing the name makes
+# the test stack a separate namespace; the preflight below makes that a checked
+# fact rather than an assumption a later edit can quietly break.
+#
+# It is also UNIQUE PER RUN. A fixed name was a separate namespace from the
+# deployment but the same namespace as every other concurrent test run, and
+# containers are shared per Docker daemon, so two runs on one host adopted each
+# other's stack and the first to finish tore it down under the second. Measured
+# on 2026-08-21: main run 4905 and PR run 4902 landed on build-01-docker together,
+# 4902's cleanup ran at 22:48:24, and 4905 failed 2.5s later with
+# "integration-test is missing dependency prometheus" — a stack that was healthy
+# until another job deleted it.
+#
+# The suffix prefers the CI run id, so a failed run's containers are
+# identifiable, and falls back to the PID for local runs.
 
 set -euo pipefail
 
-PROJECT_NAME="go-netmon-integration"
+PROJECT_NAME="go-netmon-integration-${GITHUB_RUN_ID:-$$}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="$PROJECT_ROOT/docker-compose.test.yml"
+
+# shellcheck source=test/integration/compose-guard.sh
+source "$SCRIPT_DIR/compose-guard.sh"
 
 # Services the tests talk to. The test runner itself is invoked explicitly with
 # "run" and must not be started here, or the suite executes twice.
@@ -53,19 +68,16 @@ command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH
 docker compose version >/dev/null 2>&1 || die "the docker compose plugin is not available"
 [ -f "$COMPOSE_FILE" ] || die "compose file not found: $COMPOSE_FILE"
 
-# Refuse to run if the project we are about to tear down already holds a
-# container this script did not create. Compose identifies ownership with the
-# com.docker.compose.project label, so a name collision with a real deployment
-# is detectable before anything is removed rather than after.
-foreign="$(docker ps -aq \
-    --filter "label=com.docker.compose.project=$PROJECT_NAME" \
-    --filter "label=com.docker.compose.project.config_files!=$COMPOSE_FILE" 2>/dev/null || true)"
-if [ -n "$foreign" ]; then
-    echo "Containers in project '$PROJECT_NAME' that were not created from $COMPOSE_FILE:" >&2
-    docker ps -a --filter "label=com.docker.compose.project=$PROJECT_NAME" \
-        --format '  {{.Names}}  ({{.Label "com.docker.compose.project.config_files"}})' >&2
-    die "refusing to run: tearing this project down would remove containers it does not own"
-fi
+# The shared guard: refuses an empty project, refuses the directory default
+# (which is a deployed stack's project), and refuses a project holding
+# containers built from a different compose file. It lives in
+# compose-guard.sh because the four "make integration-*" targets need exactly
+# the same check, and a guard remembered at one call site out of five is how
+# "make integration-down" came to be "down -v" against a deployment.
+#
+# It is deliberately NOT what keeps concurrent runs apart: two runs of THIS
+# file match each other and pass it. That is the per-run PROJECT_NAME's job.
+integration_require_safe_project "$PROJECT_NAME" "$COMPOSE_FILE" || exit 1
 
 # --- teardown -------------------------------------------------------------
 

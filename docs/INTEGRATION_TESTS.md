@@ -266,7 +266,7 @@ make integration-down
 **3. Services Not Healthy**
 ```bash
 # Check status
-docker-compose -f docker-compose.test.yml ps
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml ps
 
 # View logs
 make integration-logs
@@ -280,7 +280,7 @@ make integration-up
 ```bash
 # Increase timeout in test
 # Or check if services are slow
-docker-compose -f docker-compose.test.yml logs prometheus
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml logs prometheus
 ```
 
 ### Debug Mode
@@ -293,7 +293,7 @@ export LOG_LEVEL=debug
 make test-integration
 
 # Or manually
-docker-compose -f docker-compose.test.yml run --rm \
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml run --rm \
   -e LOG_LEVEL=debug \
   integration-test go test -v -tags=integration ./test/integration/...
 ```

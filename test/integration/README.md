@@ -58,9 +58,11 @@ Start services for manual testing:
 # Start Prometheus and SNMP simulator
 make integration-up
 
-# Access services:
-# - Prometheus UI: http://localhost:9090
-# - SNMP simulator: localhost:1161
+# The services publish on EPHEMERAL host ports, so two stacks on one host
+# cannot collide on the bind. The target prints the ports it landed on; to
+# ask again later:
+#   docker compose -p go-netmon-integration-manual -f docker-compose.test.yml port prometheus 9090
+#   docker compose -p go-netmon-integration-manual -f docker-compose.test.yml port --protocol udp snmp-simulator 161
 
 # Run tests manually
 go test -v -tags=integration ./test/integration/...
@@ -120,7 +122,9 @@ The simulated device appears as a Cisco IOS router.
 
 Tests use these environment variables (automatically set by docker-compose):
 
-- `PROMETHEUS_URL` - Prometheus endpoint (default: http://localhost:9090)
+- `PROMETHEUS_URL` - Prometheus endpoint. Inside the compose network the tests
+  use `http://prometheus:9090`, which is why the ephemeral host port does not
+  affect them.
 - `SNMP_HOST` - SNMP simulator hostname (default: localhost)
 - `SNMP_PORT` - SNMP port (default: 1161)
 
@@ -154,8 +158,9 @@ Tests use these environment variables (automatically set by docker-compose):
 If tests fail with "service not ready" errors:
 
 ```bash
-# Check service health
-docker-compose -f docker-compose.test.yml ps
+# Check service health (-p required: without it compose inspects the
+# deployment, not the stack make integration-up created)
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml ps
 
 # View logs
 make integration-logs
@@ -170,11 +175,11 @@ make integration-up
 Verify SNMP simulator is responding:
 
 ```bash
-# From host (requires snmpwalk)
-snmpwalk -v2c -c public localhost:1161 system
+# From host (requires snmpwalk). The port is ephemeral -- ask compose for it:
+snmpwalk -v2c -c public "$(docker compose -p go-netmon-integration-manual -f docker-compose.test.yml port --protocol udp snmp-simulator 161)" system
 
 # From within docker network
-docker-compose -f docker-compose.test.yml exec snmp-simulator \
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml exec snmp-simulator \
   snmpwalk -v2c -c public localhost system
 ```
 
@@ -183,14 +188,17 @@ docker-compose -f docker-compose.test.yml exec snmp-simulator \
 Check Prometheus:
 
 ```bash
+# The host port is ephemeral; resolve it once and reuse it.
+PROM="$(docker compose -p go-netmon-integration-manual -f docker-compose.test.yml port prometheus 9090)"
+
 # View Prometheus UI
-open http://localhost:9090
+open "http://$PROM"
 
 # Query for metrics
-curl 'http://localhost:9090/api/v1/query?query={device="test-router"}'
+curl "http://$PROM/api/v1/query?query={device=\"test-router\"}"
 
 # Check remote write endpoint
-curl -X POST http://localhost:9090/api/v1/write \
+curl -X POST "http://$PROM/api/v1/write" \
   -H "Content-Type: application/x-protobuf"
 ```
 
@@ -199,7 +207,12 @@ curl -X POST http://localhost:9090/api/v1/write \
 Clear Docker build cache:
 
 ```bash
-docker-compose -f docker-compose.test.yml down -v
+# Use the guarded target, never a bare "compose down -v". Without -p compose
+# infers the project "go-netmon", which is a DEPLOYED stack's project, and -v
+# would delete its volumes: the MIB catalog, the device configuration, the
+# metric history. make integration-down passes the project and refuses to act
+# on one it does not own.
+make integration-down
 docker system prune -f
 make test-integration
 ```

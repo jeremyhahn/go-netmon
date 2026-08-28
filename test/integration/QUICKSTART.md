@@ -44,9 +44,9 @@ This will:
 Running integration tests in Docker...
 Starting test services (Prometheus + SNMP simulator)...
 [+] Running 3/3
- ✔ Network go-netmon_test-network     Created
- ✔ Container go-netmon-test-prometheus Started
- ✔ Container go-netmon-test-snmp      Started
+ ✔ Network go-netmon-integration-12345_test-network       Created
+ ✔ Container go-netmon-integration-12345-prometheus-1     Started
+ ✔ Container go-netmon-integration-12345-snmp-simulator-1 Started
 
 === RUN   TestEndToEndIntegration
 --- PASS: TestEndToEndIntegration (20.3s)
@@ -59,15 +59,37 @@ PASS
 Cleaning up test services...
 ```
 
+The project name carries a per-run suffix (the CI run id, or the PID locally) so
+that two runs on one Docker host cannot adopt and then tear down each other's
+stack. Container names follow from it, so they are not fixed either.
+
+Prometheus and the SNMP simulator are published on **ephemeral** host ports for
+the same reason — a fixed `9090:9090` collides between concurrent stacks, and
+the tests do not use it in any case: they reach the services by name over the
+compose network. To poke at a running stack:
+
+```
+docker compose -p <project> -f docker-compose.test.yml ps
+docker compose -p <project> -f docker-compose.test.yml port prometheus 9090
+```
+
+`-p` is not optional in any of these. Compose infers the project from the
+directory when it is omitted, and that name is `go-netmon` -- the project a
+deployed stack occupies, so an omitted `-p` silently queries (or acts on) the
+deployment rather than the test stack. `make integration-*` passes it for you.
+
 ### Manual Testing
 
 ```bash
 # Start services in background
 make integration-up
 
-# Services are now running:
-# - Prometheus: http://localhost:9090
-# - SNMP: localhost:1161
+# make integration-up prints the ports it landed on. To ask again later, name
+# the project explicitly -- WITHOUT -p, compose infers "go-netmon", which is a
+# DEPLOYED stack's project, and you would be querying that instead.
+# UDP needs --protocol; "161/udp" as the port argument returns nothing.
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml port prometheus 9090
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml port --protocol udp snmp-simulator 161
 
 # Run tests manually
 go test -v -tags=integration ./test/integration/...
@@ -129,14 +151,13 @@ sudo systemctl enable docker  # Start on boot
 **Solution:** Stop conflicting containers
 
 ```bash
-# Find what's using port 9090
-sudo lsof -i :9090
+The test stack publishes on ephemeral host ports and uses a per-run compose
+project, so it should not collide with anything -- including another run of
+itself. If a port conflict is reported anyway, something outside this stack
+holds the port:
 
-# Or check Docker
-docker ps | grep 9090
-
-# Stop the container
-docker stop <container-id>
+sudo lsof -i :<port>
+docker ps
 ```
 
 ### Services Not Healthy
@@ -146,9 +167,9 @@ docker stop <container-id>
 ```bash
 make integration-logs
 
-# Or check specific service
-docker compose -f docker-compose.test.yml logs prometheus
-docker compose -f docker-compose.test.yml logs snmp-simulator
+# Or check a specific service (-p required; see above)
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml logs prometheus
+docker compose -p go-netmon-integration-manual -f docker-compose.test.yml logs snmp-simulator
 ```
 
 ## Requirements
@@ -253,7 +274,7 @@ You know it's working when:
 1. No build errors
 2. Services start and become healthy
 3. All 3 tests pass (TestEndToEndIntegration, TestSNMPConnectivity, TestPrometheusConnectivity)
-4. Metrics visible in Prometheus at http://localhost:9090
+4. Metrics visible in Prometheus (see "Manual Testing" for the published port)
 5. Clean shutdown with no errors
 
 **Happy Testing!** 🎉
