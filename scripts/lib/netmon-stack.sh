@@ -38,9 +38,10 @@ NETMON_PROJECT="${NETMON_PROJECT:-go-netmon}"
 # without a Docker daemon or the live stack.
 DOCKER="${DOCKER:-docker}"
 
-# The compose-project ownership check, shared with the integration harness's
-# guard so that one safety property has one implementation. See the header of
-# that file for the two defects a second copy here used to carry.
+# The compose-project ownership check. This file is its only caller today: the
+# integration harness's guard still carries its own enumeration, and whether it
+# should source this library is the open question in #44. See the header of that
+# file for the two defects a second copy here used to carry.
 # shellcheck source=lib/compose-ownership.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/compose-ownership.sh"
 
@@ -174,14 +175,15 @@ compose() {
 # a project would mean stopping, and potentially overwriting the data of, a
 # deployment this repository does not own.
 #
-# The check itself lives in compose-ownership.sh, shared with the integration
-# harness's guard. It used to be a second implementation here, and it carried
-# two defects the harness copy had already been corrected for and documents in
-# its own comments: a "label=KEY!=VALUE" filter that docker matches nothing
-# with, and "2>/dev/null || true" that turned a FAILED query into "nothing
-# foreign". Between them this function could not refuse -- not for a project
-# full of foreign containers, and not when docker was unreachable -- while two
-# tests asserted that it could.
+# The check itself lives in compose-ownership.sh, which exists to be the single
+# implementation of this property -- today this function is its only caller, and
+# that file's header says so. It used to be a second implementation here, and it
+# carried two defects the harness copy had already been corrected for and
+# documents in its own comments: a "label=KEY!=VALUE" filter that docker matches
+# nothing with, and "2>/dev/null || true" that turned a FAILED query into
+# "nothing foreign". Between them this function could not refuse -- not for a
+# project full of foreign containers, and not when docker was unreachable --
+# while two tests asserted that it could.
 assert_project_ownership() {
     local foreign status=0
     foreign="$(compose_foreign_containers "$DOCKER" "$NETMON_PROJECT" "$NETMON_COMPOSE_FILE")" || status=$?
