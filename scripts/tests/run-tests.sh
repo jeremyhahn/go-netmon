@@ -57,7 +57,16 @@ assert_eq() {
     [ "$2" = "$3" ] || fail "$1: expected '$3', got '$2'"
 }
 
+# assert_contains refuses an empty needle. Every string contains the empty
+# string, so such a call can never fail, and five of them sat in this file
+# since the initial import asserting a safety property that was never checked
+# (#47). No caller can legitimately want one: an exact match is assert_eq, and
+# an absence is its own assertion with its own positive control.
 assert_contains() {
+    if [ -z "$3" ]; then
+        fail "$1: assert_contains was given an empty needle, which every string contains, so the assertion could never fail. Use assert_eq for an exact match, or an absence assertion with a positive control."
+        return 1
+    fi
     case "$2" in
     *"$3"*) : ;;
     *) fail "$1: output did not contain '$3'
@@ -74,6 +83,70 @@ assert_file() {
 assert_no_file() {
     [ ! -e "$2" ] || fail "$1: expected path NOT to exist: $2"
 }
+
+# --- the "stack was never stopped" property --------------------------------
+#
+# These assertions back the five tests that check a REFUSED operation left the
+# running stack alone. Until #47 all five were spelled
+#
+#     assert_contains "stack was never stopped" "$(cat .../actions)" ""
+#
+# whose needle is the empty string. Every string contains the empty string, so
+# none of them could fail -- including on the content they exist to rule out.
+#
+# Two separate things were wrong under that one line, and only the first is
+# obvious:
+#
+# 1. The needle. An assertion on a substring cannot express "and nothing else",
+#    so these assert on the whole value instead.
+#
+# 2. The PROPERTY. Four of the five take a real backup before the operation
+#    under test, and a backup legitimately stops and starts the stack: their
+#    action log already reads "stopped/started" before the refusal is even
+#    attempted. Measured, not assumed -- the log was printed for all five.
+#    So "the log must not contain stopped" is NOT the property, and asserting
+#    it would have turned four passing tests red and read as a production bug.
+#    The property is that the operation under test added nothing.
+#
+# The positive control is $FAKE_DOCKER_ROOT/log, which the stub appends to on
+# EVERY invocation. An empty action log means "nothing touched the stack" only
+# if the stub ran at all; without that check it equally means the fixture never
+# ran, the root was wrong, or the script died before its first docker call.
+# An absence assertion that cannot tell those apart is the empty needle one
+# spelling over.
+
+stack_actions() {
+    [ -s "$FAKE_DOCKER_ROOT/log" ] || {
+        fail "the fake docker stub was never invoked ($FAKE_DOCKER_ROOT/log is absent or empty), so its action log proves nothing"
+        return 1
+    }
+    cat "$FAKE_DOCKER_ROOT/actions" 2>/dev/null
+    return 0
+}
+
+# assert_stack_untouched_since fails if the stack was stopped, started or
+# brought up after $2 was captured with stack_actions.
+assert_stack_untouched_since() {
+    local desc="$1" before="$2" after
+    after="$(stack_actions)" || return 1
+    [ "$after" = "$before" ] || fail "$desc: the refused operation acted on the stack
+--- action log before ---
+$before
+--- action log after ---
+$after
+--------------------------"
+}
+
+# assert_stack_never_touched is the same property for a test whose operation
+# under test is the first thing to run: the action log must still be empty,
+# and the docker log must not be.
+assert_stack_never_touched() {
+    local desc="$1" actions
+    actions="$(stack_actions)" || return 1
+    [ -z "$actions" ] || fail "$desc: expected the stack to be untouched, but the action log holds:
+$actions"
+}
+
 
 # --- fixture --------------------------------------------------------------
 
@@ -188,7 +261,7 @@ make_backup() {
 # --- tests: backup --------------------------------------------------------
 
 test_backup_creates_verifiable_archive() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1"
 
     assert_file "manifest" "$dir/manifest.json" || return 1
@@ -214,25 +287,25 @@ test_backup_creates_verifiable_archive() {
     assert_eq "logical status" "$(jq -r .logical.status "$dir/manifest.json")" "unavailable" || return 1
 
     (cd "$dir" && sha256sum --quiet -c checksums.sha256) ||
-        fail "checksums.sha256 does not verify"
+        fail "checksums.sha256 does not verify" || return 1
 }
 
 test_backup_restarts_the_stack_afterwards() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     assert_eq "running services restored" \
         "$(sort "$FAKE_DOCKER_ROOT/running" | tr '\n' ' ')" "go-netmon grafana prometheus webui " || return 1
     assert_contains "stopped then started" "$(cat "$FAKE_DOCKER_ROOT/actions")" "stopped"
 }
 
 test_backup_keep_stopped_leaves_stack_down() {
-    make_backup b1 --keep-stopped || fail "backup failed"
+    make_backup b1 --keep-stopped || fail "backup failed" || return 1
     assert_eq "stack left stopped" "$(tr -d '\n' <"$FAKE_DOCKER_ROOT/running")" "" || return 1
 }
 
 test_backup_never_touches_unlabelled_lookalike() {
     local before after
     before="$(volume_fingerprint go-netmon-data)"
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     after="$(volume_fingerprint go-netmon-data)"
     assert_eq "stray volume untouched" "$after" "$before" || return 1
     # Members are named by component, so no archive member can be confused with
@@ -388,9 +461,9 @@ test_fake_docker_refuses_queries_it_does_not_understand() {
 # disappears between the two calls, and on any daemon or permission error.
 #
 # Measured before this existed: swallow the inspect failure in
-# compose_foreign_containers and the whole suite still passed, 54 of 54. The
-# branch is the fail-closed guarantee on a path that overwrites volumes, and
-# nothing reached it.
+# compose_foreign_containers and the whole suite still passed, 54 of 54 as the
+# suite stood then. The branch is the fail-closed guarantee on a path that
+# overwrites volumes, and nothing reached it.
 test_backup_refuses_when_a_container_cannot_be_inspected() {
     printf '%s go-netmon %s exited\n' theirs1 /elsewhere/docker-compose.yml \
         >>"$FAKE_DOCKER_ROOT/containers"
@@ -439,13 +512,13 @@ test_backup_rejects_unknown_component() {
 }
 
 test_backup_rejects_existing_destination() {
-    make_backup b1 || fail "first backup failed"
+    make_backup b1 || fail "first backup failed" || return 1
     expect_failure "existing destination" "$BACKUP" --name b1 || return 1
     assert_contains "refusal message" "$OUT" "already exists"
 }
 
 test_backup_only_selects_requested_components() {
-    make_backup b1 --only metrics || fail "backup failed"
+    make_backup b1 --only metrics || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1"
     assert_eq "one volume" "$(jq '.volumes | length' "$dir/manifest.json")" "1" || return 1
     assert_eq "component" "$(jq -r '.volumes[0].component' "$dir/manifest.json")" "metrics" || return 1
@@ -458,18 +531,19 @@ test_backup_only_selects_requested_components() {
 # --- tests: verification --------------------------------------------------
 
 test_verify_accepts_a_good_backup() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local out
     out="$("$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --verify-only 2>&1)" ||
-        fail "verification of a good backup failed"
+        fail "verification of a good backup failed" || return 1
     assert_contains "reports success" "$out" "backup verified" || return 1
     assert_contains "says nothing changed" "$out" "nothing was changed"
 }
 
 test_verify_rejects_truncated_member() {
-    make_backup b1 || fail "backup failed"
-    local dir="$NETMON_REPO_ROOT/backups/b1" before out
+    make_backup b1 || fail "backup failed" || return 1
+    local dir="$NETMON_REPO_ROOT/backups/b1" before actions_before out
     before="$(volume_fingerprint go-netmon_webui-data)"
+    actions_before="$(stack_actions)" || return 1
 
     # Truncate the member and repair checksums.sha256 so only the manifest's
     # own record of the member can catch it. This is the case a naive
@@ -482,11 +556,11 @@ test_verify_rejects_truncated_member() {
     out="$OUT"
     assert_contains "explains the truncation" "$out" "truncated or modified" || return 1
     assert_eq "volume untouched" "$(volume_fingerprint go-netmon_webui-data)" "$before" || return 1
-    assert_contains "stack was never stopped" "$(cat "$FAKE_DOCKER_ROOT/actions" 2>/dev/null || true)" ""
+    assert_stack_untouched_since "stack was never stopped" "$actions_before" || return 1
 }
 
 test_verify_rejects_corrupt_member_body() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1" size before out
     before="$(volume_fingerprint go-netmon_prometheus-data)"
 
@@ -504,7 +578,7 @@ test_verify_rejects_corrupt_member_body() {
 }
 
 test_verify_rejects_tampered_tree() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1" out
     printf 'tampered\n' >>"$dir/config/config.yaml"
     expect_failure "bad archive" "$RESTORE" --from "$dir" --verify-only || return 1
@@ -513,7 +587,7 @@ test_verify_rejects_tampered_tree() {
 }
 
 test_verify_rejects_missing_member() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1" out
     rm "$dir/volumes/grafana.tar.gz"
     expect_failure "bad archive" "$RESTORE" --from "$dir" --verify-only || return 1
@@ -522,7 +596,7 @@ test_verify_rejects_missing_member() {
 }
 
 test_verify_rejects_backup_without_checksums() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1" out
     rm "$dir/checksums.sha256"
     expect_failure "bad archive" "$RESTORE" --from "$dir" --verify-only || return 1
@@ -531,7 +605,7 @@ test_verify_rejects_backup_without_checksums() {
 }
 
 test_verify_rejects_future_schema() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1" out
     jq '.schema_version = 99' "$dir/manifest.json" >"$TEST_TMP/m" && mv "$TEST_TMP/m" "$dir/manifest.json"
     (cd "$dir" && find . -type f ! -name checksums.sha256 -print0 |
@@ -551,7 +625,7 @@ test_verify_rejects_non_backup_directory() {
 # --- tests: restore -------------------------------------------------------
 
 test_restore_refuses_without_yes() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     printf 'MUTATED\n' >"$FAKE_DOCKER_ROOT/volumes/go-netmon_webui-data/data/webui.db"
     local before out
     before="$(volume_fingerprint go-netmon_webui-data)"
@@ -566,7 +640,7 @@ test_restore_refuses_without_yes() {
 }
 
 test_restore_round_trip_restores_contents() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1"
     local want_webui want_poller want_metrics want_grafana
     want_webui="$(volume_fingerprint go-netmon_webui-data)"
@@ -585,7 +659,7 @@ test_restore_round_trip_restores_contents() {
     printf 'wrong config\n' >"$NETMON_REPO_ROOT/config.yaml"
 
     "$RESTORE" --from "$dir" --yes --no-safety-backup --allow-tree-overwrite \
-        >/dev/null 2>&1 || fail "restore failed"
+        >/dev/null 2>&1 || fail "restore failed" || return 1
 
     assert_eq "webui restored" "$(volume_fingerprint go-netmon_webui-data)" "$want_webui" || return 1
     assert_eq "poller restored" "$(volume_fingerprint go-netmon_go-netmon-data)" "$want_poller" || return 1
@@ -598,7 +672,7 @@ test_restore_round_trip_restores_contents() {
 }
 
 test_restore_recreates_missing_volumes() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local want
     want="$(volume_fingerprint go-netmon_metrics 2>/dev/null || true)"
     want="$(volume_fingerprint go-netmon_prometheus-data)"
@@ -607,12 +681,12 @@ test_restore_recreates_missing_volumes() {
     rm -rf "${FAKE_DOCKER_ROOT:?}/volumes/go-netmon_prometheus-data"
 
     "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --yes --no-safety-backup \
-        --allow-tree-overwrite >/dev/null 2>&1 || fail "restore failed"
+        --allow-tree-overwrite >/dev/null 2>&1 || fail "restore failed" || return 1
     assert_eq "volume recreated and filled" "$(volume_fingerprint go-netmon_prometheus-data)" "$want"
 }
 
 test_restore_only_metrics_leaves_config_alone() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     printf 'MUTATED\n' >"$FAKE_DOCKER_ROOT/volumes/go-netmon_webui-data/data/webui.db"
     rm -rf "${FAKE_DOCKER_ROOT:?}/volumes/go-netmon_prometheus-data/data"
     mkdir -p "$FAKE_DOCKER_ROOT/volumes/go-netmon_prometheus-data/data"
@@ -620,27 +694,27 @@ test_restore_only_metrics_leaves_config_alone() {
     keep="$(volume_fingerprint go-netmon_webui-data)"
 
     "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --only metrics --yes --no-safety-backup \
-        >/dev/null 2>&1 || fail "restore failed"
+        >/dev/null 2>&1 || fail "restore failed" || return 1
 
     assert_file "metrics restored" "$FAKE_DOCKER_ROOT/volumes/go-netmon_prometheus-data/data/wal" || return 1
     assert_eq "webui deliberately untouched" "$(volume_fingerprint go-netmon_webui-data)" "$keep"
 }
 
 test_restore_skip_metrics_preserves_metric_history() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     printf 'NEWER HISTORY\n' >"$FAKE_DOCKER_ROOT/volumes/go-netmon_prometheus-data/data/wal"
     local keep
     keep="$(volume_fingerprint go-netmon_prometheus-data)"
 
     "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --skip metrics --yes --no-safety-backup \
-        --allow-tree-overwrite >/dev/null 2>&1 || fail "restore failed"
+        --allow-tree-overwrite >/dev/null 2>&1 || fail "restore failed" || return 1
 
     assert_eq "metric history preserved" "$(volume_fingerprint go-netmon_prometheus-data)" "$keep" || return 1
     assert_file "webui still restored" "$FAKE_DOCKER_ROOT/volumes/go-netmon_webui-data/data/webui.db"
 }
 
 test_restore_rejects_project_mismatch() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1" before out
     before="$(volume_fingerprint go-netmon_webui-data)"
 
@@ -653,7 +727,7 @@ test_restore_rejects_project_mismatch() {
 }
 
 test_restore_allows_project_mismatch_with_force() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1" v
 
     # Stand up an equivalently labelled second project for the override to
@@ -664,13 +738,13 @@ test_restore_allows_project_mismatch_with_force() {
     done
 
     NETMON_PROJECT=go-netmon-staging "$RESTORE" --from "$dir" --yes --no-safety-backup \
-        --force-project --allow-tree-overwrite >/dev/null 2>&1 || fail "forced restore failed"
+        --force-project --allow-tree-overwrite >/dev/null 2>&1 || fail "forced restore failed" || return 1
     assert_file "staging volume filled" \
         "$FAKE_DOCKER_ROOT/volumes/go-netmon-staging_webui-data/data/webui.db"
 }
 
 test_restore_rejects_target_missing_a_required_volume() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     # A target deployment that no longer defines grafana-data is an
     # incompatible deployment, not something to half-apply.
     printf '%s\n' webui-data go-netmon-data prometheus-data >"$FAKE_DOCKER_ROOT/compose-volumes"
@@ -681,7 +755,7 @@ test_restore_rejects_target_missing_a_required_volume() {
 }
 
 test_restore_rejects_component_absent_from_backup() {
-    make_backup b1 --only metrics || fail "backup failed"
+    make_backup b1 --only metrics || fail "backup failed" || return 1
     local out
     expect_failure "absent component" "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --only webui --yes --no-safety-backup || return 1
     out="$OUT"
@@ -689,32 +763,32 @@ test_restore_rejects_component_absent_from_backup() {
 }
 
 test_restore_takes_a_safety_backup_first() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     printf 'STATE TO PRESERVE\n' >"$FAKE_DOCKER_ROOT/volumes/go-netmon_webui-data/data/webui.db"
 
     "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --yes --allow-tree-overwrite \
-        >/dev/null 2>&1 || fail "restore failed"
+        >/dev/null 2>&1 || fail "restore failed" || return 1
 
     local safety
     safety="$(find "$NETMON_REPO_ROOT/backups" -maxdepth 1 -name 'pre-restore-*' | head -1)"
-    [ -n "$safety" ] || fail "no safety backup was created"
+    [ -n "$safety" ] || fail "no safety backup was created" || return 1
     assert_file "safety manifest" "$safety/manifest.json" || return 1
 
     # The pre-restore state must be recoverable from the safety backup, which
     # is the entire point of taking it.
     tar -xzOf "$safety/volumes/webui.tar.gz" ./webui.db |
-        grep -q 'STATE TO PRESERVE' || fail "safety backup does not hold the pre-restore state"
+        grep -q 'STATE TO PRESERVE' || fail "safety backup does not hold the pre-restore state" || return 1
 }
 
 test_restore_warns_when_webui_and_poller_are_split() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local out
     out="$("$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --only webui 2>&1)" || true
     assert_contains "warns about the coupling" "$out" "restoring 'webui' and 'poller' separately"
 }
 
 test_restore_rejects_foreign_containers_in_project() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     # EXITED, deliberately. A foreign container in the project need not be
     # running, and "docker ps" without -a would not see it -- so this fixture
     # is what makes the -a in the ownership query load-bearing rather than
@@ -731,11 +805,11 @@ test_restore_rejects_foreign_containers_in_project() {
 }
 
 test_restore_never_touches_unlabelled_lookalike() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local before
     before="$(volume_fingerprint go-netmon-data)"
     "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --yes --no-safety-backup \
-        --allow-tree-overwrite >/dev/null 2>&1 || fail "restore failed"
+        --allow-tree-overwrite >/dev/null 2>&1 || fail "restore failed" || return 1
     assert_eq "stray volume untouched" "$(volume_fingerprint go-netmon-data)" "$before" || return 1
     assert_contains "stray still holds its marker" \
         "$(cat "$FAKE_DOCKER_ROOT/volumes/go-netmon-data/data/stray")" "DO NOT TOUCH"
@@ -749,7 +823,7 @@ test_restore_requires_a_source() {
 }
 
 test_restore_rejects_conflicting_selectors() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local out
     expect_failure "conflicting selectors" "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --only webui --skip metrics || return 1
     out="$OUT"
@@ -767,7 +841,7 @@ test_restore_rejects_conflicting_selectors() {
 # by accident.
 
 test_backup_includes_the_mib_tree() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1" m
 
     assert_file "tree member" "$dir/trees/mibs.tar.gz" || return 1
@@ -790,15 +864,15 @@ test_backup_includes_the_mib_tree() {
     assert_eq "mibs is a component of the archive" \
         "$(jq -r '.components | index("mibs") != null' "$dir/manifest.json")" "true" || return 1
     (cd "$dir" && sha256sum --quiet -c checksums.sha256) ||
-        fail "checksums.sha256 does not cover the tree member correctly"
+        fail "checksums.sha256 does not cover the tree member correctly" || return 1
 }
 
 test_backup_mib_member_reproduces_the_tree_exactly() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local out="$TEST_TMP/extracted"
     mkdir -p "$out"
     tar -C "$out" -xzf "$NETMON_REPO_ROOT/backups/b1/trees/mibs.tar.gz" ||
-        fail "tree member is not a readable gzip tar"
+        fail "tree member is not a readable gzip tar" || return 1
 
     # Nested directories and the dotfile must all survive; a tree that loses
     # .import-marker or mibs/cisco/ would still "extract fine".
@@ -811,7 +885,7 @@ test_backup_mib_member_reproduces_the_tree_exactly() {
 }
 
 test_backup_only_mibs_carries_just_the_tree() {
-    make_backup b1 --only mibs || fail "backup failed"
+    make_backup b1 --only mibs || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1"
     assert_eq "no volumes" "$(jq '.volumes | length' "$dir/manifest.json")" "0" || return 1
     assert_eq "one tree" "$(jq '.trees | length' "$dir/manifest.json")" "1" || return 1
@@ -827,9 +901,10 @@ test_backup_fails_when_the_mib_tree_is_missing() {
     assert_contains "names the path" "$OUT" "MIB source tree not found" || return 1
     assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1" || return 1
     # The failure has to land in preflight: a backup that discovers a problem
-    # after taking the stack down has caused an outage for nothing.
-    assert_contains "stack was never stopped" \
-        "$(cat "$FAKE_DOCKER_ROOT/actions" 2>/dev/null || true)" ""
+    # after taking the stack down has caused an outage for nothing. This is the
+    # one of the five with nothing before it, so the action log must be empty
+    # outright rather than merely unchanged.
+    assert_stack_never_touched "stack was never stopped" || return 1
 }
 
 test_backup_fails_when_the_mib_tree_is_empty() {
@@ -854,7 +929,7 @@ test_backup_without_mibs_ignores_an_unresolvable_tree() {
     # Deployments that mount no MIB tree are legitimate; --skip mibs must be a
     # real way out rather than advice the tool then ignores.
     write_services_json
-    make_backup b1 --skip mibs || fail "backup failed"
+    make_backup b1 --skip mibs || fail "backup failed" || return 1
     assert_eq "no trees" "$(jq '.trees | length' "$NETMON_REPO_ROOT/backups/b1/manifest.json")" "0" || return 1
     assert_no_file "no tree member" "$NETMON_REPO_ROOT/backups/b1/trees"
 }
@@ -881,13 +956,13 @@ test_backup_honours_an_explicit_mib_tree_path() {
     mkdir -p "$TEST_TMP/elsewhere/vendor"
     printf 'ELSEWHERE-MIB\n' >"$TEST_TMP/elsewhere/vendor/ELSEWHERE-MIB.txt"
 
-    NETMON_MIB_TREE="$TEST_TMP/elsewhere" make_backup b1 || fail "backup failed"
+    NETMON_MIB_TREE="$TEST_TMP/elsewhere" make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1"
     assert_eq "records the overridden path" \
         "$(jq -r '.trees[0].source_path' "$dir/manifest.json")" "$TEST_TMP/elsewhere" || return 1
     assert_eq "files from the override" "$(jq -r '.trees[0].files' "$dir/manifest.json")" "1" || return 1
     tar -tzf "$dir/trees/mibs.tar.gz" | grep -q 'ELSEWHERE-MIB.txt' ||
-        fail "member does not hold the overridden tree"
+        fail "member does not hold the overridden tree" || return 1
 }
 
 test_backup_rejects_an_unsafe_mib_tree_path() {
@@ -902,9 +977,10 @@ test_backup_rejects_an_unsafe_mib_tree_path() {
 }
 
 test_verify_rejects_truncated_mib_member() {
-    make_backup b1 || fail "backup failed"
-    local dir="$NETMON_REPO_ROOT/backups/b1" before out
+    make_backup b1 || fail "backup failed" || return 1
+    local dir="$NETMON_REPO_ROOT/backups/b1" before actions_before out
     before="$(tree_fingerprint "$MIB_TREE")"
+    actions_before="$(stack_actions)" || return 1
 
     # Truncate and repair checksums.sha256, so only the manifest's own record of
     # the member can catch it - the case a "does the file exist" check waves
@@ -919,16 +995,16 @@ test_verify_rejects_truncated_mib_member() {
     assert_contains "explains the truncation" "$out" "truncated or modified" || return 1
     assert_contains "names the tree member" "$out" "trees/mibs.tar.gz" || return 1
     assert_eq "tree untouched" "$(tree_fingerprint "$MIB_TREE")" "$before" || return 1
-    assert_contains "stack was never stopped" \
-        "$(cat "$FAKE_DOCKER_ROOT/actions" 2>/dev/null || true)" ""
+    assert_stack_untouched_since "stack was never stopped" "$actions_before" || return 1
 }
 
 test_restore_refuses_a_populated_tree_without_the_gate() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     printf 'LOCAL-ONLY-MIB\n' >"$MIB_TREE/standard/LOCAL-ONLY-MIB.txt"
-    local before before_vol out
+    local before before_vol actions_before out
     before="$(tree_fingerprint "$MIB_TREE")"
     before_vol="$(volume_fingerprint go-netmon_webui-data)"
+    actions_before="$(stack_actions)" || return 1
 
     expect_failure "no --allow-tree-overwrite" "$RESTORE" \
         --from "$NETMON_REPO_ROOT/backups/b1" --yes --no-safety-backup || return 1
@@ -943,14 +1019,13 @@ test_restore_refuses_a_populated_tree_without_the_gate() {
     # costs a re-run and not a half-applied restore.
     assert_eq "volumes untouched" "$(volume_fingerprint go-netmon_webui-data)" \
         "$before_vol" || return 1
-    assert_contains "stack was never stopped" \
-        "$(cat "$FAKE_DOCKER_ROOT/actions" 2>/dev/null || true)" ""
+    assert_stack_untouched_since "stack was never stopped" "$actions_before" || return 1
     assert_eq "no safety backup was taken" \
         "$(find "$NETMON_REPO_ROOT/backups" -maxdepth 1 -name 'pre-restore-*' | wc -l)" "0"
 }
 
 test_restore_plan_states_the_tree_overwrite() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local out
     out="$("$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" 2>&1)" || true
 
@@ -965,7 +1040,7 @@ test_restore_plan_states_the_tree_overwrite() {
 }
 
 test_restore_replaces_the_mib_tree_wholesale() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local want
     want="$(tree_fingerprint "$MIB_TREE")"
 
@@ -976,7 +1051,7 @@ test_restore_replaces_the_mib_tree_wholesale() {
     printf 'EDITED\n' >"$MIB_TREE/cisco/CISCO-BGP4-MIB.my"
 
     "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --yes --no-safety-backup \
-        --allow-tree-overwrite >/dev/null 2>&1 || fail "restore failed"
+        --allow-tree-overwrite >/dev/null 2>&1 || fail "restore failed" || return 1
 
     assert_eq "tree restored exactly" "$(tree_fingerprint "$MIB_TREE")" "$want" || return 1
     assert_file "deleted module came back" "$MIB_TREE/standard/INET-ADDRESS-MIB.txt" || return 1
@@ -988,7 +1063,7 @@ test_restore_replaces_the_mib_tree_wholesale() {
 }
 
 test_restore_writes_the_tree_to_an_alternate_destination() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local want elsewhere="$TEST_TMP/restored-mibs"
     want="$(tree_fingerprint "$MIB_TREE")"
     mkdir -p "$elsewhere"
@@ -997,7 +1072,7 @@ test_restore_writes_the_tree_to_an_alternate_destination() {
     local out
     out="$("$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --only mibs --yes \
         --no-safety-backup --allow-tree-overwrite --mib-tree "$elsewhere" 2>&1)" ||
-        fail "restore failed"
+        fail "restore failed" || return 1
 
     assert_contains "warns the destination differs" "$out" "will be restored into" || return 1
     assert_eq "alternate destination filled" "$(tree_fingerprint "$elsewhere")" "$want" || return 1
@@ -1006,27 +1081,27 @@ test_restore_writes_the_tree_to_an_alternate_destination() {
 }
 
 test_restore_into_an_empty_tree_needs_no_gate() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     local want fresh="$TEST_TMP/fresh-mibs"
     want="$(tree_fingerprint "$MIB_TREE")"
 
     # The fresh-host disaster path: nothing is destroyed, so nothing is gated.
     local out
     out="$("$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --only mibs --yes \
-        --mib-tree "$fresh" 2>&1)" || fail "restore into an empty destination failed"
+        --mib-tree "$fresh" 2>&1)" || fail "restore into an empty destination failed" || return 1
 
     assert_eq "tree created and filled" "$(tree_fingerprint "$fresh")" "$want" || return 1
     assert_contains "says the safety copy was pointless" "$out" "nothing to preserve" || return 1
 }
 
 test_restore_skip_mibs_leaves_the_tree_untouched() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     printf 'LOCAL-ONLY-MIB\n' >"$MIB_TREE/standard/LOCAL-ONLY-MIB.txt"
     local keep
     keep="$(tree_fingerprint "$MIB_TREE")"
 
     "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --skip mibs --yes --no-safety-backup \
-        >/dev/null 2>&1 || fail "restore failed"
+        >/dev/null 2>&1 || fail "restore failed" || return 1
 
     assert_eq "tree preserved" "$(tree_fingerprint "$MIB_TREE")" "$keep" || return 1
     assert_file "local addition survived" "$MIB_TREE/standard/LOCAL-ONLY-MIB.txt" || return 1
@@ -1035,29 +1110,30 @@ test_restore_skip_mibs_leaves_the_tree_untouched() {
 }
 
 test_restore_safety_backup_captures_the_mib_tree() {
-    make_backup b1 || fail "backup failed"
+    make_backup b1 || fail "backup failed" || return 1
     printf 'MIB TO PRESERVE\n' >"$MIB_TREE/standard/UNSAVED-MIB.txt"
 
     "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" --yes --allow-tree-overwrite \
-        >/dev/null 2>&1 || fail "restore failed"
+        >/dev/null 2>&1 || fail "restore failed" || return 1
 
     local safety
     safety="$(find "$NETMON_REPO_ROOT/backups" -maxdepth 1 -name 'pre-restore-*' | head -1)"
-    [ -n "$safety" ] || fail "no safety backup was created"
+    [ -n "$safety" ] || fail "no safety backup was created" || return 1
     assert_file "safety tree member" "$safety/trees/mibs.tar.gz" || return 1
 
     # The whole point of the gate is that the mistake is recoverable: a module
     # added since the backup must be inside the safety copy.
     tar -xzOf "$safety/trees/mibs.tar.gz" ./standard/UNSAVED-MIB.txt |
         grep -q 'MIB TO PRESERVE' ||
-        fail "safety backup does not hold the pre-restore MIB tree"
+        fail "safety backup does not hold the pre-restore MIB tree" || return 1
     assert_no_file "and was genuinely replaced" "$MIB_TREE/standard/UNSAVED-MIB.txt"
 }
 
 test_restore_refuses_an_unsafe_tree_destination() {
-    make_backup b1 || fail "backup failed"
-    local before out
+    make_backup b1 || fail "backup failed" || return 1
+    local before actions_before out
     before="$(tree_fingerprint "$MIB_TREE")"
+    actions_before="$(stack_actions)" || return 1
 
     # Deliberately WITHOUT --yes. The check lives in stage 3, before the plan is
     # even printed, so a dry run proves it fires - and this test can therefore
@@ -1070,17 +1146,16 @@ test_restore_refuses_an_unsafe_tree_destination() {
     assert_contains "refuses the path" "$out" "refusing to use a system directory" || return 1
     # Distinguishes the refusal from the ordinary "you did not pass --yes" exit.
     case "$out" in
-    *"RESTORE PLAN"*) fail "got as far as printing a plan for /usr" ;;
+    *"RESTORE PLAN"*) fail "got as far as printing a plan for /usr" || return 1 ;;
     esac
     assert_eq "tree untouched" "$(tree_fingerprint "$MIB_TREE")" "$before" || return 1
-    assert_contains "stack was never stopped" \
-        "$(cat "$FAKE_DOCKER_ROOT/actions" 2>/dev/null || true)" ""
+    assert_stack_untouched_since "stack was never stopped" "$actions_before" || return 1
 }
 
 test_restore_accepts_a_schema_1_backup_without_trees() {
     # Archives taken before the MIB tree was covered must still restore. They
     # carry no trees[] at all, and nothing may go looking for one.
-    make_backup b1 --skip mibs || fail "backup failed"
+    make_backup b1 --skip mibs || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1"
     jq 'del(.trees) | .schema_version = 1' "$dir/manifest.json" >"$TEST_TMP/m" &&
         mv "$TEST_TMP/m" "$dir/manifest.json"
@@ -1088,9 +1163,26 @@ test_restore_accepts_a_schema_1_backup_without_trees() {
         sort -z | xargs -0 sha256sum >"$TEST_TMP/sums" && mv "$TEST_TMP/sums" checksums.sha256)
 
     "$RESTORE" --from "$dir" --yes --no-safety-backup >/dev/null 2>&1 ||
-        fail "a schema-1 archive did not restore"
+        fail "a schema-1 archive did not restore" || return 1
     assert_file "volumes still restored" \
         "$FAKE_DOCKER_ROOT/volumes/go-netmon_webui-data/data/webui.db"
+}
+
+# A guard is not a guard until it has been seen to refuse. This is the meta
+# test for assert_contains's empty-needle check: the helper every other
+# assertion in this file is built on.
+test_assert_contains_refuses_an_empty_needle() {
+    local out
+    if out="$(assert_contains "meta" "any haystack at all" "" 2>&1)"; then
+        fail "assert_contains accepted an empty needle" || return 1
+    fi
+    case "$out" in
+    *"empty needle"*) : ;;
+    *) fail "the refusal did not explain itself: $out" || return 1 ;;
+    esac
+    # Positive control: the same helper still accepts a real needle, so the
+    # refusal above is the guard firing and not the helper being broken.
+    assert_contains "a real needle still matches" "any haystack at all" "haystack" || return 1
 }
 
 # --- runner ---------------------------------------------------------------

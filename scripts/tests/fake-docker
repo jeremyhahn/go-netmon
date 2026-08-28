@@ -314,7 +314,8 @@ inspect)
     # The FORMAT STRING IS COMPARED EXACTLY, not matched as a substring. It was
     # "case $* in *config_files*", which cannot tell the real label from one
     # containing it: a key typo'd to "...config_files_TYPO" still matched, the
-    # stub returned the correct value, and all 54 tests passed -- while real
+    # stub returned the correct value, and all 54 tests passed as the suite
+    # stood then -- while real
     # docker returns empty for a label that does not exist. The stub validated
     # the format only by accident of spelling.
     #
