@@ -16,9 +16,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK="$SCRIPT_DIR/stack.sh"
+RUN_TESTS="$SCRIPT_DIR/run-tests.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/docker-compose.test.yml"
-MANUAL_PROJECT="go-netmon-integration-manual"
+# Read from the library the code under test reads it from, not written out a
+# second time here: a yardstick copied from the value under test stops
+# measuring the moment the value moves.
+# shellcheck source=test/integration/compose-guard.sh
+source "$SCRIPT_DIR/compose-guard.sh"
+MANUAL_PROJECT="$(integration_manual_project)"
 
 PASS=0
 FAIL=0
@@ -62,6 +68,11 @@ fi
 
 case "\$1" in
     ps)
+        # A warning on stderr from a command that SUCCEEDS. Real docker does
+        # this for config-load problems and DOCKER_HOST/context deprecations,
+        # and it is the input that made 2>&1 dangerous: the warning words end
+        # up in the variable the caller parses as container ids.
+        [ -f "$root/ps-warning" ] && cat "$root/ps-warning" >&2
         want_project=""; want_config=""
         for a in "\$@"; do
             case "\$a" in
@@ -127,6 +138,24 @@ run_stack() {
 
     set +e
     OUT="$(env PATH="$BIN:$PATH" "$@" "$STACK" "$verb" 2>&1)"
+    local status=$?
+    set -e
+    return $status
+}
+
+# run_entry drives ANY entry point from a chosen working directory.
+#
+# The cwd is a parameter because it is the variable that matters: the guard's
+# directory-default rule reads pwd, so a suite that only ever invokes an entry
+# point from one directory cannot see a call site that guards before it cds.
+run_entry() {
+    local script="$1" cwd="$2"; shift 2
+    BIN="$(mktemp -d)"
+    ROOT="$(mktemp -d)"
+    make_fake_docker "$BIN" "$ROOT"
+
+    set +e
+    OUT="$(cd "$cwd" && env PATH="$BIN:$PATH" "$@" "$script" 2>&1)"
     local status=$?
     set -e
     return $status
@@ -387,6 +416,145 @@ test_no_documented_command_addresses_the_deployment_project() {
         printf '      %s\n' "$offenders" >&2
         return 1
     fi
+}
+
+# THE CALL SITE THE SUITE COULD NOT SEE.
+#
+# Every directory-default case above drives stack.sh, which cds to the repo
+# root BEFORE calling the guard. run-tests.sh called the guard 32 lines BEFORE
+# its cd, and the rule computes the name it refuses from pwd -- so invoked from
+# test/integration, as test/integration/Makefile invokes it, the name it
+# refused was "integration" and the DEPLOYED project sailed through.
+#
+# The suite was green throughout. A guard whose test only exercises the caller
+# where the guard works is not evidence about the caller where it does not,
+# which is why the cwd is a parameter here rather than an assumption.
+#
+# Two directories, deliberately: the repo root proves the rule works at all,
+# and test/integration is the one that regressed. Only the second fails against
+# the pre-fix script, so running just the first would pass over the defect.
+test_run_tests_refuses_the_deployment_project_from_any_directory() {
+    local default dir
+    default="$(basename "$REPO_ROOT")"
+
+    for dir in "$REPO_ROOT" "$SCRIPT_DIR"; do
+        if run_entry "$RUN_TESTS" "$dir" "NETMON_INTEGRATION_PROJECT=$default"; then
+            fail "run-tests.sh accepted the deployment project '$default' from $dir" || return 1
+        fi
+        case "$OUT" in
+            *"refusing to use compose project"*) ;;
+            *) fail "run-tests.sh from $dir did not refuse the directory default; got: $OUT"; return 1 ;;
+        esac
+        if grep -qE 'compose .* (up|down|run)' "$ROOT/log" 2>/dev/null; then
+            fail "run-tests.sh from $dir refused but still drove compose" || return 1
+        fi
+    done
+}
+
+# Rule 1 at the same call site. An empty -p is how compose falls back to the
+# directory default, so it has to be refused wherever it is set.
+test_run_tests_refuses_an_empty_project_from_any_directory() {
+    local dir
+    for dir in "$REPO_ROOT" "$SCRIPT_DIR"; do
+        if run_entry "$RUN_TESTS" "$dir" "NETMON_INTEGRATION_PROJECT="; then
+            fail "run-tests.sh accepted an empty project from $dir" || return 1
+        fi
+        case "$OUT" in
+            *"empty compose project name"*) ;;
+            *) fail "run-tests.sh from $dir did not refuse the empty project; got: $OUT"; return 1 ;;
+        esac
+    done
+}
+
+# The manual stack is in the recovery namespace and is NOT an orphan. A person
+# leaves it up on purpose -- stack.sh's header says two people on one host
+# share it -- so a prefix match that selects it turns "make clean" into
+# "delete the stack your colleague is using", volumes included.
+test_clean_leaves_the_manual_stack_alone() {
+    BIN="$(mktemp -d)"; ROOT="$(mktemp -d)"
+    make_fake_docker "$BIN" "$ROOT"
+    printf '%s %s %s\n' man1 "$MANUAL_PROJECT" "$COMPOSE_FILE" >"$ROOT/containers"
+
+    set +e
+    OUT="$(env PATH="$BIN:$PATH" "$SCRIPT_DIR/clean.sh" 2>&1)"
+    set -e
+
+    if grep -qE 'compose .* down' "$ROOT/log" 2>/dev/null; then
+        fail "clean.sh tore down the manual stack: $(grep -E 'compose .* down' "$ROOT/log")" || return 1
+    fi
+    case "$OUT" in
+        *"that is the manual stack"*) ;;
+        *) fail "clean.sh did not report skipping the manual stack; got: $OUT"; return 1 ;;
+    esac
+}
+
+# ...and still removes a genuine orphan, so the skip above is a skip and not a
+# blanket refusal. Without this the previous test passes against a clean.sh
+# that does nothing at all.
+test_clean_still_removes_a_real_orphan_alongside_the_manual_stack() {
+    BIN="$(mktemp -d)"; ROOT="$(mktemp -d)"
+    make_fake_docker "$BIN" "$ROOT"
+    {
+        printf '%s %s %s\n' man1 "$MANUAL_PROJECT" "$COMPOSE_FILE"
+        printf '%s %s %s\n' orp1 go-netmon-integration-777-1-999 "$COMPOSE_FILE"
+    } >"$ROOT/containers"
+
+    set +e
+    env PATH="$BIN:$PATH" "$SCRIPT_DIR/clean.sh" >/dev/null 2>&1
+    set -e
+
+    local downed
+    downed="$(grep -oE -- '-p [^ ]+' "$ROOT/log" 2>/dev/null | awk '{print $2}' | sort -u)"
+    [ "$downed" = "go-netmon-integration-777-1-999" ] \
+        || fail "expected only the orphan torn down; downed: ${downed:-<nothing>}" || return 1
+}
+
+# docker's stderr must stay OUT of the value the guard parses as container ids.
+#
+# With 2>&1 a warning on a SUCCESSFUL "docker ps" became the ids: the guard then
+# ran "docker inspect <warning word>", that failed, and it refused every entry
+# point with a message naming a container that does not exist. Fail-closed, and
+# unusable -- the operator is told to check the ownership of a container id that
+# was never a container id.
+test_guard_survives_a_warning_on_dockers_stderr() {
+    BIN="$(mktemp -d)"; ROOT="$(mktemp -d)"
+    make_fake_docker "$BIN" "$ROOT"
+    : >"$ROOT/containers"
+    printf 'WARNING: DOCKER_HOST is deprecated, use docker context\n' >"$ROOT/ps-warning"
+
+    set +e
+    OUT="$(cd "$REPO_ROOT" && env PATH="$BIN:$PATH" "$STACK" down 2>&1)"
+    local status=$?
+    set -e
+
+    [ "$status" -eq 0 ] || fail "the guard refused because of a stderr warning: $OUT" || return 1
+    case "$OUT" in
+        *"could not read the compose file behind container"*)
+            fail "docker's warning was parsed as a container id: $OUT"; return 1 ;;
+    esac
+}
+
+# The refusal text is what a human reads to judge whether the guard was right,
+# so it has to survive a path with a space in it. Accumulated into a string and
+# re-split by an unquoted "for", each id and each path fragment landed on its
+# own line and a container with no config_files label printed a bare "()".
+test_guard_reports_each_foreign_container_on_one_line() {
+    BIN="$(mktemp -d)"; ROOT="$(mktemp -d)"
+    make_fake_docker "$BIN" "$ROOT"
+    printf '%s %s %s\n' fgn1 "$MANUAL_PROJECT" "/opt/my stacks/docker-compose.yml" >"$ROOT/containers"
+
+    set +e
+    OUT="$(cd "$REPO_ROOT" && env PATH="$BIN:$PATH" "$STACK" down 2>&1)"
+    set -e
+
+    local listed
+    listed="$(printf '%s\n' "$OUT" | grep -c '^  fgn1 (' || true)"
+    [ "$listed" -eq 1 ] \
+        || fail "expected one line naming fgn1 with its compose file; got: $OUT" || return 1
+    case "$OUT" in
+        *"fgn1 (/opt/my stacks/docker-compose.yml)"*) ;;
+        *) fail "the foreign container's compose path was split across lines: $OUT"; return 1 ;;
+    esac
 }
 
 # --- runner ---------------------------------------------------------------

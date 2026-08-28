@@ -196,17 +196,42 @@ test_concurrent_runs_use_distinct_projects() {
     pa="$(projects_in "$a")"
     pb="$(projects_in "$b")"
 
-    [ "$pa" = "go-netmon-integration-aaa111" ] || fail "run A used projects: $pa" || return 1
-    [ "$pb" = "go-netmon-integration-bbb222" ] || fail "run B used projects: $pb" || return 1
+    # A PREFIX match, because the run id is no longer the whole suffix: the
+    # PID follows it, so that two jobs of the SAME workflow run -- which share
+    # GITHUB_RUN_ID, as do two attempts of it -- still get separate projects.
+    # Asserting the exact string here would have forced that fix to weaken the
+    # test rather than the test to check the property.
+    case "$pa" in go-netmon-integration-aaa111-*) ;; *) fail "run A used projects: $pa"; return 1 ;; esac
+    case "$pb" in go-netmon-integration-bbb222-*) ;; *) fail "run B used projects: $pb"; return 1 ;; esac
+    [ "$pa" != "$pb" ] || fail "two runs shared the project $pa" || return 1
 
     # The assertion that actually encodes the bug: neither run may ever name the
     # other's project, because naming it is what let one delete the other.
-    if grep -q -- "-p go-netmon-integration-bbb222" "$a"; then
+    if grep -q -- "-p $pb" "$a"; then
         fail "run A referenced run B's project" || return 1
     fi
-    if grep -q -- "-p go-netmon-integration-aaa111" "$b"; then
+    if grep -q -- "-p $pa" "$b"; then
         fail "run B referenced run A's project" || return 1
     fi
+}
+
+# GITHUB_RUN_ID is shared by every job in a workflow run and by every re-run
+# attempt of it, so it cannot be the whole suffix. Two runs carrying the SAME
+# run id -- a matrix leg, a second integration job, or a re-run overlapping a
+# still-running first attempt -- must still land in separate projects, or the
+# 2026-08-21 adopt-and-tear-down collision reproduces inside one workflow run.
+test_same_run_id_still_yields_distinct_projects() {
+    local a="$TMP/same-a.log" b="$TMP/same-b.log"
+    run_harness "$a" shared999
+    run_harness "$b" shared999
+
+    local pa pb
+    pa="$(projects_in "$a")"
+    pb="$(projects_in "$b")"
+
+    case "$pa" in go-netmon-integration-shared999-*) ;; *) fail "run A project: $pa"; return 1 ;; esac
+    [ "$pa" != "$pb" ] \
+        || fail "two runs with the same GITHUB_RUN_ID shared the project $pa" || return 1
 }
 
 # Without a CI run id the suffix comes from the PID, which must still differ
@@ -244,7 +269,7 @@ test_teardown_removes_the_dind_profile_and_volumes() {
     run_harness "$log" ddd444
 
     local down
-    down="$(grep -E -- 'compose -p go-netmon-integration-ddd444 .* down' "$log" || true)"
+    down="$(grep -E -- 'compose -p go-netmon-integration-ddd444-[^ ]+ .* down' "$log" || true)"
     [ -n "$down" ] || fail "no teardown was issued" || return 1
 
     case "$down" in
@@ -272,7 +297,7 @@ test_every_compose_call_names_the_project() {
     local bare
     bare="$(grep -E '^compose ' "$log" \
         | grep -vE '^compose version' \
-        | grep -vE -- '-p go-netmon-integration-eee555' || true)"
+        | grep -vE -- '-p go-netmon-integration-eee555-[^ ]+' || true)"
     [ -z "$bare" ] || fail "compose calls without an explicit project: $bare" || return 1
 }
 

@@ -40,7 +40,22 @@
 
 set -euo pipefail
 
-PROJECT_NAME="go-netmon-integration-${GITHUB_RUN_ID:-$$}"
+# Unique per PROCESS, identifiable per CI run.
+#
+# GITHUB_RUN_ID alone was not enough. It is shared by every job in a workflow
+# run AND by every re-run attempt of it, so a matrix, a second integration job,
+# or a re-run started while the first attempt was still going would reproduce
+# exactly the adopt-and-tear-down collision the header above documents from
+# 2026-08-21 -- the defect this file was changed to fix. The PID is what
+# guarantees uniqueness; the run id and attempt are carried so a failed run's
+# containers can still be traced back to the job that left them.
+#
+# The override exists so the guard below is REACHABLE from here. Without it
+# this script can only ever pass rules 1 and 2, and they were consequently
+# never exercised at this call site -- which is how the cd-ordering defect
+# below survived. "-" rather than ":-", matching stack.sh: an explicitly empty
+# value stays empty and is refused rather than silently replaced.
+PROJECT_NAME="${NETMON_INTEGRATION_PROJECT-go-netmon-integration-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$$}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -67,6 +82,21 @@ compose() {
 command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH"
 docker compose version >/dev/null 2>&1 || die "the docker compose plugin is not available"
 [ -f "$COMPOSE_FILE" ] || die "compose file not found: $COMPOSE_FILE"
+
+# cd FIRST. The guard's rule 2 refuses "the project compose would infer from
+# the working directory", and it computes that from pwd -- so which directory
+# is current when it runs decides which name it refuses.
+#
+# This used to sit 32 lines further down, after the guard. test/integration's
+# own Makefile invokes this script as "./run-tests.sh" with cwd
+# test/integration, so the name the guard refused there was "integration" and
+# not "go-netmon", and the rule that exists to keep the DEPLOYED project out of
+# scope was inert at this call site. stack.sh cds at :64 and guards at :69 and
+# was right all along, which is the shape this library's own header calls out:
+# the same check behaving differently at its two callers is not a safety
+# property. Measured before the fix: default "integration" from
+# test/integration, "go-netmon" from the repository root.
+cd "$PROJECT_ROOT"
 
 # The shared guard: refuses an empty project, refuses the directory default
 # (which is a deployed stack's project), and refuses a project holding
@@ -108,8 +138,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'trap - EXIT; cleanup; exit 130' INT
 trap 'trap - EXIT; cleanup; exit 143' TERM
-
-cd "$PROJECT_ROOT"
 
 echo "Starting integration test environment..."
 echo "Project root:    $PROJECT_ROOT"

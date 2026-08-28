@@ -33,11 +33,15 @@ COMPOSE_FILE="$PROJECT_ROOT/docker-compose.test.yml"
 # shellcheck source=test/integration/compose-guard.sh
 source "$SCRIPT_DIR/compose-guard.sh"
 
-# "-" rather than ":-": an explicitly EMPTY override stays empty and is refused
-# by the guard, instead of being silently replaced by the default. Setting the
-# variable to nothing reads like "do not set -p", which is precisely the
-# behaviour that made integration-down dangerous, so it fails closed.
-PROJECT_NAME="${NETMON_INTEGRATION_PROJECT-go-netmon-integration-manual}"
+# The name comes from the shared library rather than being written here,
+# because clean.sh needs the SAME answer in order to leave this stack alone.
+# Two copies of a name where one side destroys what the other keeps is not a
+# constant worth duplicating. The library preserves the "-" rather than ":-"
+# form: an explicitly EMPTY override stays empty and is refused by the guard
+# instead of being silently replaced. Setting the variable to nothing reads
+# like "do not set -p", which is precisely the behaviour that made
+# integration-down dangerous, so it fails closed.
+PROJECT_NAME="$(integration_manual_project)"
 
 SERVICES=(prometheus snmp-simulator)
 

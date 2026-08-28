@@ -31,6 +31,21 @@ integration_directory_project() {
     basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'
 }
 
+# integration_manual_project prints the project the MANUAL stack occupies --
+# what "make integration-up/down/logs/shell" create and address.
+#
+# It lives here rather than in stack.sh because clean.sh needs the same answer
+# for the opposite reason: stack.sh uses it to decide what to act on, and
+# clean.sh uses it to decide what to leave alone. Two copies of a name where
+# one side destroys what the other side keeps is not a constant worth
+# duplicating.
+#
+# "-" rather than ":-", matching stack.sh: an explicitly EMPTY override stays
+# empty and is refused by rule 1, instead of being silently replaced.
+integration_manual_project() {
+    printf '%s' "${NETMON_INTEGRATION_PROJECT-go-netmon-integration-manual}"
+}
+
 # integration_require_safe_project <project> <compose-file>
 #
 # Refuses to proceed unless the project is safe to create and destroy:
@@ -80,35 +95,58 @@ integration_require_safe_project() {
     # So the comparison is done here, where it can be read and tested, and both
     # docker calls capture their exit status BEFORE their output is judged.
     # A query that fails refuses; it never counts as "nothing foreign".
-    local ids status
-    ids="$(docker ps -aq --filter "label=com.docker.compose.project=$project" 2>&1)" || status=$?
-    if [ -n "${status-}" ]; then
+    # docker's STDERR is kept out of the value. Merging it with 2>&1 put
+    # warning text into a variable that is then parsed as a list of container
+    # ids: on a host where "docker ps" exits 0 but warns (a config-load
+    # warning, a DOCKER_HOST or context deprecation -- reachable here, since
+    # this branch introduces a dind path), each warning word became a fake id
+    # and "docker inspect <word>" failed. The guard refused, so it stayed fail
+    # CLOSED, but it refused every entry point with a message naming a
+    # container that does not exist.
+    local ids status=0 err_file
+    err_file="$(mktemp)" || {
+        echo "compose-guard: could not create a temporary file to capture docker's errors." >&2
+        return 1
+    }
+    ids="$(docker ps -aq --filter "label=com.docker.compose.project=$project" 2>"$err_file")" || status=$?
+    if [ "$status" -ne 0 ]; then
         echo "compose-guard: could not list the containers in project '$project'." >&2
-        echo "  docker ps failed (exit $status): $ids" >&2
+        echo "  docker ps failed (exit $status): $(cat "$err_file")" >&2
         echo "  Refusing to act on a project whose ownership could not be checked." >&2
+        rm -f "$err_file"
         return 1
     fi
 
-    local id owner foreign=""
+    # An ARRAY, because the report is the text a human reads to decide whether
+    # the refusal was right. Accumulated into a string and re-split by "for id
+    # in $foreign", every id and every path segment landed on its own line, a
+    # path containing a space split further, a container with no config_files
+    # label printed a bare "()", and the unquoted expansion was subject to
+    # globbing.
+    local id owner
+    local -a foreign=()
     for id in $ids; do
-        unset status
+        status=0
         owner="$(docker inspect \
             --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' \
-            "$id" 2>&1)" || status=$?
-        if [ -n "${status-}" ]; then
+            "$id" 2>"$err_file")" || status=$?
+        if [ "$status" -ne 0 ]; then
             echo "compose-guard: could not read the compose file behind container $id." >&2
-            echo "  docker inspect failed (exit $status): $owner" >&2
+            echo "  docker inspect failed (exit $status): $(cat "$err_file")" >&2
             echo "  Refusing to act on a project whose ownership could not be checked." >&2
+            rm -f "$err_file"
             return 1
         fi
         if [ "$owner" != "$compose_file" ]; then
-            foreign="$foreign $id ($owner)"
+            foreign+=("$id (${owner:-<no config_files label>})")
         fi
     done
 
-    if [ -n "$foreign" ]; then
+    rm -f "$err_file"
+
+    if [ "${#foreign[@]}" -gt 0 ]; then
         echo "Containers in project '$project' that were not created from $compose_file:" >&2
-        for id in $foreign; do echo "  $id" >&2; done
+        for id in "${foreign[@]}"; do echo "  $id" >&2; done
         echo "compose-guard: refusing to run: tearing this project down would remove" >&2
         echo "  containers it does not own." >&2
         return 1

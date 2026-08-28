@@ -49,6 +49,21 @@ COMPOSE_FILE="$PROJECT_ROOT/docker-compose.test.yml"
 # match on a name no deployment uses.
 PROJECT_PREFIX="go-netmon-integration"
 
+# The manual stack is IN that namespace and is not an orphan. "make
+# integration-up" creates go-netmon-integration-manual and a person leaves it
+# up on purpose -- stack.sh's header says in terms that two people on one host
+# share it. A prefix match alone selects it, so "make -C test/integration
+# clean" would run "down -v --remove-orphans" over a stack someone is using
+# and delete its volumes underneath them. It has its own teardown, "make
+# integration-down"; recovery cleanup is for runs killed past their trap.
+#
+# Read from the shared library so this and stack.sh cannot drift, and so an
+# operator who overrides NETMON_INTEGRATION_PROJECT is protected by the same
+# override on both sides.
+# shellcheck source=test/integration/compose-guard.sh
+source "$SCRIPT_DIR/compose-guard.sh"
+MANUAL_PROJECT="$(integration_manual_project)"
+
 PROJECT_LABEL="com.docker.compose.project"
 CONFIG_LABEL="com.docker.compose.project.config_files"
 
@@ -87,6 +102,10 @@ ours="$(docker ps -aq --filter "label=$CONFIG_LABEL=$COMPOSE_FILE" 2>&1)" || sta
 candidates=""
 for id in $ours; do
     project="$(label_of "$id" "$PROJECT_LABEL")" || exit 1
+    if [ "$project" = "$MANUAL_PROJECT" ]; then
+        echo "clean.sh: skipping project '$project': that is the manual stack, torn down with 'make integration-down'" >&2
+        continue
+    fi
     case "$project" in
         "$PROJECT_PREFIX"*) ;;
         *)
