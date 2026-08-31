@@ -23,21 +23,52 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
+// syncBuffer is a bytes.Buffer that may be written and read concurrently.
+//
+// bytes.Buffer is not safe for concurrent use, and the standard logger here is
+// written by whatever goroutine happens to log. A test asserting on log output
+// reads the buffer from the test goroutine while the component under test logs
+// from its own -- PrometheusExporter's backgroundFlusher calls log.Printf from
+// recordFailure on every failed flush, and it is still running when the test
+// makes its assertions.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // captureLogs temporarily redirects the standard logger to a buffer so
 // tests can assert on what an operator would actually see, and restores it
-// on return. Tests in this package run sequentially (none use
-// t.Parallel()), so swapping the process-wide log output is safe here.
-func captureLogs(t *testing.T) *bytes.Buffer {
+// on return.
+//
+// The buffer is synchronized. Tests in this package do run sequentially, and
+// that was the stated reason a plain bytes.Buffer was thought safe here, but
+// sequential tests do not imply sequential goroutines: the exporter a test
+// constructs starts a background flusher that keeps logging while that same
+// test reads the buffer. Nothing about another test starting or not starting
+// affects it.
+func captureLogs(t *testing.T) *syncBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &syncBuffer{}
 	prevOutput := log.Writer()
 	prevFlags := log.Flags()
-	log.SetOutput(&buf)
+	log.SetOutput(buf)
 	t.Cleanup(func() {
 		log.SetOutput(prevOutput)
 		log.SetFlags(prevFlags)
 	})
-	return &buf
+	return buf
 }
 
 func TestNewPrometheusExporter(t *testing.T) {

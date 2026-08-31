@@ -492,3 +492,137 @@ func TestInfoMetricNameMatchesExporterForATextScalar(t *testing.T) {
 		t.Errorf("value label = %q, want the device's own words %q", got, want)
 	}
 }
+
+// Entity sensor OIDs used by the sensor half of the contract: one Nexus
+// transceiver, named through ENTITY-MIB.
+//
+// The encoding is the one walked from dist-01 on 2026-08-31 -- dBm at scale
+// milli(8) with precision 0, so -7.328 dBm crosses the wire as -7328 -- so no
+// fixture in the tree asserts against an encoding no device produces.
+const (
+	sensorValueOID     = ".1.3.6.1.4.1.9.9.91.1.1.1.1.4.3001"
+	sensorTypeOID      = ".1.3.6.1.4.1.9.9.91.1.1.1.1.1.3001"
+	sensorScaleOID     = ".1.3.6.1.4.1.9.9.91.1.1.1.1.2.3001"
+	sensorPrecisionOID = ".1.3.6.1.4.1.9.9.91.1.1.1.1.3.3001"
+	sensorStatusOID    = ".1.3.6.1.4.1.9.9.91.1.1.1.1.5.3001"
+	physicalNameOID    = ".1.3.6.1.2.1.47.1.1.1.1.7.3001"
+
+	entitySensorType = 14 // dBm
+)
+
+// exportedSensor runs the real export path over one complete entity sensor row
+// and returns the scaled sample it produced.
+//
+// It goes through ConvertSNMPResultsWithTableIndexes for the same reason
+// exported does: the contract has to be pinned to what the exporter actually
+// emits, not to a second implementation of the naming that could drift with it.
+func exportedSensor(t *testing.T) *metrics.Sample {
+	t.Helper()
+
+	integer := func(oid string, value int) *snmp.Result {
+		return &snmp.Result{OID: oid, Type: gosnmp.Integer, Value: value, Timestamp: time.Unix(0, 0)}
+	}
+
+	results := []*snmp.Result{
+		integer(sensorTypeOID, entitySensorType),
+		integer(sensorScaleOID, 8), // milli
+		integer(sensorPrecisionOID, 0),
+		integer(sensorValueOID, -7328), // -7.328 dBm
+		integer(sensorStatusOID, 1),    // ok
+		{OID: physicalNameOID, Type: gosnmp.OctetString,
+			Value: []byte("Ethernet1/3 Lane 1 Transceiver Receive Power Sensor"), Timestamp: time.Unix(0, 0)},
+	}
+
+	samples := metrics.ConvertSNMPResultsWithTableIndexes(
+		"contract-device", results, nil, metrics.NewTableIndexCache(nil), nil)
+
+	for _, sample := range samples {
+		if sample.Labels[promname.OIDLabel] == sensorValueOID {
+			return sample
+		}
+	}
+
+	t.Fatalf("exporter produced no sample for the sensor value column %s", sensorValueOID)
+	return nil
+}
+
+// TestEntitySensorMetricNameMatchesExporter is the drift gate for the one
+// metric family whose name is not derived from a MIB object name.
+//
+// A consumer cannot reach an entity sensor reading through MetricName: the
+// exporter names it after the unit it scaled the reading into, not after
+// entSensorValue. If these two derivations drift, every optical power panel
+// goes blank in exactly the way the rest of this contract exists to prevent.
+func TestEntitySensorMetricNameMatchesExporter(t *testing.T) {
+	sample := exportedSensor(t)
+
+	if got := promname.EntitySensorMetricName(entitySensorType); got != sample.Name {
+		t.Errorf("EntitySensorMetricName(dBm) = %q, exporter emitted %q", got, sample.Name)
+	}
+}
+
+// TestEntitySensorLabelsMatchExporter pins the labels a consumer has to filter
+// and join an entity sensor reading by.
+func TestEntitySensorLabelsMatchExporter(t *testing.T) {
+	sample := exportedSensor(t)
+
+	tests := []struct {
+		name  string
+		label string
+		want  string
+	}{
+		{"device", promname.DeviceLabel, "contract-device"},
+		{"instance OID", promname.OIDLabel, sensorValueOID},
+		{"entity index", promname.EntityIndexLabel, "3001"},
+		{"entity name", promname.EntityNameLabel, "Ethernet1/3 Lane 1 Transceiver Receive Power Sensor"},
+		{"sensor type", promname.SensorTypeLabel, "dBm"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sample.Labels[tt.label]; got != tt.want {
+				t.Errorf("label %s = %q, want %q", tt.label, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEntitySensorIndexLabelsFollowTheIndexConvention checks that the two
+// entity labels are what IndexLabel derives from their MIB objects, so a
+// consumer that reaches them either way arrives at the same string.
+func TestEntitySensorIndexLabelsFollowTheIndexConvention(t *testing.T) {
+	if got := promname.IndexLabel("entPhysicalIndex"); got != promname.EntityIndexLabel {
+		t.Errorf("IndexLabel(entPhysicalIndex) = %q, EntityIndexLabel = %q", got, promname.EntityIndexLabel)
+	}
+	if got := promname.IndexLabel("entPhysicalName"); got != promname.EntityNameLabel {
+		t.Errorf("IndexLabel(entPhysicalName) = %q, EntityNameLabel = %q", got, promname.EntityNameLabel)
+	}
+}
+
+// TestEntitySensorMetricNameCoversEveryType checks that every sensor type a
+// consumer might ask about resolves to a name the exporter could emit, and
+// that an undeclared type does not produce an unqueryable name.
+func TestEntitySensorMetricNameCoversEveryType(t *testing.T) {
+	tests := []struct {
+		name       string
+		sensorType int32
+		want       string
+	}{
+		{"dBm", 14, "snmp_entity_sensor_dbm"},
+		{"celsius", 8, "snmp_entity_sensor_celsius"},
+		{"voltsDC", 4, "snmp_entity_sensor_volts"},
+		{"amperes", 5, "snmp_entity_sensor_amperes"},
+		{"undeclared", 99, "snmp_entity_sensor_value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := promname.EntitySensorMetricName(tt.sensorType); got != tt.want {
+				t.Errorf("EntitySensorMetricName(%d) = %q, want %q", tt.sensorType, got, tt.want)
+			}
+			if !strings.HasPrefix(tt.want, promname.Prefix) {
+				t.Errorf("%q does not carry the exporter's prefix %q", tt.want, promname.Prefix)
+			}
+		})
+	}
+}

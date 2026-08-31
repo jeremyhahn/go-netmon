@@ -960,6 +960,12 @@ func ConvertSNMPResultsWithTableIndexes(
 		indexCache.CacheFriendlyNames(deviceName, results)
 	}
 
+	// Read this poll's entity sensor metadata and entity names before any of
+	// its readings are converted. Nothing about a sensor survives the poll it
+	// arrived in (internal/metrics/entity_sensor_poll.go), so this is the
+	// only thing that can interpret or name this poll's readings.
+	pollSensors := observeEntitySensors(results)
+
 	// Learn from OIDs if learner is provided
 	if oidLearner != nil {
 		oids := make([]string, len(results))
@@ -998,6 +1004,23 @@ func ConvertSNMPResultsWithTableIndexes(
 			if sample := textScalarSample(deviceName, result, index, extraLabels); sample != nil {
 				samples = append(samples, sample)
 			}
+			continue
+		}
+
+		// An entity sensor's value column is the one reading whose raw
+		// number is not the measurement: it is a fixed-point integer in
+		// some SI scale, and publishing it as read would report a
+		// transceiver at -115 dBm. It is replaced here -- not
+		// supplemented -- by the scaled sample, so the wrong number is
+		// never exported under any name. A reading that cannot be scaled
+		// is dropped and counted rather than published raw.
+		if key, isSensor := entitySensorValueKey(result.OID); isSensor {
+			scaled, err := sensorSample(deviceName, key, result, extraLabels, pollSensors)
+			if err != nil {
+				countSensorDrop(deviceName, err)
+				continue
+			}
+			samples = append(samples, scaled)
 			continue
 		}
 

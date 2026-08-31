@@ -79,3 +79,39 @@ func IndexLabel(columnName string) string {
 func RawOIDMetricName(instanceOID string) string {
 	return metrics.SanitizeMetricName(Prefix + instanceOID)
 }
+
+// EntitySensorMetricName returns the metric name the exporter publishes
+// readings of an entity sensor under, given the sensor's EntitySensorDataType.
+//
+// Entity sensor readings are the one family whose name is not derived from the
+// MIB object that produced it. entPhySensorValue and entSensorValue each carry
+// every sensor a device has -- optical power, temperature, voltage, current,
+// fan speed -- as bare integers in whatever scale each sensor chose, so naming
+// their samples after the column would put five units in one metric and no
+// unit in its name. The exporter scales each reading into its base unit and
+// names it after that unit instead (internal/metrics/entity_sensor.go), which
+// is why a consumer needs this rather than MetricName.
+func EntitySensorMetricName(sensorType int32) string {
+	return metrics.SensorType(sensorType).MetricName()
+}
+
+// The labels an entity sensor sample carries beyond DeviceLabel and OIDLabel.
+//
+// EntityIndexLabel and EntityNameLabel follow the index label convention --
+// the MIB object's own name, lowercased -- so they are what IndexLabel would
+// return for entPhysicalIndex and entPhysicalName. SensorTypeLabel does not
+// name a MIB object, because the object is entPhySensorType in
+// ENTITY-SENSOR-MIB and entSensorType in CISCO-ENTITY-SENSOR-MIB and a device
+// may answer either.
+const (
+	// EntityIndexLabel carries the entPhysicalIndex the reading was read at.
+	EntityIndexLabel = "entphysicalindex"
+
+	// EntityNameLabel carries the sensor's entPhysicalName, falling back to
+	// its entPhysicalDescr. It is absent when the device was polled without
+	// ENTITY-MIB, since an empty label and a missing one are the same series.
+	EntityNameLabel = "entphysicalname"
+
+	// SensorTypeLabel carries the EntitySensorDataType label, e.g. "dBm".
+	SensorTypeLabel = "sensor_type"
+)

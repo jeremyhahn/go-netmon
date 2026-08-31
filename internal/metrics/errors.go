@@ -91,3 +91,126 @@ type RemoteWriteError struct {
 func (e *RemoteWriteError) Error() string {
 	return fmt.Sprintf("metrics: remote write to %s failed with status %d: %s", e.URL, e.StatusCode, e.Body)
 }
+
+// The errors below all report one thing: an entity sensor reading that cannot
+// be turned into the quantity it represents. Each carries the reason label it
+// is counted under, so a dropped reading is visible in
+// gonetmon_entity_sensor_dropped_total broken down by cause rather than as an
+// unexplained gap in a graph.
+//
+// They are separate types rather than one type with a code because callers
+// distinguish them: a bad scale is a broken agent, a missing metadata column
+// is a MIB module that was never assigned to the device, and a non-ok status
+// is a sensor correctly reporting that it has nothing to say.
+
+// sensorDropError is implemented by every error that ends a sensor reading, so
+// the conversion path can label its counter without a type switch that has to
+// be extended in step with the errors.
+type sensorDropError interface {
+	error
+	// DropReason is the value of the "reason" label the reading is counted
+	// under.
+	DropReason() string
+}
+
+// SensorScaleError reports an entSensorScale outside the EntitySensorDataScale
+// enumeration, whose factor of a thousand is therefore unknown.
+type SensorScaleError struct {
+	Scale int32
+}
+
+func (e *SensorScaleError) Error() string {
+	return fmt.Sprintf("metrics: entity sensor scale %d is outside EntitySensorDataScale (1..17)", e.Scale)
+}
+
+// DropReason implements sensorDropError.
+func (e *SensorScaleError) DropReason() string { return "invalid_scale" }
+
+// SensorPrecisionError reports an entSensorPrecision outside the -8..9 range
+// both sensor MIBs declare.
+type SensorPrecisionError struct {
+	Precision int32
+}
+
+func (e *SensorPrecisionError) Error() string {
+	return fmt.Sprintf("metrics: entity sensor precision %d is outside EntitySensorPrecision (-8..9)", e.Precision)
+}
+
+// DropReason implements sensorDropError.
+func (e *SensorPrecisionError) DropReason() string { return "invalid_precision" }
+
+// SensorRangeError reports one of the reserved EntitySensorValue sentinels:
+// the sensor's true reading is above or below what the object can carry, so
+// there is no measurement to publish.
+type SensorRangeError struct {
+	Value int64
+}
+
+func (e *SensorRangeError) Error() string {
+	bound := "overflow"
+	if e.Value <= SensorValueUnderflow {
+		bound = "underflow"
+	}
+	return fmt.Sprintf("metrics: entity sensor value %d signals %s", e.Value, bound)
+}
+
+// DropReason implements sensorDropError.
+func (e *SensorRangeError) DropReason() string {
+	if e.Value <= SensorValueUnderflow {
+		return "underflow"
+	}
+	return "overflow"
+}
+
+// SensorMetadataError reports a sensor reading whose type, scale or precision
+// the device has not reported, leaving nothing to scale the reading by.
+//
+// In practice this means the sensor table was read without its metadata
+// columns -- a device assigned no entity sensor MIB module, or polled for the
+// value column alone.
+type SensorMetadataError struct {
+	Device  string
+	Index   string
+	Missing string
+}
+
+func (e *SensorMetadataError) Error() string {
+	return fmt.Sprintf("metrics: no %s for sensor %s on %s: reading cannot be scaled", e.Missing, e.Index, e.Device)
+}
+
+// DropReason implements sensorDropError.
+func (e *SensorMetadataError) DropReason() string { return "missing_" + e.Missing }
+
+// SensorStatusError reports a sensor whose operational status is not ok(1).
+// unavailable(2) means the agent cannot presently read the sensor and
+// nonoperational(3) means it believes the sensor is broken; in both cases the
+// value column still holds a number, and that number is not a measurement.
+type SensorStatusError struct {
+	Device string
+	Index  string
+	Status SensorStatus
+}
+
+func (e *SensorStatusError) Error() string {
+	return fmt.Sprintf("metrics: sensor %s on %s reports status %s, not ok", e.Index, e.Device, e.Status)
+}
+
+// DropReason implements sensorDropError.
+func (e *SensorStatusError) DropReason() string {
+	// Only the statuses both MIBs declare get their own reason; everything
+	// else collapses to one label.
+	//
+	// This value is a Prometheus label on a counter and would otherwise come
+	// straight from an Integer32 the device chose, so an agent answering a
+	// fresh status per poll could mint unbounded label values -- from
+	// untrusted input, on the very metric that exists to report untrusted
+	// input. It also read "status_status_9", because Status.String() already
+	// prefixes an undeclared value. The exact number stays in Error(), which
+	// is where someone diagnosing one sensor looks.
+	switch e.Status {
+	case SensorStatusUnavailable, SensorStatusNonoperational:
+		return "status_" + e.Status.String()
+	default:
+		return "status_unknown"
+	}
+}
