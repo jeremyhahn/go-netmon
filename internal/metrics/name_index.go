@@ -61,14 +61,7 @@ type objectNameIndex struct {
 func newObjectNameIndex(oids []*mib.OIDMetadata) *objectNameIndex {
 	index := &objectNameIndex{metricNames: make(map[string]string, len(oids))}
 
-	for _, oid := range oids {
-		if oid == nil || oid.OID == "" || oid.Name == "" {
-			continue
-		}
-		if !oid.IsScalar && !oid.IsColumn {
-			continue
-		}
-
+	for _, oid := range instantiableObjects(oids) {
 		key := strings.TrimPrefix(oid.OID, ".")
 		if _, exists := index.metricNames[key]; exists {
 			continue
@@ -141,4 +134,30 @@ func countSubIDs(oid string) int {
 		return 0
 	}
 	return strings.Count(oid, ".") + 1
+}
+
+// instantiableObjects returns the objects an agent can actually be asked for,
+// in the order they were swept.
+//
+// It is shared by the metric name index and the metric catalog so that neither
+// can come to describe a different set of objects than the other: they answer
+// two halves of one question -- what a sample is called, and what that name
+// means -- and a sample named from one while described by the other is worse
+// than either being wrong alone.
+//
+// Tables, conceptual rows and bare OID branch nodes are never instantiated by
+// an agent, so admitting them would let an instance of an unknown column
+// resolve to its enclosing row and collapse distinct series onto one name.
+func instantiableObjects(oids []*mib.OIDMetadata) []*mib.OIDMetadata {
+	instantiable := make([]*mib.OIDMetadata, 0, len(oids))
+	for _, oid := range oids {
+		if oid == nil || oid.OID == "" || oid.Name == "" {
+			continue
+		}
+		if !oid.IsScalar && !oid.IsColumn {
+			continue
+		}
+		instantiable = append(instantiable, oid)
+	}
+	return instantiable
 }

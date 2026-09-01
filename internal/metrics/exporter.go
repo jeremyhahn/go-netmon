@@ -1,3 +1,19 @@
+// Package metrics turns SNMP readings into Prometheus series.
+//
+// It does three things that have to agree with each other. It names a sample
+// after the MIB object it instantiates and puts the row index in labels
+// (name_index.go, table_index_cache.go); it scales the readings whose raw
+// integer is not the measurement, principally entity sensors (entity_sensor.go);
+// and it publishes a catalog describing what every metric it emits means
+// (catalog.go), so a consumer can render from Prometheus alone without parsing
+// a MIB.
+//
+// The catalog exists because remote write cannot carry metric metadata: the v1
+// protocol this package speaks has a Metadata field that Prometheus's v1
+// receive path never reads. Everything a renderer needs therefore travels as
+// ordinary series, and every one of them is global -- the catalog carries no
+// device label, so its size is the number of distinct metrics published and
+// not a multiple of the fleet.
 package metrics
 
 import (

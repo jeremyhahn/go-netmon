@@ -12,6 +12,22 @@ prometheus:
   batch_size: 1000
   flush_interval: 10
 
+  # This collector publishes the metric catalog: the series that tell a
+  # dashboard what every metric means, so the UI renders from Prometheus alone
+  # and needs no MIBs of its own.
+  #
+  # EXACTLY ONE collector in a fleet may have this on. The catalog carries no
+  # device label, so every collector would write the same series at
+  # uncoordinated moments, and a write landing behind one already ingested is
+  # rejected out of order. That needs more than one collector to show up at
+  # all, so it works in development and fails intermittently in production.
+  #
+  # Defaults to FALSE, so designation is always a decision somebody made: an
+  # upgraded shard whose config predates this field must not silently become a
+  # second emitter. Set explicitly here because this appliance runs one
+  # collector.
+  emit_metric_catalog: true
+
 api:
   listen_address: ":8080"
   enabled: true

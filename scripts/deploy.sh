@@ -155,6 +155,10 @@ if [[ -z "$dry_run" ]]; then
     cp -a "$repo_root/mibs/standard" "$stage/mibs/standard"
     install -m 0644 "$repo_root/deploy/config.yaml"             "$stage/config.yaml"
     install -m 0644 "$repo_root/deploy/prometheus.yml"          "$stage/prometheus.yml"
+    # Alert rules are shipped as a directory rather than seeded like the two
+    # configs above: they carry no site-specific settings, so replacing them
+    # wholesale is right and losing an edit is not a risk.
+    cp -a "$repo_root/deploy/rules" "$stage/rules"
     install -m 0644 "$repo_root/deploy/go-netmon.service"       "$stage/go-netmon.service"
     install -m 0644 "$repo_root/deploy/go-netmon-webui.service" "$stage/go-netmon-webui.service"
     install -m 0644 "$repo_root/deploy/prometheus.service"      "$stage/prometheus.service"

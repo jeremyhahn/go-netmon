@@ -27,6 +27,50 @@ type PrometheusConfig struct {
 	RemoteWriteURL string `yaml:"remote_write_url"`
 	BatchSize      int    `yaml:"batch_size"`
 	FlushInterval  int    `yaml:"flush_interval"` // seconds
+
+	// EmitMetricCatalog designates this collector as the one that publishes
+	// the metric catalog -- the series that tell a dashboard what every
+	// metric means, so the UI needs no MIBs of its own.
+	//
+	// Exactly one collector writing a fleet must have it. The catalog carries
+	// no device label, so every collector would write the *same* series: the
+	// first write to land sets a sample's timestamp and a second arriving
+	// behind it is rejected out of order, since out_of_order_time_window is 0
+	// by default. That needs more than one collector to appear at all, so it
+	// would work in development and fail intermittently in production.
+	//
+	// It is configuration rather than an election because a designated
+	// emitter needs no coordination protocol, no leader lease and no reliance
+	// on how the receiver treats duplicate samples. A single-collector
+	// deployment sets it and is done.
+	//
+	// Defaults to FALSE, and the default is the whole point: designation has
+	// to be a decision somebody made.
+	//
+	// It defaulted to true, on the reasoning that a single collector is the
+	// common deployment and one publishing no catalog leaves every dashboard
+	// blank. That is fail-open. Every shard whose configuration predates this
+	// field becomes an emitter the moment it is upgraded, which is exactly
+	// the condition that cannot be allowed -- and because the catalog shares
+	// a buffer with device telemetry, a rejected catalog write can delay or
+	// reject device samples too. The failure is not a blank dashboard; it is
+	// dropped measurements.
+	//
+	// Failing closed costs a fresh install its catalog until somebody sets
+	// this, and that omission is loud rather than silent: no catalog series
+	// exist at all, and MetricCatalogNotBeingPublished in
+	// deploy/rules/catalog.yml fires within fifteen minutes.
+	EmitMetricCatalog *bool `yaml:"emit_metric_catalog"`
+}
+
+// CatalogEmissionEnabled reports whether this collector should publish the
+// metric catalog.
+//
+// A configuration that does not say does not emit. See EmitMetricCatalog: an
+// unstated default that turns every upgraded shard into an emitter is the one
+// outcome this must not have.
+func (c PrometheusConfig) CatalogEmissionEnabled() bool {
+	return c.EmitMetricCatalog != nil && *c.EmitMetricCatalog
 }
 
 // APIConfig contains API server settings.

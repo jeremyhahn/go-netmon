@@ -35,6 +35,10 @@ const exportBufferMultiplier = 10
 // would discard whole polls rather than replay them.
 const minExportBufferSize = 100000
 
+// defaultBatchSize is the batch size an exporter built without one uses, and
+// the chunk SendCatalog falls back to.
+const defaultBatchSize = 1000
+
 // exportStallMultiplier x flushInterval is the minimum time without a
 // successful flush before the background flusher starts logging a loud,
 // repeating stall warning, even when its buffer is empty. A stalled
@@ -125,6 +129,11 @@ type PrometheusExporter struct {
 	bufferLock    sync.Mutex
 	maxBufferSize int
 
+	// published is the set of metric names this exporter has sent, which is
+	// what the catalog describes. It carries no device dimension, so it is
+	// bounded by the number of distinct metrics rather than by the fleet.
+	published *publishedMetrics
+
 	// Table index cache for adding generic table index labels
 	tableIndexCache *TableIndexCache
 
@@ -162,7 +171,7 @@ func NewPrometheusExporter(remoteWriteURL string, batchSize int, flushInterval t
 	}
 
 	if batchSize <= 0 {
-		batchSize = 1000
+		batchSize = defaultBatchSize
 	}
 
 	if flushInterval <= 0 {
@@ -183,6 +192,7 @@ func NewPrometheusExporter(remoteWriteURL string, batchSize int, flushInterval t
 	}
 
 	exporter := &PrometheusExporter{
+		published:      newPublishedMetrics(),
 		remoteWriteURL: remoteWriteURL,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -289,6 +299,18 @@ func (e *PrometheusExporter) Flush(ctx context.Context) error {
 
 		return e.recordFailure(len(batch), err)
 	}
+
+	// Note which metric names reached Prometheus, so the catalog describes
+	// what this collector actually published rather than every object in
+	// every loaded module.
+	//
+	// Recorded here rather than when the samples were buffered, because a
+	// batch that was dropped or whose write failed was never published: the
+	// catalog would then describe a series that never arrived, and the
+	// dashboard would offer a panel that can never have data. A failed batch
+	// is put back above and retried, so its names are recorded by the flush
+	// that lands.
+	e.published.record(batch)
 
 	e.recordSuccess(len(batch))
 	return nil
@@ -569,4 +591,61 @@ func (e *PrometheusExporter) Stalled() bool {
 // GetOIDLearner returns the OID learner for accessing learned table information
 func (e *PrometheusExporter) GetOIDLearner() *OIDLearner {
 	return e.oidLearner
+}
+
+// publishedMetricNames returns the set of metric names this exporter has sent.
+//
+// It is what a CatalogEmitter describes. It is a method rather than a field
+// read so that the emitter stays a separate component: the catalog is written
+// by one designated process, and that process may not own any particular
+// exporter forever.
+func (e *PrometheusExporter) publishedMetricNames() *publishedMetrics {
+	return e.published
+}
+
+// TableIndexCache returns the MIB-derived index this exporter names and
+// describes samples with. It is what a CatalogEmitter reads descriptions from.
+func (e *PrometheusExporter) TableIndexCache() *TableIndexCache {
+	return e.tableIndexCache
+}
+
+// SendCatalog delivers the metric catalog without touching the sample buffer.
+//
+// The catalog does not share a batch with device telemetry, and that is the
+// point rather than an optimization. Sharing one buffer means a rejected
+// catalog write puts device samples back with it, delaying or -- once the
+// retry backlog hits its cap -- discarding measurements. The catalog is a
+// description; it must never be able to cost a reading.
+//
+// It also removes the catalog from the buffer's size accounting entirely. One
+// emission is around 20,000 series, which is more than a full batch on any
+// sane batch_size, so routing it through the buffer forced an immediate flush
+// of whatever telemetry happened to be queued at that instant and sent the
+// whole lot as a single request.
+//
+// Delivery is synchronous and the error is the delivery's: the caller learns
+// whether Prometheus took it, not whether it was queued. Chunks are sent in
+// order and the first failure stops the rest, because a half-written catalog
+// describing an arbitrary subset of metrics is worse than one that is a
+// refresh behind.
+//
+// Chunking here is by sample count only. Bounding a request by its encoded
+// size is a property every send should have, not just this one, and is
+// tracked separately.
+func (e *PrometheusExporter) SendCatalog(ctx context.Context, samples []*Sample) error {
+	chunk := e.batchSize
+	if chunk <= 0 {
+		chunk = defaultBatchSize
+	}
+
+	for start := 0; start < len(samples); start += chunk {
+		end := start + chunk
+		if end > len(samples) {
+			end = len(samples)
+		}
+		if err := e.send(ctx, samples[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
 }

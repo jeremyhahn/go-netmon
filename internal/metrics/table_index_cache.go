@@ -137,6 +137,16 @@ func (c *TableIndexCache) index() *mibIndex {
 	return emptyMIBIndex
 }
 
+// catalogIndex returns the published catalog built from the MIB store, or the
+// empty catalog when no MIB metadata has been loaded. It never returns nil and
+// never blocks.
+func (c *TableIndexCache) catalogIndex() *catalogIndex {
+	if catalog := c.index().catalog; catalog != nil {
+		return catalog
+	}
+	return emptyCatalogIndex
+}
+
 // objectNames returns the index that resolves an instance OID to the metric
 // name of the MIB object it instantiates. It returns nil when no MIB
 // metadata has been loaded, which resolves nothing rather than failing.
@@ -244,7 +254,8 @@ func (c *TableIndexCache) sweepStore() (*mibSweep, error) {
 	sweep := &mibSweep{
 		// The metric name index is built from the same sweep that finds the
 		// tables: a second full scan of the store would double the cost for
-		// metadata already in hand.
+		// metadata already in hand. The catalog is built from it too, below,
+		// once the tables and status columns it needs are known.
 		names:         newObjectNameIndex(allOIDs),
 		tables:        newTableSet(),
 		statusColumns: make(map[string][]statusColumnInfo),
@@ -287,6 +298,12 @@ func (c *TableIndexCache) sweepStore() (*mibSweep, error) {
 			sweep.statusColumns[tableInfo.EntryOID] = statusCols
 		}
 	}
+
+	// The catalog is built last because it describes each object in terms of
+	// the table it belongs to: its index labels and the info metric that
+	// names its rows are only known once the tables and status columns above
+	// have been found.
+	sweep.catalog = newCatalogIndex(allOIDs, sweep.tables, sweep.statusColumns)
 
 	return sweep, nil
 }

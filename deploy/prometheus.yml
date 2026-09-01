@@ -19,7 +19,10 @@ alerting:
         - targets: []
 
 rule_files:
-  # - "rules/*.yml"
+  # Alerts on the metric catalog, which every dashboard panel depends on.
+  # A glob matching nothing is not an error, so this is safe on a host that
+  # has no rules directory yet.
+  - "rules/*.yml"
 
 scrape_configs:
   # The poller's internal metrics: poll counts, poll durations, SNMP errors.

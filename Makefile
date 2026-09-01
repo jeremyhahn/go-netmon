@@ -244,7 +244,7 @@ coverage-grafana-template: ## Generate Grafana template package coverage
 # change the other. The pin is deliberate (devops.md 9): v2.13.0 ships
 # honnef.co/go/tools v0.8.0-rc.1, whose nilness pass panics ("unhandled builtin
 # recover"), producing a RED run with ZERO findings.
-GOLANGCI_LINT_VERSION := v2.12.2
+GOLANGCI_LINT_VERSION := v2.13.2
 
 # GOPATH/bin is where "make install-tools" puts golangci-lint, but it is not on
 # every shell's PATH. Looking there explicitly means "make lint" works straight
@@ -283,7 +283,7 @@ lint: ## Run linters
 	@# looking for a defect that is not there.
 	@#
 	@# The version is read as the field after the literal word "version"
-	@# ("golangci-lint has version 2.12.2 built with go1.26.6 from ...") rather
+	@# ("golangci-lint has version 2.13.2 built with go1.27.0 from ...") rather
 	@# than by column, so a change to the surrounding wording does not silently
 	@# turn this check into a no-op. version_of also fails on a binary that
 	@# prints a banner and then exits nonzero; see its definition.

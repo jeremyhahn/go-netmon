@@ -91,6 +91,11 @@ type mibIndex struct {
 	// table whose values become friendly-name labels.
 	statusColumns map[string][]statusColumnInfo
 
+	// catalog describes every metric the loaded MIBs could publish, keyed by
+	// published metric name. It is built from the same sweep, so it costs no
+	// extra pass over the store.
+	catalog *catalogIndex
+
 	// tableForOID memoizes tableFor. The fallback in tableForUncached is a
 	// prefix scan over every table, run once per SNMP result on every poll of
 	// every device, and OIDs that resolve to no table at all would pay it
@@ -216,6 +221,7 @@ type mibSweep struct {
 	names         *objectNameIndex
 	tables        *tableSet
 	statusColumns map[string][]statusColumnInfo
+	catalog       *catalogIndex
 }
 
 // newMIBIndex merges a MIB store sweep with the tables the OID learner
@@ -235,6 +241,7 @@ func newMIBIndex(sweep *mibSweep, learned *tableSet) *mibIndex {
 	if sweep != nil {
 		index.names = sweep.names
 		index.statusColumns = sweep.statusColumns
+		index.catalog = sweep.catalog
 		copyTableSet(index, sweep.tables)
 	}
 	copyTableSet(index, learned)

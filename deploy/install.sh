@@ -114,6 +114,19 @@ seed_config() {
 seed_config "$payload_dir/config.yaml" "$conf_dir/config.yaml" "$svc_user"
 if [[ -n "$with_prometheus" ]]; then
     seed_config "$payload_dir/prometheus.yml" "$conf_dir/prometheus.yml" "$prom_user"
+
+    # Alert rules are replaced rather than seeded. They hold no site-specific
+    # settings, so keeping an old copy only means running last release's
+    # alerts; prometheus.yml references them as rules/*.yml, and a glob that
+    # matches nothing is not an error, so a host without them still starts.
+    if [[ -d "$payload_dir/rules" ]]; then
+        install -d -o root -g "$prom_user" -m 0750 "$conf_dir/rules"
+        for rule in "$payload_dir"/rules/*.yml; do
+            [[ -e "$rule" ]] || continue
+            install -o root -g "$prom_user" -m 0640 "$rule" "$conf_dir/rules/$(basename "$rule")"
+        done
+        log "wrote $conf_dir/rules"
+    fi
 fi
 
 # --- systemd units ----------------------------------------------------------

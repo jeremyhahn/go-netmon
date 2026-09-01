@@ -218,6 +218,26 @@ func run(ctx context.Context, cfg *config.Config, webuiURL string) error {
 		}
 	}
 
+	// Publish the metric catalog, if this collector is the one designated to.
+	//
+	// The catalog describes what every published metric means, so a dashboard
+	// can render from Prometheus alone and needs no MIBs of its own. It is
+	// emitted here rather than from the poll path deliberately: a poll path
+	// would write the whole catalog once per device per cycle, and the
+	// catalog is identical every time and carries no device dimension, so
+	// that would cost the fleet size for nothing.
+	if cfg.Prometheus.CatalogEmissionEnabled() {
+		catalog := metrics.NewCatalogEmitterFor(exporter)
+		catalog.Start(ctx)
+		defer func() {
+			log.Println("Stopping metric catalog emitter...")
+			catalog.Stop()
+		}()
+		log.Printf("Publishing the metric catalog every %s", metrics.CatalogInterval)
+	} else {
+		log.Println("Metric catalog emission is disabled; another collector must be designated to publish it")
+	}
+
 	// Start poller
 	log.Println("Starting SNMP poller...")
 	if err := poll.Start(ctx); err != nil {
