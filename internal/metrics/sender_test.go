@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -1481,5 +1485,165 @@ func TestCloseReportsAFinal4xxThatThrewSamplesAway(t *testing.T) {
 	if got := testutil.ToFloat64(own.dropped.WithLabelValues("rejected")); got != 1 {
 		t.Errorf("counted %v dropped as rejected, want 1: the reason is still its "+
 			"own, it is being shut down that makes it Close's business", got)
+	}
+}
+
+// TestEveryLabelledExportCounterPublishesZeroBeforeAnythingHappens is the
+// regression for a counter that does not exist yet reading as a fact.
+//
+// A CounterVec child is created by the first WithLabelValues that touches it,
+// so a freshly started process published no
+// gonetmon_export_dropped_samples_total{reason="aged"} at all until something
+// was dropped for that reason. Absent is not zero, and the difference bit in
+// two places at once:
+//
+//   - An alert on the drop counters could not fire on a fresh process. rate()
+//     over a series that does not exist returns an EMPTY result, not 0, and an
+//     empty result satisfies no comparison -- so the alarm stayed silent until
+//     the first drop created the series it was meant to warn about.
+//   - scripts/measure-export-health.sh treats absence as "the old build is
+//     running", which is the check that catches a deploy that copied a binary
+//     without restarting it. On monitor-01 it aborted for that reason while the
+//     binary hash proved the new build WAS running: two of its own signals
+//     contradicting each other, because absence had two possible causes.
+//
+// The assertion is on the SET, so a reason missing from dropReasons and a
+// reason present that nothing publishes both fail. A new drop reason that is
+// not added to the list puts its series back in the absent state, which is the
+// whole defect returning quietly.
+func TestEveryLabelledExportCounterPublishesZeroBeforeAnythingHappens(t *testing.T) {
+	// A private registry, not the package's: the shared counters have had
+	// children created by every other test in this package, so asserting on
+	// them would pass whether or not anything pre-creates anything.
+	own := &counters{
+		exports: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Name: "zero_children_exports_total"}, []string{"status"}),
+		dropped: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Name: "zero_children_dropped_total"}, []string{"reason"}),
+	}
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(own.exports, own.dropped)
+
+	publishZeroChildren(own)
+
+	published := map[string]map[string]float64{}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, family := range families {
+		values := map[string]float64{}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				values[label.GetValue()] = metric.GetCounter().GetValue()
+			}
+		}
+		published[family.GetName()] = values
+	}
+
+	// Spelled out rather than taken from dropReasons and exportOutcomes. Those
+	// are the thing under test: comparing them with themselves moves both sides
+	// of the assertion together, so dropping a reason from the list would pass.
+	// This is the second, independent statement of the set, and a new reason has
+	// to be added here deliberately -- which is correct, because the set is an
+	// alerting contract and not an implementation detail.
+	for name, want := range map[string][]string{
+		"zero_children_dropped_total": {"aged", "depth", "rejected", "superseded", "shutdown"},
+		"zero_children_exports_total": {"success", "error", "dropped"},
+	} {
+		got := published[name]
+		if len(got) != len(want) {
+			t.Errorf("%s publishes %d children (%v), want %d (%v)",
+				name, len(got), slices.Sorted(maps.Keys(got)), len(want), want)
+			continue
+		}
+		for _, label := range want {
+			value, exists := got[label]
+			if !exists {
+				t.Errorf("%s{%s} was never created, so nothing scrapes it and no "+
+					"alert can fire on it until the first time it moves", name, label)
+				continue
+			}
+			if value != 0 {
+				t.Errorf("%s{%s} = %v, want 0", name, label, value)
+			}
+		}
+	}
+}
+
+// zeroChildrenChildEnv marks the re-executed copy of the test below.
+const zeroChildrenChildEnv = "GONETMON_ZERO_CHILDREN_CHILD"
+
+// TestRegistrationItselfPublishesTheChildren covers the half of the fix that
+// the test above cannot: that something actually CALLS publishZeroChildren for
+// the counters /metrics serves.
+//
+// The obvious version of this test asserts on the shared counters from an
+// ordinary test function, and it cannot fail. Every drop reason and every
+// export status is exercised somewhere in this package, so by the time such a
+// test runs the children usually exist whether registration created them or a
+// previous test did -- and with -shuffle=on whether it can fail at all depends
+// on the seed. That is a test whose measurement is shared with the rest of the
+// suite, which this repository has now been bitten by twice.
+//
+// So the assertion runs in a process where nothing else has: the test re-execs
+// the test binary for this one test. In the child, the only thing that has
+// touched the counters is package initialisation, which is exactly the claim.
+func TestRegistrationItselfPublishesTheChildren(t *testing.T) {
+	if os.Getenv(zeroChildrenChildEnv) == "1" {
+		assertSharedChildrenPublished(t)
+		return
+	}
+
+	child := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.v")
+	child.Env = append(os.Environ(), zeroChildrenChildEnv+"=1")
+	out, err := child.CombinedOutput()
+	if err != nil {
+		t.Fatalf("registration did not pre-create the /metrics children.\n"+
+			"Run in a fresh process, where only package initialisation has touched "+
+			"the counters:\n%s", out)
+	}
+}
+
+// assertSharedChildrenPublished checks the counters /metrics actually serves.
+// Only meaningful in a process where no other test has run; see above.
+func assertSharedChildrenPublished(t *testing.T) {
+	t.Helper()
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	published := map[string]map[string]float64{}
+	for _, family := range families {
+		values := map[string]float64{}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				values[label.GetValue()] = metric.GetCounter().GetValue()
+			}
+		}
+		published[family.GetName()] = values
+	}
+
+	// Spelled out for the same reason as the test above: taken from
+	// dropReasons, the assertion would move whenever the thing it checks does.
+	for name, want := range map[string][]string{
+		"gonetmon_export_dropped_samples_total": {"aged", "depth", "rejected", "superseded", "shutdown"},
+		"gonetmon_exports_total":                {"success", "error", "dropped"},
+	} {
+		got := published[name]
+		for _, label := range want {
+			value, exists := got[label]
+			if !exists {
+				t.Errorf("%s{%s} is not published by a freshly started process, so an "+
+					"alert on it cannot fire and an absent series no longer means "+
+					"the build lacks the counter", name, label)
+				continue
+			}
+			if value != 0 {
+				t.Errorf("%s{%s} = %v in a fresh process, want 0", name, label, value)
+			}
+		}
 	}
 }

@@ -102,6 +102,20 @@ assert_build() {
 # binary. Evaluating expectations against absent counters passes every one of
 # them, because "must not move" is satisfied by a series that is not there, and
 # the harness would certify a node that was never updated.
+#
+# THAT INFERENCE ONLY HOLDS BECAUSE THE EXPORTER PRE-CREATES EVERY LABELLED
+# CHILD. It did not, and this check was wrong on the first node it ever ran
+# against: monitor-01 published the right binary hash and no
+# dropped_samples_total{reason=...} series at all, because a CounterVec child
+# does not exist until something increments it and nothing had been dropped
+# since the restart. Two of this script's own signals contradicted each other.
+#
+# The fix went into the exporter rather than here, because absence-means-zero
+# is the weaker property: it would have made this script tolerant while leaving
+# an alert on the drop counters unable to fire on a fresh process, rate() over
+# a series that does not exist being empty rather than 0. With every child
+# published at 0 from the first scrape, absence has exactly one cause again and
+# the abort below says something true.
 assert_counters_present() {
     local text missing=0 name key value
     text="$(fetch_metrics)" || {
@@ -117,8 +131,9 @@ assert_counters_present() {
     done < <(metric_keys)
 
     if [ "$missing" -gt 0 ]; then
-        printf '  ABORT: %d expected series are missing. After a deploy that means the\n' "$missing" >&2
-        printf '         old build is running, not that nothing moved.\n' >&2
+        printf '  ABORT: %d expected series are missing. Every one of these publishes 0\n' "$missing" >&2
+        printf '         from the first scrape, so after a deploy the old build is running,\n' >&2
+        printf '         not that nothing moved.\n' >&2
         return 1
     fi
     printf 'every expected series is published.\n'

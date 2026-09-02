@@ -15,6 +15,17 @@ million samples an hour for fifteen hours while every signal it published said
 gonetmon_export_dropped_samples_total{reason="..."}
 ```
 
+Every reason below publishes `0` from the first scrape, before anything has
+been dropped. That matters for alerting: a Prometheus `rate()` over a series
+that does not exist returns an **empty** result rather than zero, and an empty
+result satisfies no comparison — so an alert on a lazily created counter is
+silent on exactly the process that has not failed yet, and stays silent until
+the first drop creates the series it was meant to warn about.
+
+It also means **an absent series says something**: the build does not have that
+counter. `scripts/measure-export-health.sh` relies on that to catch a deploy
+that copied a binary without restarting it.
+
 Non-zero means samples were accepted from a device and never delivered. The
 reason says which fault:
 

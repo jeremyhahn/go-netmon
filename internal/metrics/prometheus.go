@@ -55,6 +55,46 @@ const exportStallMultiplier = 5
 // warnings on the very first tick.
 const minExportStallThreshold = time.Minute
 
+// Every value the exporter's two label sets can take, declared rather than
+// spelled at each call site.
+//
+// They are declared because a labeled counter's child DOES NOT EXIST until
+// something increments it. A fresh process publishes no
+// gonetmon_export_dropped_samples_total{reason="aged"} at all, which is not the
+// same as publishing zero and is worse in both directions:
+//
+//   - an alert cannot fire on it. rate() over a series that does not exist is
+//     EMPTY, not 0, and an empty result satisfies no comparison -- so the alarm
+//     on "samples are being dropped" is silent on exactly the process that has
+//     not dropped any yet, and stays silent until the first drop creates the
+//     series it was supposed to warn about.
+//   - absence stops meaning anything. A reader who finds the series missing
+//     cannot tell "this build does not have this counter" from "this counter
+//     has not been touched", so a check that treats absence as a signal --
+//     scripts/measure-export-health.sh does, to catch a deploy that copied a
+//     binary without restarting it -- reports the wrong cause confidently.
+//
+// So every child is created at registration, publishing 0 from the first
+// scrape. Absence then means the build does not have it, which is a fact worth
+// acting on. This is the same empty-answer disguise as a query that matches
+// nothing and returns success: the shape this package exists to remove.
+const (
+	dropAged       = "aged"
+	dropDepth      = "depth"
+	dropRejected   = "rejected"
+	dropSuperseded = "superseded"
+	dropShutdown   = "shutdown"
+
+	exportSuccess = "success"
+	exportError   = "error"
+	exportDropped = "dropped"
+)
+
+var (
+	dropReasons    = []string{dropAged, dropDepth, dropRejected, dropSuperseded, dropShutdown}
+	exportOutcomes = []string{exportSuccess, exportError, exportDropped}
+)
+
 // Self-instrumentation for the Prometheus exporter. These are package-level
 // so that every PrometheusExporter instance (including ones created
 // repeatedly in tests) shares a single registration; registering per
@@ -64,7 +104,7 @@ var (
 	exportsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gonetmon_exports_total",
-			Help: "Total number of metric export outcomes, by status (success, error, dropped).",
+			Help: "Total number of metric export outcomes, by status (success, error, dropped). Every status publishes 0 from the first scrape, so absence means the build does not have it.",
 		},
 		[]string{"status"},
 	)
@@ -77,7 +117,7 @@ var (
 	droppedSamples = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gonetmon_export_dropped_samples_total",
-			Help: "Samples discarded before reaching remote write, by reason: aged (stamped further back than the age horizon), depth (the queue exceeded its sample bound), rejected (the endpoint refused them for a reason that cannot be retried).",
+			Help: "Samples discarded before reaching remote write, by reason: aged (stamped further back than the age horizon), depth (the queue exceeded its sample bound), rejected (the endpoint refused them for a reason that cannot be retried), superseded (another reading already owns that point of the series), shutdown (the process stopped with samples still queued). Every reason publishes 0 from the first scrape, so absence means the build does not have it.",
 		},
 		[]string{"reason"},
 	)
@@ -165,6 +205,20 @@ func init() {
 		metricNameUnresolvedSamples,
 		sampleLabelConflicts,
 	)
+
+	publishZeroChildren(sharedCounters())
+}
+
+// publishZeroChildren creates every child of the two labeled export counters,
+// so each publishes 0 before anything has happened to it. See the label-set
+// declarations above for why absence must not be the resting state.
+func publishZeroChildren(c *counters) {
+	for _, reason := range dropReasons {
+		c.dropped.WithLabelValues(reason)
+	}
+	for _, outcome := range exportOutcomes {
+		c.exports.WithLabelValues(outcome)
+	}
 }
 
 // PrometheusExporter exports metrics to Prometheus via remote write
@@ -530,7 +584,7 @@ func (e *PrometheusExporter) recordSuccess(sampleCount int) {
 	wasStalled := e.stalled.Swap(false)
 	exportStalled.Set(0)
 
-	e.counts.exports.WithLabelValues("success").Inc()
+	e.counts.exports.WithLabelValues(exportSuccess).Inc()
 
 	if failures > 0 || wasStalled {
 		log.Printf("[metrics] flush recovered: successfully flushed %d samples to %s after %d consecutive failure(s)",
@@ -548,7 +602,7 @@ func (e *PrometheusExporter) recordSuccess(sampleCount int) {
 func (e *PrometheusExporter) recordFailure(sampleCount int, cause error) error {
 	failures := e.consecutiveFailures.Add(1)
 	exportConsecutiveFailures.Set(float64(failures))
-	e.counts.exports.WithLabelValues("error").Inc()
+	e.counts.exports.WithLabelValues(exportError).Inc()
 
 	log.Printf("[metrics] ERROR: flush failed (%d consecutive failure(s), %d samples buffered for retry): %v",
 		failures, sampleCount, cause)

@@ -241,7 +241,7 @@ func (e *PrometheusExporter) boundQueueLocked() {
 		}
 		e.queued -= len(batch.samples)
 		dropped += len(batch.samples)
-		batch.finish(e.discardLocked(len(batch.samples), "depth", i+1))
+		batch.finish(e.discardLocked(len(batch.samples), dropDepth, i+1))
 	}
 	e.queue = kept
 	if dropped > 0 {
@@ -282,7 +282,7 @@ func (e *PrometheusExporter) expireLocked() int {
 		}
 		aged := len(batch.samples) - len(fresh)
 		batch.samples = fresh
-		owed := e.discardLocked(aged, "aged", i+1)
+		owed := e.discardLocked(aged, dropAged, i+1)
 
 		if len(batch.samples) == 0 {
 			// The batch is gone, not flushed. Its own waiter hears that.
@@ -368,7 +368,7 @@ func (e *PrometheusExporter) discardLocked(samples int, reason string, behind in
 		return nil
 	}
 
-	e.counts.exports.WithLabelValues("dropped").Add(float64(samples))
+	e.counts.exports.WithLabelValues(exportDropped).Add(float64(samples))
 	e.counts.dropped.WithLabelValues(reason).Add(float64(samples))
 
 	if e.closed.Load() {
@@ -573,7 +573,7 @@ func (e *PrometheusExporter) sender() {
 func (e *PrometheusExporter) giveUp() {
 	e.queueMu.Lock()
 	left := e.queued
-	if owed := e.discardLocked(left, "shutdown", 0); owed != nil {
+	if owed := e.discardLocked(left, dropShutdown, 0); owed != nil {
 		e.queued = 0
 		for _, batch := range e.queue {
 			batch.finish(owed)
@@ -644,7 +644,7 @@ func (e *PrometheusExporter) drainUntil(deadline time.Time) {
 		sendable, refused := e.partition(batch.samples)
 		if len(refused) > 0 {
 			e.queueMu.Lock()
-			_ = e.discardLocked(len(refused), "superseded", 0)
+			_ = e.discardLocked(len(refused), dropSuperseded, 0)
 			e.queueMu.Unlock()
 		}
 		if len(sendable) == 0 {
@@ -679,7 +679,7 @@ func (e *PrometheusExporter) drainUntil(deadline time.Time) {
 			e.inFlight = 0
 			// The waiter hears the endpoint's own words rather than a generic
 			// DroppedError -- "400: out of order sample" says why.
-			_ = e.discardLocked(len(batch.samples), "rejected", 0)
+			_ = e.discardLocked(len(batch.samples), dropRejected, 0)
 			e.queueMu.Unlock()
 
 			log.Printf("[metrics] ERROR: discarding %d sample(s) %s refused for a reason that cannot be retried: %v",
