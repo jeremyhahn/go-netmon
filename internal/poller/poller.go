@@ -40,6 +40,22 @@ type Poller struct {
 	indexedRevision atomic.Uint64
 	refreshMu       sync.Mutex
 
+	// retiring holds one channel per device name currently being removed,
+	// closed when that removal has finished with the name.
+	//
+	// RemoveDevice cannot hold p.mu for its whole length -- closing an SNMP
+	// client waits for the request it has in flight, and the control plane must
+	// not stall behind a dead device. So the name leaves the worker map before
+	// its pool entry is retired, and without this a replacement registered in
+	// that window takes a client which the outgoing removal then closes. The
+	// replacement keeps the closed pointer, ensureClient will not reacquire it
+	// because the field is non-nil, and the device polls a dead connection for
+	// good.
+	//
+	// A per-NAME gate rather than a lock, so removing one device still cannot
+	// delay registering another.
+	retiring map[string]chan struct{}
+
 	// baseCtx is the lifetime workers run under. It is deliberately not the
 	// context of whichever API request added a device: a worker outlives the
 	// call that created it, and inheriting a request context would stop it the
@@ -78,6 +94,12 @@ type worker struct {
 	removed    chan struct{}
 	removeOnce sync.Once
 
+	// commitMu is held across the whole of a poll's commit -- reachability,
+	// export and report -- and by RemoveDevice on its way out. It is what makes
+	// "is this device still mine?" part of the commit instead of a question
+	// asked just before it. See commit.
+	commitMu sync.Mutex
+
 	// health decides how long to wait before the next poll and carries whether
 	// the device is answering at all. See reachability.
 	health *reachability
@@ -86,6 +108,77 @@ type worker struct {
 // stop ends this worker's polling loop. It is safe to call more than once.
 func (w *worker) stop() {
 	w.removeOnce.Do(func() { close(w.removed) })
+}
+
+// commit publishes one poll's outcome, unless the device has been removed.
+//
+// The check and the publishing are ONE step. Asking retired() and then
+// publishing left a window: RemoveDevice could close removed in between, and
+// the retired worker would go on to write reachability over its replacement's
+// and hand the exporter samples stamped BEFORE the replacement's -- which is
+// the out-of-order remote write this whole branch exists to stop.
+//
+// Holding a lock across the commit is affordable because the commit no longer
+// touches the network. Export buffers the samples and hands whole batches to a
+// sender goroutine, so the slowest thing here is a queue walk -- which is what
+// lets RemoveDevice wait for a commit in progress without reintroducing the
+// control-plane stall TestRemoveDeviceDoesNotWaitForAnInFlightPoll forbids.
+// Before the sender existed this fix was not available: the export could block
+// on a remote-write request.
+func (w *worker) commit(ctx context.Context, result *PollResult, health cycle) bool {
+	w.commitMu.Lock()
+	defer w.commitMu.Unlock()
+
+	if w.retired() {
+		log.Printf("Discarding the poll of %s that finished after the device was removed: %d results",
+			w.device.Name, len(result.Results))
+		return false
+	}
+
+	// The device either took part in this cycle or it did not, and that -- not
+	// whether every object came back -- is what decides its schedule.
+	if health.unreachable() {
+		w.health.silent()
+	} else {
+		w.health.answered()
+	}
+
+	if w.exporter != nil && len(result.Results) > 0 {
+		if exportErr := w.exporter.ExportSNMPResults(ctx, w.device.Name, result.Results, w.device.Tags); exportErr != nil {
+			log.Printf("Failed to export metrics for device %s: %v", w.device.Name, exportErr)
+		}
+	}
+
+	w.report(ctx, result)
+	return true
+}
+
+// awaitCommit returns once no commit is in progress.
+//
+// A barrier rather than a critical section: what matters is that a commit which
+// started BEFORE removal has finished, and that any commit starting after it
+// finds the device gone. Holding the lock beyond that would serve nothing --
+// the worker is already stopped.
+func (w *worker) awaitCommit() {
+	w.commitMu.Lock()
+	w.commitMu.Unlock() //nolint:gocritic,staticcheck // a barrier: the wait IS the point
+}
+
+// retired reports whether this worker's device has been removed.
+//
+// Removal does not interrupt the poll already running -- deliberately, because
+// closing an SNMP client waits for the request it has in flight, and the
+// control plane must not stall behind a device that has stopped answering
+// (TestRemoveDeviceDoesNotWaitForAnInFlightPoll). So a poll can finish after
+// its device is gone, and a device UPDATE is a remove followed by an add: the
+// replacement worker is already polling by then.
+func (w *worker) retired() bool {
+	select {
+	case <-w.removed:
+		return true
+	default:
+		return false
+	}
 }
 
 // PollResult represents the result of a polling operation
@@ -180,6 +273,19 @@ func (p *Poller) Stop() error {
 
 	// Wait for all workers to finish
 	p.wg.Wait()
+
+	// Then drop what they published. Workers no longer forget their own device
+	// on the way out -- the name is not theirs to delete, since a replacement
+	// may already be publishing under it -- so stopping the poller has to do
+	// it, or every device it was watching keeps a reachability series that
+	// nothing will ever update again.
+	//
+	// After wg.Wait, which means no worker is left to republish.
+	p.mu.Lock()
+	for _, w := range p.workers {
+		w.health.forget()
+	}
+	p.mu.Unlock()
 
 	// Close all SNMP connections
 	if err := p.pool.CloseAll(); err != nil {
@@ -297,11 +403,20 @@ func (p *Poller) startWorker(device *config.Device) error {
 func (w *worker) run(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	// The worker is the only writer of its device's published reachability, so
-	// it is also what drops it. Doing that from RemoveDevice instead would race
-	// with the poll already in flight, which would republish the device after
-	// it had been deleted and leave a decommissioned box on a dashboard.
-	defer w.health.forget()
+	// A worker does NOT drop its device's published reachability on the way
+	// out, because the name is not its own: a device update is a remove
+	// followed by an add, so by the time an exiting worker reached a deferred
+	// forget, the replacement had usually already published. Deleting then
+	// takes the REPLACEMENT's series away, and a missing series is worse than
+	// a stale one -- an alert with nothing to evaluate does not fire. Every
+	// poll republishes, but the next poll can be a whole backoff interval
+	// away, and that gap is silent.
+	//
+	// RemoveDevice does the forgetting, once nothing more can be published for
+	// the device. That was not available before: the comment here used to say
+	// so, because a poll in flight could republish after the delete. It cannot
+	// any more -- a retired poll commits nothing, under the lock RemoveDevice
+	// takes on its way out.
 
 	timer := time.NewTimer(w.interval)
 	defer timer.Stop()
@@ -386,16 +501,28 @@ func (w *worker) poll(ctx context.Context) {
 	// Lazy-initialize client on first poll
 	if err := w.ensureClient(); err != nil {
 		log.Printf("Failed to initialize client for device %s: %v", w.device.Name, err)
+		// Through commit, like every other outcome.
+		//
+		// This path used to publish directly, so a removal landing while client
+		// initialization was failing passed awaitCommit, returned, and then the
+		// retired worker published an unreachable gauge and a result anyway --
+		// and its deferred forget could delete a same-name replacement's
+		// series. The original defect, alive through the one path the new
+		// invariant did not cover.
+		//
+		// A partial invariant is worse than none: the comments and tests here
+		// now say every poll outcome is atomic with removal, so the next reader
+		// stops looking. Failure is an outcome.
+		//
 		// A device whose client will not even be built collected nothing, so it
 		// backs off exactly like one that answered nothing: the address is
 		// wrong or the socket cannot be had, and neither is fixed by trying
 		// again in a minute.
-		w.health.silent()
-		w.report(ctx, &PollResult{
+		w.commit(ctx, &PollResult{
 			DeviceName: w.device.Name,
 			Timestamp:  timestamp,
 			Error:      &ClientError{Device: w.device.Name, Err: err},
-		})
+		}, cycle{silent: 1})
 		return
 	}
 
@@ -543,8 +670,6 @@ func (w *worker) poll(ctx context.Context) {
 		}
 	}
 
-	// The device either took part in this cycle or it did not, and that -- not
-	// whether every object came back -- is what decides its schedule.
 	if health.unreachable() {
 		skipped := planned - attempted
 		pollErr = &UnreachableError{
@@ -555,25 +680,15 @@ func (w *worker) poll(ctx context.Context) {
 		}
 		log.Printf("Device %s answered none of its %d SNMP operations; %d more skipped this cycle",
 			w.device.Name, health.silent, skipped)
-		w.health.silent()
-	} else {
-		w.health.answered()
 	}
 
-	// Export metrics if exporter is available
-	if w.exporter != nil && len(allResults) > 0 {
-		// Export with device tags
-		if exportErr := w.exporter.ExportSNMPResults(ctx, w.device.Name, allResults, w.device.Tags); exportErr != nil {
-			log.Printf("Failed to export metrics for device %s: %v", w.device.Name, exportErr)
-		}
-	}
-
-	w.report(ctx, &PollResult{
+	// Everything this poll produced is published, or none of it is. See commit.
+	w.commit(ctx, &PollResult{
 		DeviceName: w.device.Name,
 		Timestamp:  timestamp,
 		Results:    allResults,
 		Error:      pollErr,
-	})
+	}, health)
 }
 
 // abandon reports whether the rest of this poll should be skipped because the
@@ -709,12 +824,44 @@ func (p *Poller) AddDevice(ctx context.Context, device *config.Device) error {
 	// slow enough to be felt: see hydrateModules.
 	p.hydrateModules(ctx, device)
 
+	// A device of this name may still be retiring, in which case its client is
+	// about to be closed. Taking the name now would hand this worker a
+	// connection the removal is about to shut, and ensureClient never
+	// reacquires once its field is set -- so the device would poll a dead
+	// socket permanently.
+	//
+	// The wait and the registration happen under ONE hold of p.mu, and the
+	// re-check is at the TOP of the loop rather than before it. Checking the
+	// name free and then taking the lock to install is a check across a lock
+	// release: RemoveDevice can claim the name in the gap, and this call then
+	// finds no worker -- because the removal has already deleted it -- and
+	// starts a replacement onto the pool entry that removal is on its way to
+	// close. The gate would report a name it had genuinely observed free, and
+	// the worker would poll a dead socket for good.
+	//
+	// Waiting is still per-name: the lock is released while blocked, so another
+	// device's removal is not delayed by this one.
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	for {
+		if p.stopped {
+			p.mu.Unlock()
+			return fmt.Errorf("poller is stopped")
+		}
 
-	if p.stopped {
-		return fmt.Errorf("poller is stopped")
+		retired, retiring := p.retiring[device.Name]
+		if !retiring {
+			break
+		}
+
+		p.mu.Unlock()
+		select {
+		case <-retired:
+		case <-ctx.Done():
+			return fmt.Errorf("add device %s: %w", device.Name, ctx.Err())
+		}
+		p.mu.Lock()
 	}
+	defer p.mu.Unlock()
 
 	if _, exists := p.workers[device.Name]; exists {
 		return fmt.Errorf("device %s already exists", device.Name)
@@ -739,11 +886,38 @@ func (p *Poller) RemoveDevice(deviceName string) error {
 		return fmt.Errorf("device %s not found", deviceName)
 	}
 	delete(p.workers, deviceName)
+
+	// The name is now absent from the worker map but its pool entry is still
+	// live. Claim it until that is no longer true.
+	retired := make(chan struct{})
+	if p.retiring == nil {
+		p.retiring = make(map[string]chan struct{})
+	}
+	p.retiring[deviceName] = retired
 	p.mu.Unlock()
+
+	defer func() {
+		p.mu.Lock()
+		delete(p.retiring, deviceName)
+		p.mu.Unlock()
+		close(retired)
+	}()
 
 	// Stop the polling loop. Without this the goroutine outlives its entry in
 	// the map and keeps polling a device nobody asked for any more.
 	w.stop()
+
+	// Then wait out any commit already in progress, so this returns only once
+	// nothing more can be published for the device. The poll itself is NOT
+	// waited for -- the control plane must not stall behind a device that has
+	// stopped answering -- but a commit holds no sockets and does no network
+	// work, so waiting for one is bounded.
+	//
+	w.awaitCommit()
+
+	// Now that nothing more can be published for this device, its series goes.
+	// Done here rather than by the worker, which does not own the name.
+	w.health.forget()
 
 	if err := p.pool.Remove(w.device.Name); err != nil {
 		return fmt.Errorf("failed to remove device from pool: %w", err)

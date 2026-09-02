@@ -82,3 +82,20 @@ Re-reads `/etc/go-netmon/config.yaml` and applies the `alarms:` section. Nothing
 else in the file is re-applied — everything else is bound at startup — and a
 file that will not parse or will not validate leaves the running rules exactly
 as they were, with the reason in the journal. See `docs/operations/alarms.md`.
+
+## Checking that samples are actually arriving
+
+```
+curl -s localhost:9100/metrics | grep gonetmon_export
+```
+
+`gonetmon_export_dropped_samples_total{reason=...}` is the one to read first:
+non-zero means samples were collected from a device and never delivered, and the
+reason says which fault it is — a clock step, an endpoint that cannot keep up,
+one the poller is producing out of order, or a shutdown that gave up. A count
+against `superseded` after a device edit is expected and costs one sample; the
+same count against `aged` across the whole fleet at once usually means the
+poller's clock moved.
+
+`docs/operations/export-health.md` has the table, including what a device edit
+should and should not move.

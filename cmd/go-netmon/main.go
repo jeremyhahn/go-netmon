@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -58,6 +59,24 @@ func init() {
 	// Register internal metrics
 	prometheus.MustRegister(pollCounter)
 	prometheus.MustRegister(pollDuration)
+}
+
+// logExportLoss reports an exporter error, saying plainly when it means data
+// was thrown away.
+//
+// Flush and Close return a typed DroppedError carrying how many samples never
+// reached Prometheus. Logging that as "Error closing exporter" is true and
+// useless: it reads like a tidy-up that went wrong rather than telemetry that
+// is gone, and shutdown is the one moment nobody re-reads the logs for. A typed
+// error nobody acts on is the same silence it was added to remove.
+func logExportLoss(during string, err error) {
+	var dropped *metrics.DroppedError
+	if errors.As(err, &dropped) {
+		log.Printf("DATA LOSS: %d sample(s) never reached Prometheus while %s: %v",
+			dropped.Samples, during, err)
+		return
+	}
+	log.Printf("Error %s: %v", during, err)
 }
 
 func main() {
@@ -183,11 +202,11 @@ func run(ctx context.Context, cfg *config.Config, webuiURL string) error {
 		defer flushCancel()
 
 		if err := exporter.Flush(flushCtx); err != nil {
-			log.Printf("Warning: failed to flush exporter: %v", err)
+			logExportLoss("flushing before shutdown", err)
 		}
 
 		if err := exporter.Close(); err != nil {
-			log.Printf("Error closing exporter: %v", err)
+			logExportLoss("closing the exporter", err)
 		}
 	}()
 

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -395,15 +396,21 @@ func TestPrometheusExporter_ErrorHandling(t *testing.T) {
 		},
 	}
 
-	// This should fail because batch size is reached and flush returns error
-	err = exporter.Export(ctx, samples)
-	if err == nil {
+	// Export hands the batch to the sender and returns; the write happens
+	// there, so the write's error surfaces at Flush, which waits for the queue
+	// to be attempted. What matters is unchanged: the caller gets the typed
+	// error carrying the status the endpoint actually returned.
+	if err := exporter.Export(ctx, samples); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	flushErr := exporter.Flush(ctx)
+	if flushErr == nil {
 		t.Error("Expected error when server returns 500")
 	}
 
 	var remoteWriteErr *RemoteWriteError
-	if !errors.As(err, &remoteWriteErr) {
-		t.Fatalf("Expected a typed *RemoteWriteError, got %T: %v", err, err)
+	if !errors.As(flushErr, &remoteWriteErr) {
+		t.Fatalf("Expected a typed *RemoteWriteError, got %T: %v", flushErr, flushErr)
 	}
 	if remoteWriteErr.StatusCode != http.StatusInternalServerError {
 		t.Errorf("Expected status 500 in typed error, got %d", remoteWriteErr.StatusCode)
@@ -440,6 +447,7 @@ func TestPrometheusExporter_RecoversAfterEndpointOutage(t *testing.T) {
 	defer exporter.Close()
 
 	ctx := context.Background()
+	own := privateCounters(exporter)
 
 	// Reaching batch size triggers an immediate flush attempt, which fails
 	// against the outage server.
@@ -447,17 +455,29 @@ func TestPrometheusExporter_RecoversAfterEndpointOutage(t *testing.T) {
 		{Name: "test_metric", Labels: map[string]string{"device": "r1"}, Value: 1, Timestamp: time.Now()},
 		{Name: "test_metric", Labels: map[string]string{"device": "r1"}, Value: 2, Timestamp: time.Now()},
 	}
-	if err := exporter.Export(ctx, samples); err == nil {
-		t.Fatal("Expected export to fail while the endpoint is down")
+	// Export hands the batch to the sender and returns; it does not write, so
+	// it cannot report a write failure. The failure is visible where it now
+	// happens -- the error counter, and the loud log -- and that is what the
+	// wait below is for.
+	if err := exporter.Export(ctx, samples); err != nil {
+		t.Fatalf("Export: %v", err)
 	}
 
 	// Let the background flusher retry a few times against the still-failing
 	// endpoint.
-	deadline := time.Now().Add(2 * time.Second)
-	for testutil.ToFloat64(exportsTotal.WithLabelValues("error")) < 2 && time.Now().Before(deadline) {
+	// Waited for by the LOG, not only by the counter. recordFailure increments
+	// the counter before it writes the line, and the failure now happens on the
+	// sender goroutine, so a wait on the counter alone can arrive between the
+	// two and read an empty buffer.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if testutil.ToFloat64(own.exports.WithLabelValues("error")) >= 2 &&
+			strings.Contains(buf.String(), "ERROR") {
+			break
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := testutil.ToFloat64(exportsTotal.WithLabelValues("error")); got < 2 {
+	if got := testutil.ToFloat64(own.exports.WithLabelValues("error")); got < 2 {
 		t.Fatalf("Expected at least 2 recorded flush failures, got %v", got)
 	}
 	if !strings.Contains(buf.String(), "ERROR") {
@@ -527,7 +547,7 @@ func TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly(t *testing.T) {
 	defer exporter.Close()
 
 	ctx := context.Background()
-	droppedBefore := testutil.ToFloat64(exportsTotal.WithLabelValues("dropped"))
+	own := privateCounters(exporter)
 
 	cap := maxBufferSize(batchSize)
 
@@ -545,12 +565,15 @@ func TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly(t *testing.T) {
 		_ = exporter.Export(ctx, round) // expected to fail; the backlog is what's under test
 	}
 
-	if got := exporter.BufferedSamples(); got > cap {
-		t.Errorf("Expected buffered samples to be capped at %d, got %d", cap, got)
+	// The bound is on the QUEUE. One batch may have left it and be on the wire,
+	// and BufferedSamples counts that too -- it is undelivered, and reporting
+	// zero for it is how a stall reads as quiet.
+	if ceiling := cap + batchSize; exporter.BufferedSamples() > ceiling {
+		t.Errorf("Expected undelivered samples to be capped at %d (queue %d plus one "+
+			"batch in flight), got %d", ceiling, cap, exporter.BufferedSamples())
 	}
 
-	droppedAfter := testutil.ToFloat64(exportsTotal.WithLabelValues("dropped"))
-	if droppedAfter <= droppedBefore {
+	if testutil.ToFloat64(own.exports.WithLabelValues("dropped")) == 0 {
 		t.Error("Expected the dropped-samples counter to increase once the buffer cap was exceeded")
 	}
 
@@ -841,9 +864,11 @@ func TestPrometheusExporter_LargeBatchIsNotTruncated(t *testing.T) {
 		})
 	}
 
-	// exportsTotal is a package-level counter shared by every test in this
-	// package, so measure the delta rather than the absolute value.
-	droppedBefore := testutil.ToFloat64(exportsTotal.WithLabelValues("dropped"))
+	// Counters private to this exporter, so the assertion is about this
+	// exporter and not about whatever else the package is running. A delta on
+	// the shared counter was the previous workaround and is not one: another
+	// test's sender can increment inside the window.
+	own := privateCounters(exporter)
 
 	if err := exporter.Export(context.Background(), samples); err != nil {
 		t.Fatalf("Export: %v", err)
@@ -855,7 +880,7 @@ func TestPrometheusExporter_LargeBatchIsNotTruncated(t *testing.T) {
 	if got := received.Load(); got != batch {
 		t.Errorf("remote write received %d samples, want %d — a healthy pipeline must not drop data", got, batch)
 	}
-	if dropped := testutil.ToFloat64(exportsTotal.WithLabelValues("dropped")) - droppedBefore; dropped != 0 {
+	if dropped := testutil.ToFloat64(own.exports.WithLabelValues("dropped")); dropped != 0 {
 		t.Errorf("dropped %v samples with remote write healthy, want 0", dropped)
 	}
 }
@@ -875,6 +900,175 @@ func TestMaxBufferSize(t *testing.T) {
 	for _, tt := range tests {
 		if got := maxBufferSize(tt.batchSize); got != tt.want {
 			t.Errorf("maxBufferSize(%d) = %d, want %d", tt.batchSize, got, tt.want)
+		}
+	}
+}
+
+// TestOverlappingPollsOfOneDeviceEncodeInTimestampOrder is the trigger from
+// go-netmon#69, at the layer that decides whether the request is valid.
+//
+// Two polls of one device overlap whenever the device is reconfigured. Their
+// samples reach the buffer in whole-poll batches at completion, while each
+// sample was stamped as its varbind arrived -- so the poll that started first
+// and finished second appends OLDER samples after the other's. Encoding them in
+// buffer order produces a series whose samples descend, and Prometheus rejects
+// the entire request with 400 "out of order sample".
+//
+// The fixture is that exact shape: the later-appended samples are the earlier
+// ones, which is what a poll finishing late looks like from the buffer.
+func TestOverlappingPollsOfOneDeviceEncodeInTimestampOrder(t *testing.T) {
+	base := time.Date(2026, 9, 1, 20, 51, 55, 0, time.UTC)
+	series := map[string]string{"device": "pdu-03", "ifindex": "1"}
+
+	// Poll B started later and finished first; poll A finished after it.
+	samples := []*Sample{
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 300, Timestamp: base.Add(2 * time.Second)},
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 100, Timestamp: base},
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 200, Timestamp: base.Add(1 * time.Second)},
+	}
+
+	e := &PrometheusExporter{}
+	encoded := e.samplesToTimeSeries(samples)
+
+	if len(encoded) != 1 {
+		t.Fatalf("series = %d, want 1: the fixture is one series", len(encoded))
+	}
+	got := encoded[0].Samples
+	if len(got) != 3 {
+		t.Fatalf("samples = %d, want 3", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].Timestamp <= got[i-1].Timestamp {
+			t.Fatalf("sample %d (%d) does not follow sample %d (%d): remote write "+
+				"rejects the whole request on the first that does not ascend",
+				i, got[i].Timestamp, i-1, got[i-1].Timestamp)
+		}
+	}
+	if got[0].Value != 100 || got[2].Value != 300 {
+		t.Errorf("values = %v, want the readings to travel with their timestamps",
+			[]float64{got[0].Value, got[1].Value, got[2].Value})
+	}
+}
+
+// TestOnlyIdenticalReadingsForOneInstantAreCollapsed pins which of the two
+// same-timestamp cases the encoder may act on by itself.
+//
+// The same reading offered twice is lossless to collapse, and Prometheus
+// stores it once regardless. Two DIFFERENT values at one instant are a loss to
+// collapse, and the encoder cannot report a loss: it returns samples, and its
+// caller records the batch as fully sent. That pair is partition's business
+// (TestTwoConflictingReadingsInOneBatchAreNotCollapsedAwaySilently), so the
+// encoder must leave it alone -- collapsing it here would deliver one reading,
+// discard the other, and call the flush a success.
+func TestOnlyIdenticalReadingsForOneInstantAreCollapsed(t *testing.T) {
+	at := time.Date(2026, 9, 1, 20, 51, 55, 0, time.UTC)
+	series := map[string]string{"device": "pdu-03", "ifindex": "1"}
+
+	repeated := []*Sample{
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 100, Timestamp: at},
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 100, Timestamp: at},
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 200, Timestamp: at.Add(time.Second)},
+	}
+
+	e := &PrometheusExporter{}
+	got := e.samplesToTimeSeries(repeated)[0].Samples
+	if len(got) != 2 {
+		t.Fatalf("samples = %d, want 2: the same reading offered twice is stored once", len(got))
+	}
+	if got[0].Timestamp == got[1].Timestamp {
+		t.Error("two samples still share a timestamp")
+	}
+
+	conflicting := []*Sample{
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 100, Timestamp: at},
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 150, Timestamp: at},
+		{Name: "snmp_ifHCInOctets", Labels: series, Value: 200, Timestamp: at.Add(time.Second)},
+	}
+
+	got = e.samplesToTimeSeries(conflicting)[0].Samples
+	if len(got) != 3 {
+		t.Fatalf("samples = %d, want 3: the encoder must not choose between two "+
+			"readings for one instant, because it has no way to say it discarded one", len(got))
+	}
+	kept := []float64{got[0].Value, got[1].Value, got[2].Value}
+	for _, want := range []float64{100, 150, 200} {
+		if !slices.Contains(kept, want) {
+			t.Errorf("encoded %v, want %v among them", kept, want)
+		}
+	}
+}
+
+// TestSeriesAreOrderedIndependently guards the obvious way to get this wrong:
+// ordering the buffer as a whole rather than each series, which would still
+// leave a series interleaved with its neighbours' timestamps.
+func TestSeriesAreOrderedIndependently(t *testing.T) {
+	base := time.Date(2026, 9, 1, 20, 51, 55, 0, time.UTC)
+	one := map[string]string{"device": "pdu-03", "ifindex": "1"}
+	two := map[string]string{"device": "pdu-03", "ifindex": "2"}
+
+	samples := []*Sample{
+		{Name: "snmp_ifHCInOctets", Labels: one, Value: 1, Timestamp: base.Add(3 * time.Second)},
+		{Name: "snmp_ifHCInOctets", Labels: two, Value: 2, Timestamp: base.Add(1 * time.Second)},
+		{Name: "snmp_ifHCInOctets", Labels: one, Value: 3, Timestamp: base},
+		{Name: "snmp_ifHCInOctets", Labels: two, Value: 4, Timestamp: base.Add(2 * time.Second)},
+	}
+
+	e := &PrometheusExporter{}
+	encoded := e.samplesToTimeSeries(samples)
+
+	if len(encoded) != 2 {
+		t.Fatalf("series = %d, want 2", len(encoded))
+	}
+	for _, ts := range encoded {
+		if len(ts.Samples) != 2 {
+			t.Fatalf("series has %d samples, want 2", len(ts.Samples))
+		}
+		if ts.Samples[1].Timestamp <= ts.Samples[0].Timestamp {
+			t.Errorf("series %v is not in ascending order", ts.Labels)
+		}
+	}
+}
+
+// TestTwoSeriesCannotShareAKeyThroughTheirLabelText guards the grouping key.
+//
+// Label values come from the device -- an ifAlias or entPhysicalName is
+// whatever someone typed into it -- so a comma or an equals sign inside one
+// made a delimited key ambiguous, and two different series produced the same
+// string. Merging them interleaves their readings into one series, which is a
+// descending pair and a rejected request (#69).
+//
+// The two fixtures below flatten to the identical string under `name,k=v`
+// joining -- verified by mutation, because the first pair written here did not:
+//
+//	{a: "1,b=2"}          -> "snmp_ifHCInOctets" + ",a=1,b=2"
+//	{a: "1", b: "2"}      -> "snmp_ifHCInOctets" + ",a=1" + ",b=2"
+func TestTwoSeriesCannotShareAKeyThroughTheirLabelText(t *testing.T) {
+	at := time.Date(2026, 9, 1, 20, 51, 55, 0, time.UTC)
+	samples := []*Sample{
+		{
+			Name:      "snmp_ifHCInOctets",
+			Labels:    map[string]string{"a": "1,b=2"},
+			Value:     100,
+			Timestamp: at.Add(time.Second),
+		},
+		{
+			Name:      "snmp_ifHCInOctets",
+			Labels:    map[string]string{"a": "1", "b": "2"},
+			Value:     200,
+			Timestamp: at,
+		},
+	}
+
+	e := &PrometheusExporter{}
+	encoded := e.samplesToTimeSeries(samples)
+
+	if len(encoded) != 2 {
+		t.Fatalf("series = %d, want 2: two label sets were merged into one, so "+
+			"one series now carries both readings", len(encoded))
+	}
+	for _, ts := range encoded {
+		if len(ts.Samples) != 1 {
+			t.Errorf("series %v holds %d samples, want its own 1", ts.Labels, len(ts.Samples))
 		}
 	}
 }

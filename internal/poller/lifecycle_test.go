@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -362,3 +363,279 @@ func (b *safeBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// TestAPollThatOutlivedItsDeviceReportsNothing is the trigger from
+// go-netmon#69, at the layer that decides whether those samples exist at all.
+//
+// RemoveDevice deliberately does not wait for the poll in flight -- the control
+// plane must not stall behind a device that has stopped answering, which
+// TestRemoveDeviceDoesNotWaitForAnInFlightPoll states. So a poll finishes after
+// its device is gone, and because a device UPDATE is a remove followed by an
+// add, the replacement worker is already polling by then. That late poll's
+// varbinds were stamped BEFORE the replacement's and reach the exporter after,
+// which leaves one series holding two readings in the wrong order and costs the
+// whole remote-write request.
+//
+// A poll that outlived its device must therefore produce nothing at all: no
+// export, and no result either. The result channel is what this asserts on,
+// because it is reachable with a device that answers nothing -- and a device
+// that answers nothing is the one whose poll is certainly still running when it
+// is removed. The export sits behind the same guard, one line above.
+func TestAPollThatOutlivedItsDeviceReportsNothing(t *testing.T) {
+	t.Parallel()
+
+	p := NewWithExporter(lifecycleConfig(), nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := p.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+
+	if err := p.AddDevice(ctx, silentDevice("bastion", silentAgent(t))); err != nil {
+		t.Fatalf("AddDevice: %v", err)
+	}
+
+	// Into the first, never-answered request.
+	time.Sleep(200 * time.Millisecond)
+
+	if err := p.RemoveDevice("bastion"); err != nil {
+		t.Fatalf("RemoveDevice: %v", err)
+	}
+
+	// Long enough for that poll to exhaust its budget and reach its report.
+	budget := time.Duration(lifecycleConfig().Global.SNMPTimeout) * time.Second
+	deadline := time.After(budget * 3)
+	for {
+		select {
+		case result := <-p.Results():
+			if result != nil && result.DeviceName == "bastion" {
+				t.Fatalf("the poll of bastion reported after the device was removed "+
+					"(error: %v); its samples were stamped before the replacement "+
+					"worker's and arrive after them", result.Error)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// TestAddDeviceWaitsForTheSameNameToFinishRetiring is the pool race, forced
+// rather than raced for.
+//
+// RemoveDevice cannot hold the poller lock for its whole length: closing an
+// SNMP client waits for the request it has in flight, and the control plane
+// must not stall behind a dead device. So the name leaves the worker map before
+// the pool entry is retired. A replacement registered inside that window takes
+// a client the outgoing removal then closes -- and because ensureClient does
+// nothing once its field is non-nil, the replacement polls a dead connection
+// for good. A device that silently stops reporting and never recovers.
+//
+// The commit barrier this branch added widens that window, which is why it is
+// fixed here rather than deferred: a pre-existing race that a change makes
+// materially more likely is that change's problem.
+//
+// The ordering is built, not timed. The removal is parked at the commit barrier
+// by holding the worker's commit lock, so the window is held open for as long
+// as the test wants rather than for however long a machine takes.
+func TestAddDeviceWaitsForTheSameNameToFinishRetiring(t *testing.T) {
+	p := NewWithExporter(lifecycleConfig(), nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := p.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+
+	const device = "pool-race-fixture"
+	address := silentAgent(t)
+	if err := p.AddDevice(ctx, silentDevice(device, address)); err != nil {
+		t.Fatalf("AddDevice: %v", err)
+	}
+
+	p.mu.RLock()
+	w := p.workers[device]
+	p.mu.RUnlock()
+	if w == nil {
+		t.Fatal("no worker was registered for the fixture device")
+	}
+
+	// Park the removal at its commit barrier, holding the window open.
+	w.commitMu.Lock()
+
+	removed := make(chan error, 1)
+	go func() { removed <- p.RemoveDevice(device) }()
+
+	// Give the removal time to reach the barrier and leave the worker map.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		p.mu.RLock()
+		_, stillListed := p.workers[device]
+		p.mu.RUnlock()
+		if !stillListed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The name is now free in the worker map but its pool entry is not yet
+	// retired. A replacement must not take it.
+	added := make(chan error, 1)
+	go func() { added <- p.AddDevice(ctx, silentDevice(device, address)) }()
+
+	select {
+	case err := <-added:
+		w.commitMu.Unlock()
+		<-removed
+		t.Fatalf("AddDevice returned (%v) while the same name was still retiring: "+
+			"the replacement takes a client the removal is about to close, and "+
+			"ensureClient never reacquires once its field is set", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Let the removal finish; the registration may then proceed.
+	w.commitMu.Unlock()
+
+	if err := <-removed; err != nil {
+		t.Errorf("RemoveDevice: %v", err)
+	}
+	select {
+	case err := <-added:
+		if err != nil {
+			t.Errorf("AddDevice after the retirement finished: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("AddDevice never completed after the removal released the name")
+	}
+}
+
+// TestAddDeviceNeverInstallsAWorkerOntoAClaimedName is the interleaving the
+// retirement gate exists to make impossible, and the one the first version of
+// it still allowed.
+//
+// That version read retiring[name], released the poller lock, and took it again
+// to install. Between the two holds RemoveDevice could take the name: delete
+// the worker, claim the retirement, and drop the lock on its way to closing the
+// client. The registration then acquired the lock, found no worker -- because
+// the removal had just deleted it -- and started a replacement onto a pool
+// entry that was about to be closed. The gate reported a name it had genuinely
+// observed free, which is what made it convincing.
+//
+// There is no seam to park a goroutine in that window -- in the broken version
+// it is one statement wide -- so the interleaving is raced for rather than
+// forced. What is NOT raced is the observation: the removal is parked at its
+// commit barrier, so a name it has claimed stays claimed until this test
+// releases it, and a worker listed under a claimed name stays listed. Both
+// halves of the violating state persist, so seeing it is not a sampling
+// artifact; only reaching it is probabilistic.
+//
+// The counts below are measured, not guessed. One registration against one
+// removal never hit the window at all: 0 detections in 2,000 iterations, a test
+// that could not fail. Sixteen registrations against one removal hit it about
+// once in 45 iterations, so 600 iterations detect it with near-certainty --
+// 10 of 10 mutated runs, worst detection at iteration 149. Against the fixed
+// gate, 0 in 4,800.
+func TestAddDeviceNeverInstallsAWorkerOntoAClaimedName(t *testing.T) {
+	t.Parallel()
+
+	p := NewWithExporter(lifecycleConfig(), nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := p.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+
+	const device = "claimed-name"
+	address := silentAgent(t)
+
+	for i := 0; i < addRemoveRaces; i++ {
+		if err := p.AddDevice(ctx, silentDevice(device, address)); err != nil {
+			t.Fatalf("iteration %d: seeding AddDevice: %v", i, err)
+		}
+
+		p.mu.RLock()
+		w := p.workers[device]
+		p.mu.RUnlock()
+		if w == nil {
+			t.Fatalf("iteration %d: no worker was registered", i)
+		}
+
+		// Park the removal at its commit barrier before either call starts.
+		w.commitMu.Lock()
+
+		removed := make(chan error, 1)
+		added := make(chan error, concurrentAdders)
+		var start sync.WaitGroup
+		start.Add(1)
+		for a := 0; a < concurrentAdders; a++ {
+			go func() {
+				start.Wait()
+				added <- p.AddDevice(ctx, silentDevice(device, address))
+			}()
+		}
+		go func() { removed <- p.RemoveDevice(device) }()
+		start.Done()
+
+		// RemoveDevice deletes the worker and claims the name under one hold of
+		// p.mu, so the two are never both true unless a registration put the
+		// worker back while the claim was up.
+		violated := false
+		deadline := time.Now().Add(raceObservationWindow)
+		for time.Now().Before(deadline) {
+			p.mu.RLock()
+			_, claimed := p.retiring[device]
+			_, listed := p.workers[device]
+			p.mu.RUnlock()
+			if claimed && listed {
+				violated = true
+				break
+			}
+			runtime.Gosched()
+		}
+
+		w.commitMu.Unlock()
+		if err := <-removed; err != nil {
+			t.Fatalf("iteration %d: RemoveDevice: %v", i, err)
+		}
+		installed := 0
+		for a := 0; a < concurrentAdders; a++ {
+			if err := <-added; err == nil {
+				installed++
+			}
+		}
+
+		if violated {
+			t.Fatalf("iteration %d: a worker was registered for %s while an "+
+				"unfinished removal still held the name: it takes the client "+
+				"that removal is about to close, and ensureClient never "+
+				"reacquires once its field is set", i, device)
+		}
+
+		// At most one registration installs a worker. None does if every adder
+		// reached the lock before the removal and was refused by the seeded
+		// worker; one does if any of them waited the removal out. Two would
+		// mean the name stopped being exclusive.
+		if installed > 1 {
+			t.Fatalf("iteration %d: %d of %d registrations installed a worker "+
+				"for one name", i, installed, concurrentAdders)
+		}
+		if installed == 1 {
+			if err := p.RemoveDevice(device); err != nil {
+				t.Fatalf("iteration %d: cleanup RemoveDevice: %v", i, err)
+			}
+		}
+	}
+}
+
+// addRemoveRaces and raceObservationWindow size the race above: how many times
+// the pair is run, and how long each run is watched before the parked removal
+// is released. The window only has to outlast one contested lock handoff.
+const (
+	addRemoveRaces        = 600
+	concurrentAdders      = 16
+	raceObservationWindow = 2 * time.Millisecond
+)

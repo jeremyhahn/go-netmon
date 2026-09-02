@@ -80,6 +80,29 @@ func (e *SendError) Unwrap() error {
 	return e.Cause
 }
 
+// ClosedError reports an exporter asked to accept samples after it has been
+// closed. Its sender has stopped, so anything accepted now would sit in a queue
+// nothing can drain -- silently, which is the one thing this package must never
+// do with data it has said yes to.
+type ClosedError struct {
+	Samples int
+}
+
+func (e *ClosedError) Error() string {
+	return fmt.Sprintf("metrics: exporter is closed; refused %d sample(s) rather than queue them where nothing can send them", e.Samples)
+}
+
+// DroppedError reports samples discarded before they were ever written,
+// because the queue holding them had to be bounded. It is what a caller
+// waiting on a batch is told when its batch never reached the endpoint.
+type DroppedError struct {
+	Samples int
+}
+
+func (e *DroppedError) Error() string {
+	return fmt.Sprintf("metrics: dropped %d sample(s) awaiting write to bound queue memory", e.Samples)
+}
+
 // RemoteWriteError reports a Prometheus remote-write endpoint that
 // responded with a non-2xx status.
 type RemoteWriteError struct {

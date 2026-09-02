@@ -162,17 +162,24 @@ func newReachability(device string, interval time.Duration) *reachability {
 // immediately: one reply is enough to prove the device is back, and making it
 // serve a whole penalty interval first would leave a recovered device dark for
 // up to maxBackoff.
+// The gauge is published on every answered cycle rather than only on the
+// transition out of silence. Publishing only on the transition made the series
+// impossible to restore once something else had deleted it: a healthy device
+// sits at consecutive == 0 forever, so the transition never comes round again.
+// Something else does delete it -- a worker being replaced forgets the device
+// by NAME as it exits, and a device update keeps the name, so the replacement's
+// series can be removed out from under it. Setting a gauge is cheap; being
+// absent until the device next breaks and recovers is not.
 func (r *reachability) answered() {
-	if r.consecutive.Swap(0) != 0 {
-		deviceUnreachable.WithLabelValues(r.device).Set(0)
-	}
+	r.consecutive.Store(0)
+	deviceUnreachable.WithLabelValues(r.device).Set(0)
 }
 
-// silent records a cycle the device answered no part of.
+// silent records a cycle the device answered no part of. Published on every
+// such cycle, for the same reason as answered.
 func (r *reachability) silent() {
-	if r.consecutive.Add(1) == 1 {
-		deviceUnreachable.WithLabelValues(r.device).Set(1)
-	}
+	r.consecutive.Add(1)
+	deviceUnreachable.WithLabelValues(r.device).Set(1)
 }
 
 // unreachable reports whether the device answered nothing in its last cycle.

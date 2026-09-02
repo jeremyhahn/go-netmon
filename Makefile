@@ -433,6 +433,9 @@ stack-verify: ## Compare two stack captures. BEFORE=<file> AFTER=<file>
 test-scripts: ## Run the backup/restore script tests (no Docker daemon, no live stack)
 	@./scripts/tests/run-tests.sh $(RUN)
 
+test-export-health: ## Test the export-health measurement harness (fixtures only, no appliance)
+	@./scripts/tests/export-health-tests.sh $(RUN)
+
 test-teardown: ## Test the integration cleanup trap (stub docker, no daemon)
 	@./test/integration/teardown-tests.sh $(RUN)
 

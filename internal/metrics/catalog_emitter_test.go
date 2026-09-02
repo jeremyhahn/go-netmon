@@ -740,8 +740,23 @@ func TestPublishedMetricsRecordsOnlyWhatReachedPrometheus(t *testing.T) {
 	}
 
 	// The retry lands, and only now is it published.
-	if err := exporter.Flush(ctx); err != nil {
-		t.Fatalf("Flush after the endpoint recovered: %v", err)
+	//
+	// Flushed in a loop because Export no longer writes: the first attempt
+	// happens on the sender, so a Flush issued while that attempt is in flight
+	// is told about ITS failure rather than performing the retry itself. The
+	// property under test is unchanged -- nothing is published until a write
+	// lands -- and the loop is bounded so a genuinely stuck exporter still
+	// fails the test.
+	var flushErr error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if flushErr = exporter.Flush(ctx); flushErr == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if flushErr != nil {
+		t.Fatalf("Flush after the endpoint recovered: %v", flushErr)
 	}
 	if got := published.len(); got != 1 {
 		t.Errorf("published set holds %d names after the write landed, want 1", got)

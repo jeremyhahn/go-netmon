@@ -3,11 +3,13 @@ package metrics
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,6 +68,50 @@ var (
 		},
 		[]string{"status"},
 	)
+	// droppedSamples counts samples discarded before delivery, by reason.
+	//
+	// The aggregate alone could not tell a clock problem from a backpressure
+	// problem: "too old to land" and "queue full" are different faults with
+	// different fixes, and a single number conflating them is the silent,
+	// unattributable loss this package exists to end.
+	droppedSamples = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gonetmon_export_dropped_samples_total",
+			Help: "Samples discarded before reaching remote write, by reason: aged (stamped further back than the age horizon), depth (the queue exceeded its sample bound), rejected (the endpoint refused them for a reason that cannot be retried).",
+		},
+		[]string{"reason"},
+	)
+	// repairedOrderTotal counts samples the poller handed over out of order for
+	// their series, which the encoder sorts before sending.
+	//
+	// Separate from outOfOrderTotal because they are different facts and the
+	// difference matters operationally: this one is repaired and the request is
+	// accepted, so it is a signal about the POLLER -- two overlapping polls of
+	// one device -- and not about the endpoint. Counting it as out-of-order
+	// raised an ERROR on traffic that was about to be delivered correctly.
+	repairedOrderTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gonetmon_export_repaired_order_total",
+			Help: "Samples that arrived out of order for their series and were sorted before sending. The write succeeds; above zero means something upstream is producing a series' readings out of order, usually two overlapping polls of one device.",
+		},
+	)
+	// outOfOrderTotal counts samples the endpoint would refuse: older than one
+	// already sent for their series, or claiming an instant another reading has
+	// already taken with a different value. Both are one fact operationally --
+	// a reading that cannot be delivered because another owns that point of the
+	// series -- and both are dropped as "superseded".
+	//
+	// It reports rather than prevents, and it exists because this class of
+	// fault was invisible for fifteen hours: the exporter was dropping a
+	// million samples an hour and every signal it published said "healthy but
+	// failing to flush", which is a different problem with a different fix.
+	// One counter above zero names it immediately.
+	outOfOrderTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gonetmon_export_out_of_order_total",
+			Help: "Total samples remote write would refuse: older than one already sent for the same series, or a different value at an instant that series already holds. Above zero means writes are being ordered wrongly, and the endpoint would reject the whole request that carries them.",
+		},
+	)
 	exportLastSuccessTimestamp = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "gonetmon_export_last_success_timestamp_seconds",
@@ -109,6 +155,9 @@ var (
 func init() {
 	prometheus.MustRegister(
 		exportsTotal,
+		droppedSamples,
+		outOfOrderTotal,
+		repairedOrderTotal,
 		exportLastSuccessTimestamp,
 		exportBufferedSamples,
 		exportConsecutiveFailures,
@@ -128,6 +177,52 @@ type PrometheusExporter struct {
 	buffer        []*Sample
 	bufferLock    sync.Mutex
 	maxBufferSize int
+
+	// queue holds batches waiting to be written, oldest first, and is drained
+	// by one sender goroutine. Everything about ordering depends on there
+	// being exactly one writer to the endpoint -- see sender.
+	queueMu sync.Mutex
+	queue   []*pending
+	queued  int
+	// inFlight is the size of the batch the sender is writing right now. It
+	// has left the queue and has not been delivered, so it belongs to neither
+	// count without being named.
+	inFlight int
+	wake     chan struct{}
+
+	// maxSampleAge is how far behind the present a sample's own timestamp may
+	// be before it is dropped as unlandable rather than retried forever. It is
+	// not residence time -- see boundQueueLocked.
+	maxSampleAge time.Duration
+
+	// now is time.Now, replaced in tests that need the age horizon to bite
+	// without waiting for it.
+	now func() time.Time
+
+	// shutdownAt is when the sender must stop writing, in unix nanoseconds, or
+	// zero while the exporter is running. Set by Close. It bounds the LOOP.
+	shutdownAt atomic.Int64
+
+	// shutdownDropped is how many samples the bounded drain gave up on, which
+	// is what Close has to tell its caller. A shutdown that discarded data did
+	// not succeed.
+	shutdownDropped atomic.Int64
+
+	// sendCtx is the parent of every remote-write request, and cancelSend is
+	// what Close pulls when its deadline expires. A deadline the request
+	// cannot observe bounds nothing: the loop stops between batches, while the
+	// request already in flight runs to its own timeout regardless.
+	sendCtx    context.Context
+	cancelSend context.CancelFunc
+
+	// counts are the counters this exporter increments. See counters.
+	counts *counters
+
+	// lastSent is the newest point written for each series, which is what the
+	// admission check compares against. Only the sender touches it, but Close
+	// can run beside it.
+	sentMu   sync.Mutex
+	lastSent map[string]sentPoint
 
 	// published is the set of metric names this exporter has sent, which is
 	// what the catalog describes. It carries no device dimension, so it is
@@ -186,6 +281,8 @@ func NewPrometheusExporter(remoteWriteURL string, batchSize int, flushInterval t
 		oidLearner = NewOIDLearner(mibStorage)
 	}
 
+	sendCtx, cancelSend := context.WithCancel(context.Background())
+
 	stallThreshold := flushInterval * exportStallMultiplier
 	if stallThreshold < minExportStallThreshold {
 		stallThreshold = minExportStallThreshold
@@ -205,7 +302,19 @@ func NewPrometheusExporter(remoteWriteURL string, batchSize int, flushInterval t
 		oidLearner:      oidLearner,
 		stopChan:        make(chan struct{}),
 		stallThreshold:  stallThreshold,
+		counts:          sharedCounters(),
+		sendCtx:         sendCtx,
+		cancelSend:      cancelSend,
+		wake:            make(chan struct{}, 1),
+		lastSent:        make(map[string]sentPoint),
+		maxSampleAge:    sampleAgeHorizon(flushInterval),
+		now:             time.Now,
 	}
+
+	// One sender, so the order batches reach the endpoint is the order they
+	// left the buffer. Started before the flusher, which only feeds it.
+	exporter.wg.Add(1)
+	go exporter.sender()
 
 	// Start background flusher
 	exporter.wg.Add(1)
@@ -231,14 +340,30 @@ func (e *PrometheusExporter) RefreshMIBMetadata() error {
 }
 
 // Export sends metrics to Prometheus
-func (e *PrometheusExporter) Export(ctx context.Context, samples []*Sample) error {
+// The context is unused: Export no longer performs the write, so there is
+// nothing here for it to bound. It stays in the signature because Exporter
+// requires it and because a future implementation may block again.
+func (e *PrometheusExporter) Export(_ context.Context, samples []*Sample) error {
 	if len(samples) == 0 {
 		return nil
 	}
 
-	e.lastAppendUnixNano.Store(time.Now().UnixNano())
-
 	e.bufferLock.Lock()
+
+	// Refused rather than queued once the sender has been told to stop.
+	//
+	// Export used to write, so a call after Close failed loudly of its own
+	// accord. It queues now, and a queue with no sender is a place samples go
+	// to be forgotten: Export returned nil while the data could never be
+	// delivered. Checked under bufferLock, which Close takes as a barrier
+	// after setting the flag, so a call that gets past here has finished
+	// queueing before shutdown proceeds.
+	if e.closed.Load() {
+		e.bufferLock.Unlock()
+		return &ClosedError{Samples: len(samples)}
+	}
+
+	e.lastAppendUnixNano.Store(time.Now().UnixNano())
 
 	// Add samples to buffer.
 	//
@@ -249,16 +374,25 @@ func (e *PrometheusExporter) Export(ctx context.Context, samples []*Sample) erro
 	// router delivers ~15,000 samples, so a cap sized off the batch size would
 	// throw most of that away before the first flush was even attempted.
 	e.buffer = append(e.buffer, samples...)
-	exportBufferedSamples.Set(float64(len(e.buffer)))
 
-	full := len(e.buffer) >= e.batchSize
+	// Handed to the sender rather than written here. The caller is a poll
+	// worker in the middle of a cycle, and writing inline put the slowest
+	// thing in the system inside the poll -- as well as putting a second
+	// request on the wire alongside whatever the background flusher was
+	// already sending, with nothing deciding which arrived first.
+	//
+	// Detached and queued under ONE hold of bufferLock. Splitting them lets
+	// two callers detach in one order and queue in the other, which puts the
+	// older batch behind the newer one and reintroduces exactly the disorder
+	// the sender exists to prevent.
+	if len(e.buffer) >= e.batchSize {
+		batch := e.buffer
+		e.buffer = nil
+		e.enqueue(&pending{samples: batch})
+	}
 	e.bufferLock.Unlock()
 
-	// Flush outside the lock so a slow remote write never blocks the caller,
-	// which for the poller is a worker in the middle of a poll cycle.
-	if full {
-		return e.Flush(ctx)
-	}
+	e.publishBacklog()
 	return nil
 }
 
@@ -279,41 +413,60 @@ func (e *PrometheusExporter) Flush(ctx context.Context) error {
 	// endpoint that accepts the connection and then stalls would wedge
 	// collection entirely, which is a far worse failure than losing a batch.
 	e.bufferLock.Lock()
-	if len(e.buffer) == 0 {
+	// Refused once closed, for the same reason Export is: there is nothing left
+	// to send it.
+	//
+	// Close's own flush is refused too, and nothing is lost by that -- the
+	// buffer is handed over by the flusher's stop branch and written by the
+	// sender's final drain, which Close waits for. Exempting it needed a second
+	// flag whose removal changed no observable behavior, which is how I found
+	// out it was doing nothing.
+	if e.closed.Load() {
 		e.bufferLock.Unlock()
-		return nil
+		return &ClosedError{}
 	}
-	batch := e.buffer
-	e.buffer = nil
-	exportBufferedSamples.Set(0)
+	// The batch and its barrier are queued as ONE step. Submitting them
+	// separately let the sender take the batch in between, expire a sample out
+	// of it, and find no barrier behind it to charge -- so the Flush that was
+	// responsible for that sample returned nil having lost it. Measured at 1
+	// failure in 30 under load.
+	done := make(chan error, 1)
+	barrier := &pending{done: done}
+
+	if len(e.buffer) > 0 {
+		batch := e.buffer
+		e.buffer = nil
+		e.enqueueAll(&pending{samples: batch}, barrier)
+	} else {
+		e.enqueueAll(barrier)
+	}
 	e.bufferLock.Unlock()
 
-	if err := e.send(ctx, batch); err != nil {
-		// Put the batch back so the next flush retries it, ahead of anything
-		// buffered while the request was in flight.
-		e.bufferLock.Lock()
-		e.buffer = append(batch, e.buffer...)
-		e.enforceBufferCapLocked()
-		exportBufferedSamples.Set(float64(len(e.buffer)))
-		e.bufferLock.Unlock()
-
-		return e.recordFailure(len(batch), err)
-	}
-
-	// Note which metric names reached Prometheus, so the catalog describes
-	// what this collector actually published rather than every object in
-	// every loaded module.
+	// Flush keeps its synchronous contract: it returns when the batch it
+	// submitted has been attempted. It does not do the writing -- the sender
+	// does, in queue order -- so two callers of Flush can no longer put two
+	// requests on the wire at once.
 	//
-	// Recorded here rather than when the samples were buffered, because a
-	// batch that was dropped or whose write failed was never published: the
-	// catalog would then describe a series that never arrived, and the
-	// dashboard would offer a panel that can never have data. A failed batch
-	// is put back above and retried, so its names are recorded by the flush
-	// that lands.
-	e.published.record(batch)
+	// Which metric names reached Prometheus is recorded by the sender on the
+	// write that lands, not here: a batch whose write failed was never
+	// published, and the catalog describing a series that never arrived would
+	// offer a dashboard panel that can never have data.
+	e.publishBacklog()
 
-	e.recordSuccess(len(batch))
-	return nil
+	// A barrier rather than the batch itself is what this waits on, because
+	// Export hands whole batches over without waiting: by the time Flush is
+	// called, the work it must wait for is usually not the work it just
+	// submitted.
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		// Taken back out, or it would sit in the queue for the life of the
+		// process: a barrier carries no samples, so nothing else would ever
+		// account for it.
+		e.abandon(barrier)
+		return ctx.Err()
+	}
 }
 
 // flushLocked flushes the buffer (must be called with lock held). Every
@@ -363,20 +516,6 @@ func (e *PrometheusExporter) send(ctx context.Context, batch []*Sample) error {
 	return nil
 }
 
-// enforceBufferCapLocked drops the oldest samples once the buffer exceeds its
-// cap, loudly. The caller must hold bufferLock.
-func (e *PrometheusExporter) enforceBufferCapLocked() {
-	if len(e.buffer) <= e.maxBufferSize {
-		return
-	}
-
-	dropped := len(e.buffer) - e.maxBufferSize
-	log.Printf("[metrics] ERROR: export buffer exceeded %d samples (cap enforced at %dx batch size); dropping %d oldest buffered samples to bound memory use -- remote write at %s has been failing",
-		e.maxBufferSize, exportBufferMultiplier, dropped, e.remoteWriteURL)
-	e.buffer = e.buffer[dropped:]
-	exportsTotal.WithLabelValues("dropped").Add(float64(dropped))
-}
-
 // recordSuccessLocked updates health signals after a successful flush and
 // logs a loud recovery message if the exporter had previously been
 // failing or stalled.
@@ -391,7 +530,7 @@ func (e *PrometheusExporter) recordSuccess(sampleCount int) {
 	wasStalled := e.stalled.Swap(false)
 	exportStalled.Set(0)
 
-	exportsTotal.WithLabelValues("success").Inc()
+	e.counts.exports.WithLabelValues("success").Inc()
 
 	if failures > 0 || wasStalled {
 		log.Printf("[metrics] flush recovered: successfully flushed %d samples to %s after %d consecutive failure(s)",
@@ -409,12 +548,37 @@ func (e *PrometheusExporter) recordSuccess(sampleCount int) {
 func (e *PrometheusExporter) recordFailure(sampleCount int, cause error) error {
 	failures := e.consecutiveFailures.Add(1)
 	exportConsecutiveFailures.Set(float64(failures))
-	exportsTotal.WithLabelValues("error").Inc()
+	e.counts.exports.WithLabelValues("error").Inc()
 
 	log.Printf("[metrics] ERROR: flush failed (%d consecutive failure(s), %d samples buffered for retry): %v",
 		failures, sampleCount, cause)
 
 	return cause
+}
+
+// counters are the counters one exporter increments.
+//
+// Held per exporter rather than reached for globally, because a test asserting
+// on a process-global counter shares its measurement with every other test in
+// the package: a still-live sender from an earlier test lands an increment
+// inside a later test's before/after window, and that test then fails for a
+// reason unrelated to what it checks. Production uses one shared set, which is
+// what /metrics must expose; a test can hold its own.
+type counters struct {
+	exports    *prometheus.CounterVec
+	dropped    *prometheus.CounterVec
+	outOfOrder prometheus.Counter
+	repaired   prometheus.Counter
+}
+
+// sharedCounters are the process-wide counters, the ones /metrics publishes.
+func sharedCounters() *counters {
+	return &counters{
+		exports:    exportsTotal,
+		dropped:    droppedSamples,
+		outOfOrder: outOfOrderTotal,
+		repaired:   repairedOrderTotal,
+	}
 }
 
 // samplesToTimeSeries converts samples to Prometheus TimeSeries
@@ -442,15 +606,13 @@ func (e *PrometheusExporter) samplesToTimeSeries(samples []*Sample) []prompb.Tim
 		}
 		sort.Strings(labelNames)
 
-		labelKey := sample.Name
 		for _, k := range labelNames {
-			v := sample.Labels[k]
 			labels = append(labels, prompb.Label{
 				Name:  k,
-				Value: v,
+				Value: sample.Labels[k],
 			})
-			labelKey += fmt.Sprintf(",%s=%s", k, v)
 		}
+		labelKey := seriesKey(sample)
 
 		// Create or get TimeSeries
 		k := key{name: sample.Name, labels: labelKey}
@@ -472,10 +634,136 @@ func (e *PrometheusExporter) samplesToTimeSeries(samples []*Sample) []prompb.Tim
 	// Convert map to slice
 	result := make([]prompb.TimeSeries, 0, len(grouped))
 	for _, ts := range grouped {
+		ts.Samples = orderedSamples(ts.Samples)
 		result = append(result, *ts)
 	}
 
 	return result
+}
+
+// sentPoint is the newest sample the endpoint has accepted for a series.
+//
+// The value is kept as well as the timestamp because Prometheus distinguishes
+// the two ways a sample can be unacceptable: older than the head is "out of
+// order", and equal to the head with a DIFFERENT value is "duplicate sample for
+// timestamp". Equal timestamp AND equal value is accepted -- it is the same
+// reading offered twice -- so refusing on the timestamp alone would discard
+// samples the endpoint would have taken.
+type sentPoint struct {
+	at    int64
+	value float64
+}
+
+// sameValue reports whether two readings are the same one, using the identity
+// the ENDPOINT uses.
+//
+// Prometheus compares math.Float64bits, not the float. Go's == disagrees with
+// that in both directions, and each disagreement is a defect this package
+// exists to prevent: +0 and -0 are == but have different bits, so a pair of
+// them would be judged the same reading here, collapsed, and Prometheus would
+// have refused the request as a duplicate -- one reading gone with the flush
+// reported successful. Two NaNs with identical bits are != but are the same
+// reading to Prometheus, so they would be charged as a discard that never
+// needed to happen.
+//
+// The rule is not "compare floats sensibly". It is "answer the question the
+// endpoint will answer", and the only way to be sure of that is to ask it the
+// same way.
+func sameValue(a, b float64) bool {
+	return math.Float64bits(a) == math.Float64bits(b)
+}
+
+// seriesKey identifies one series: its name and every label it carries.
+//
+// Length-prefixed rather than delimited. SNMP label values are device-supplied
+// -- an ifAlias or entPhysicalName is whatever someone typed into the box -- so
+// a comma or an equals sign in one of them makes a delimited key ambiguous, and
+// two different series can produce the same string. Two series sharing a key
+// are merged by the encoder, which interleaves their readings into one and puts
+// them out of order, and a request whose samples descend is rejected whole
+// (#69).
+//
+// One function, because the ordering check and the encoder must agree on what
+// "the same series" means or the check reports on something the request does
+// not contain.
+func seriesKey(sample *Sample) string {
+	names := make([]string, 0, len(sample.Labels))
+	for name := range sample.Labels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var key strings.Builder
+	key.WriteString(strconv.Itoa(len(sample.Name)))
+	key.WriteByte(':')
+	key.WriteString(sample.Name)
+	for _, name := range names {
+		value := sample.Labels[name]
+		key.WriteString(strconv.Itoa(len(name)))
+		key.WriteByte(':')
+		key.WriteString(name)
+		key.WriteString(strconv.Itoa(len(value)))
+		key.WriteByte(':')
+		key.WriteString(value)
+	}
+	return key.String()
+}
+
+// orderedSamples puts one series' samples in the order remote write requires.
+//
+// They arrive in BUFFER order, which is the order polls COMPLETED. That is not
+// the order their varbinds were stamped: a timestamp is taken per result as it
+// arrives (snmp.Client), while samples reach the buffer in whole-poll batches
+// at the end of a poll, so a poll that starts earlier and finishes later
+// appends older samples after a newer poll's. Two polls of one device overlap
+// whenever a device is reconfigured, because replacing a worker does not wait
+// for the poll already running.
+//
+// The remote-write spec requires the samples of a series to ascend, and
+// Prometheus rejects the WHOLE request on the first that does not -- 400 "out
+// of order sample". One such pair cost monitor-01 a million samples an hour for
+// fifteen hours, because a rejected batch is re-queued and can never land once
+// newer samples for its series have been accepted (go-netmon#69).
+//
+// This orders one REQUEST. It does not order two, and Flush is not serialized:
+// a poll worker that fills the buffer flushes inline while the background
+// flusher may already be sending, so a batch taken later can reach Prometheus
+// first and leave the earlier one out of order against what was just accepted.
+// That is the same permanent backlog by another route, and it is filed on #69
+// rather than fixed here -- serializing the send costs poll latency, which is a
+// trade rather than a correction.
+//
+// Samples that are IDENTICAL -- same timestamp and same value -- are collapsed
+// to one. That is lossless, and it is what Prometheus does with them anyway:
+// the same reading offered twice is accepted and stored once.
+//
+// Two DIFFERENT values at one instant are left alone, deliberately. They are as
+// invalid as two out of order -- Prometheus answers "duplicate sample for
+// timestamp" -- but keeping one and discarding the other is a loss, and this
+// function has no way to name it: it returns samples, not counts, and its
+// caller reports the batch as fully sent. partition takes such a pair out of
+// the batch before the request is built and charges the discard to whoever is
+// owed one. If a pair ever reached here regardless, the endpoint refuses the
+// request and the batch is discarded as "rejected" -- more samples lost, but
+// lost visibly, which is the failure that can be found and fixed.
+func orderedSamples(samples []prompb.Sample) []prompb.Sample {
+	if len(samples) < 2 {
+		return samples
+	}
+
+	sort.SliceStable(samples, func(i, j int) bool {
+		return samples[i].Timestamp < samples[j].Timestamp
+	})
+
+	ordered := samples[:1]
+	for _, sample := range samples[1:] {
+		last := ordered[len(ordered)-1]
+		if sample.Timestamp == last.Timestamp && sameValue(sample.Value, last.Value) {
+			continue
+		}
+		ordered = append(ordered, sample)
+	}
+	return ordered
 }
 
 // backgroundFlusher periodically flushes the buffer. It never exits on
@@ -494,18 +782,16 @@ func (e *PrometheusExporter) backgroundFlusher() {
 	for {
 		select {
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			// flushLocked (via Flush) already logs loudly and updates
-			// health metrics on failure; nothing further to do with the
-			// error here.
-			_ = e.Flush(ctx)
-			cancel()
+			// Handed over without waiting. The tick exists to move what is
+			// buffered on to the sender, not to write it: waiting here would
+			// make the flusher and the sender take turns, and a slow endpoint
+			// would stop the buffer being drained at all.
+			e.submit()
 			e.checkStall()
 		case <-e.stopChan:
-			// Final flush before stopping
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = e.Flush(ctx)
-			cancel()
+			// The sender does the final write; this only makes sure the last
+			// partial batch is in the queue before it does.
+			e.submit()
 			return
 		}
 	}
@@ -554,13 +840,62 @@ func (e *PrometheusExporter) Close() error {
 		return nil
 	}
 
-	// Flush any remaining metrics before closing
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	_ = e.Flush(ctx)
-	cancel()
+	// No more samples from here on. Taken and released under bufferLock, which
+	// Export checks the flag under, so any Export already inside has finished
+	// queueing before the sender is told to stop -- and none can start after.
+	e.bufferLock.Lock()
+	e.bufferLock.Unlock() //nolint:gocritic,staticcheck // a barrier, not a critical section
+
+	// Hand the last partial buffer to the sender, then bound what it does with
+	// it.
+	//
+	// Close used to call Flush here, which needed an exemption from the
+	// admission check above and a flag to carry it. Submitting directly is
+	// what that was really for: it moves the buffer into the queue BEFORE the
+	// sender is told to stop, so the final drain is guaranteed to see it.
+	//
+	// Leaving it to the flusher's own stop branch is not enough and was a race
+	// -- the sender can reach its final drain, find the queue empty, and
+	// finish before the flusher submits, and the last partial batch is lost.
+	// It passed most of the time, which is why a mutation of the exemption
+	// looked harmless.
+	e.submit()
+	e.shutdownAt.Store(time.Now().Add(shutdownBudget).UnixNano())
 
 	close(e.stopChan)
-	e.wg.Wait()
+
+	// Then wait for the sender, and cancel the request it is inside if it does
+	// not finish in time.
+	//
+	// Stopping the loop is not enough. The request already in flight carries
+	// its own sendTimeout and cannot see a deadline recorded after it started,
+	// so a slow endpoint held shutdown for the full 30 seconds however short
+	// the budget was. Canceling the context it was built from is the only
+	// bound it can observe.
+	stopped := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(shutdownBudget):
+		log.Printf("[metrics] shutdown budget of %s expired with a remote write to %s still in flight; canceling it",
+			shutdownBudget, e.remoteWriteURL)
+		e.cancelSend()
+		<-stopped
+	}
+
+	e.cancelSend()
+
+	// A shutdown that threw telemetry away did not succeed, and the caller is
+	// the only one who can act on that -- by not exiting quite yet, or by
+	// saying so in its own logs. Returning nil here was the third place in this
+	// package where discarding data reported success.
+	if dropped := e.shutdownDropped.Load(); dropped > 0 {
+		return &DroppedError{Samples: int(dropped)}
+	}
 	return nil
 }
 
@@ -576,10 +911,50 @@ func (e *PrometheusExporter) LastSuccessfulFlush() (time.Time, bool) {
 
 // BufferedSamples returns the number of samples currently buffered and
 // awaiting flush.
+// Both halves are counted: samples still accumulating towards a batch, and
+// batches already handed to the sender and awaiting a write. A caller asking
+// how much is undelivered means both, and counting only the first would report
+// zero while a whole backlog waited behind a failing endpoint.
+// It is e.backlog, which is the one definition of the quantity.
 func (e *PrometheusExporter) BufferedSamples() int {
+	return e.backlog()
+}
+
+// backlog is how many samples have been accepted and not yet delivered.
+//
+// One meaning, one accessor. Undelivered samples live in three places -- still
+// accumulating towards a batch, queued for the sender, and the one batch being
+// written -- and this has now been wrong three times, in three different ways,
+// because each place had its own writer reporting its own slice as if it were
+// the total. First the batch on the wire was left out, so the count read zero
+// during a stall; then a refactor added a third home and the two writers each
+// kept reporting their own.
+//
+// A fourth place cannot silently reintroduce that. If one is added and not
+// counted here it is simply missing, which is a visible bug rather than a
+// plausible number.
+//
+// Never call this while holding either lock. The order is bufferLock then
+// queueMu, which is the order everything else takes them in.
+func (e *PrometheusExporter) backlog() int {
 	e.bufferLock.Lock()
-	defer e.bufferLock.Unlock()
-	return len(e.buffer)
+	buffered := len(e.buffer)
+	e.bufferLock.Unlock()
+
+	e.queueMu.Lock()
+	pending := e.queued + e.inFlight
+	e.queueMu.Unlock()
+
+	return buffered + pending
+}
+
+// publishBacklog is the only writer of gonetmon_export_buffered_samples.
+//
+// The gauge and the accessor were separately maintained and disagreed: one
+// counted the buffer, the other the queue, and an operator watching the gauge
+// saw whichever slice the last writer happened to own.
+func (e *PrometheusExporter) publishBacklog() {
+	exportBufferedSamples.Set(float64(e.backlog()))
 }
 
 // Stalled reports whether the exporter has received samples but has not
