@@ -536,3 +536,160 @@ func TestASecondSubscribeToAQueryAlreadyHeldDoesNotResetIt(t *testing.T) {
 			"still have to reach this tick", len(heartbeats(frames)))
 	}
 }
+
+// TestANewSubscriberToABackedOffQueryIsNotLeftWaiting is the same guarantee as
+// TestANewSubscriberToASteadyQueryIsNotLeftWaiting, after the query has been
+// steady long enough to be asked about at half rate.
+//
+// A query that has not moved for SteadyRoundsBeforeBackoff rounds is asked only
+// on even rounds. Subscribing did not reset that, so a client inherited a
+// backoff it had no part in creating; on a skipped round the hub told it the
+// query was "still reading what it already has", which it did not have.
+// Measured before the fix: with the round counter odd the new client received
+// nothing at all that round.
+//
+// The existing test cannot see this. It runs two rounds and the backoff needs
+// six, so it only ever exercises the path where every query is asked.
+//
+// It matters beyond one wasted tick because the dashboard's row table is a
+// table of CURRENT VALUES, which are mostly constants: opening a device someone
+// else is already watching would show blanks in exactly the columns that are
+// healthy, and that reads as a table bug rather than a transport one.
+func TestANewSubscriberToABackedOffQueryIsNotLeftWaiting(t *testing.T) {
+	h := NewHub(staticQuery([]MetricValue{sample("1", 42, 1700000000)}), nil)
+
+	established := subscriber()
+	h.Subscribe(established, "q")
+
+	// Both parities, because which rounds a backed-off query lands on depends
+	// only on the round counter. A warm-up of a fixed length joins on whichever
+	// parity that arithmetic happens to produce, and then passes or fails by
+	// luck rather than by the rule -- a fixture too regular to tell "always
+	// served" from "served on even rounds". Measured: the odd arm alone catches
+	// this, and the even arm alone passes with the defect present.
+	for _, warmup := range []int{SteadyRoundsBeforeBackoff + 1, SteadyRoundsBeforeBackoff + 2} {
+		for i := 0; i < warmup; i++ {
+			h.streamMetrics(context.Background())
+		}
+		collectFrames(t, established)
+
+		joined := subscriber()
+		h.Subscribe(joined, "q")
+		h.streamMetrics(context.Background())
+
+		frames := readings(collectFrames(t, joined))
+		if len(frames) != 1 || frames[0].Type != MessageTypeMetricSnapshot {
+			t.Fatalf("after %d warm-up rounds the new client got %+v, want the "+
+				"current reading: it has no value to hold steady, and being told a "+
+				"query is unchanged is not the same as being told what it reads",
+				warmup, frames)
+		}
+		if len(frames[0].Metrics) != 1 || frames[0].Metrics[0].Value != 42 {
+			t.Errorf("after %d warm-up rounds the snapshot carried %+v, want the "+
+				"steady reading", warmup, frames[0].Metrics)
+		}
+
+		// Waking the query must not cost the clients that already have it a
+		// frame: the reading has not moved and they are holding it. Today that
+		// holds because who receives a frame is decided by states.advance
+		// rather than by the steady bookkeeping wake touches -- so this does
+		// not discriminate between clearing the streak and clearing the
+		// reading, and it is not offered as though it did. It guards the
+		// property, not the mechanism.
+		if got := readings(collectFrames(t, established)); len(got) != 0 {
+			t.Errorf("after %d warm-up rounds the established client was re-sent "+
+				"%+v; the reading has not moved and it already has it", warmup, got)
+		}
+	}
+}
+
+// steadyHeld reports what the tracker is holding, reading its maps rather than
+// calling queries().
+//
+// The sweep uses queries(), so an assertion that also used it would share an
+// accessor with the code under test: a queries() that reported only one of the
+// two maps would hide the leak from the sweep AND from the assertion, and the
+// test would pass while the entry sat there. Measured -- that is exactly what
+// the first version of this test did.
+func steadyHeld(s *steadyQueryRounds) (rounds, last int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.rounds), len(s.last)
+}
+
+// TestTheSteadyTrackerIsSweptWhenTheLastReaderLeavesMidRound covers the second
+// structure the post-round sweep has to check.
+//
+// detach clears the steady tracker when the last subscriber goes, so the clean
+// path was already right. The race is not the clean path: the last reader can
+// leave WHILE a round is running, the query that was already in flight returns,
+// and observe records its reading after detach has removed it. Nothing takes it
+// out again, because removal only happens on the transition to zero
+// subscribers and that has been and gone.
+//
+// forgetUnsubscribed exists for exactly that race and swept only h.states, so
+// h.steady kept rounds for a query with no subscribers at all -- and a later
+// genuinely-sole subscriber inherited a backoff with nobody else on the query.
+//
+// The shape is the one this repository keeps meeting: two structures that must
+// agree about what is live, and only one of them swept. See go-netmon#71 for
+// the same pair in the poller.
+func TestTheSteadyTrackerIsSweptWhenTheLastReaderLeavesMidRound(t *testing.T) {
+	h := NewHub(staticQuery([]MetricValue{sample("1", 42, 1700000000)}), nil)
+
+	client := subscriber()
+	h.Subscribe(client, "q")
+	h.streamMetrics(context.Background())
+
+	// The reading is recorded, so the tracker holds the query.
+	if rounds, last := steadyHeld(h.steady); rounds == 0 && last == 0 {
+		t.Fatal("the steady tracker holds nothing after a round; the rest of this " +
+			"test would pass against a tracker that never records anything")
+	}
+
+	// The last reader leaves. detach clears both trackers, which is the CLEAN
+	// path and was always right -- a test that stops here passes with or
+	// without the sweep, because there is nothing left to sweep.
+	h.Unsubscribe(client, "q")
+	if rounds, last := steadyHeld(h.steady); rounds != 0 || last != 0 {
+		t.Fatalf("detach left %d streak(s) and %d reading(s) behind; this test is "+
+			"about the race, and the clean path has to be clean first for that "+
+			"to be the thing it measures", rounds, last)
+	}
+
+	// The race is a round already in flight when the last reader left. Its
+	// query returns afterwards and streamQuery records the reading -- exactly
+	// this call, at hub.go:369 -- putting the entry back behind detach. From
+	// here nothing else will ever remove it: removal happens on the transition
+	// to zero subscribers, and that has been and gone.
+	h.steady.observe("q", 1)
+
+	h.streamMetrics(context.Background())
+
+	if rounds, last := steadyHeld(h.steady); rounds != 0 || last != 0 {
+		t.Errorf("the steady tracker still holds %d streak(s) and %d reading(s) "+
+			"with no subscribers; a later sole subscriber would inherit a backoff "+
+			"with nobody else on the query, and the entry is never collected",
+			rounds, last)
+	}
+
+	// The same leak in the shape wake leaves behind, because the sweep has to
+	// see BOTH of the tracker's maps.
+	//
+	// observe writes the reading and the streak together, so a sweep reading
+	// either map alone would find that leak. wake deletes only the streak --
+	// and wake runs on every Subscribe -- so a query woken and then abandoned
+	// mid-round sits in the reading map with no streak beside it. A sweep that
+	// consults the streaks alone walks straight past it.
+	h.steady.observe("q", 1)
+	h.steady.wake("q")
+
+	h.streamMetrics(context.Background())
+
+	if rounds, last := steadyHeld(h.steady); rounds != 0 || last != 0 {
+		t.Errorf("the steady tracker still holds %d streak(s) and %d reading(s) "+
+			"after a wake left only the reading behind; the sweep is consulting "+
+			"one of its two maps", rounds, last)
+	}
+}

@@ -288,6 +288,15 @@ func (h *Hub) streamMetrics(ctx context.Context) {
 // because the removal only happens on the transition to zero subscribers and
 // that has already been and gone. Sweeping after the round is what makes the
 // bound hold whenever the last reader leaves mid-round.
+//
+// BOTH structures are swept, not just the sequence states. detach clears the
+// steady tracker too, but the same race puts it back: observe records the
+// in-flight query's reading after detach has removed it. Sweeping one and not
+// the other left h.steady holding rounds for a query with no subscribers at
+// all, so a later genuinely-sole subscriber inherited a backoff with nobody
+// else on the query. Two structures that must agree about what is live, and
+// one of them swept, is a leak by construction however carefully the other is
+// maintained.
 func (h *Hub) forgetUnsubscribed() {
 	h.mu.RLock()
 	watched := make(map[string]bool, len(h.subscriptions))
@@ -299,6 +308,11 @@ func (h *Hub) forgetUnsubscribed() {
 	for _, query := range h.states.queries() {
 		if !watched[query] {
 			h.states.forget(query)
+		}
+	}
+	for _, query := range h.steady.queries() {
+		if !watched[query] {
+			h.steady.forget(query)
 		}
 	}
 }
@@ -538,6 +552,12 @@ func (h *Hub) Subscribe(client *Client, query string) bool {
 	client.discard(query)
 	client.subs[query] = struct{}{}
 	h.subscriptions[query] = append(h.subscriptions[query], client)
+
+	// A query steady long enough to be asked at half rate is put back on every
+	// round, because this client has never been sent a value for it and a
+	// skipped round would tell it the reading is unchanged from one it does
+	// not have.
+	h.steady.wake(query)
 	return true
 }
 

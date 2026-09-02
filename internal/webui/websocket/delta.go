@@ -119,8 +119,14 @@ func (s *steadyQueryRounds) due(query string, round int64) bool {
 	return round%2 == 0
 }
 
-// observe records what a query read, and reports whether it moved.
-func (s *steadyQueryRounds) observe(query string, reading uint64) bool {
+// observe records what a query read, and lengthens or ends its steady streak.
+//
+// It returns nothing on purpose. It used to report whether the reading moved,
+// and no caller has ever used that: who receives a frame is decided by
+// queryStates.advance, from the sequence a client holds. Returning it invited
+// the reading that a change here reaches a client -- which it does not -- and
+// that misreading survived a code comment before a mutation caught it.
+func (s *steadyQueryRounds) observe(query string, reading uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -128,10 +134,60 @@ func (s *steadyQueryRounds) observe(query string, reading uint64) bool {
 	s.last[query] = reading
 	if seen && previous == reading {
 		s.rounds[query]++
-		return false
+		return
 	}
 	s.rounds[query] = 0
-	return true
+}
+
+// wake puts a query back on every round, because someone has just subscribed
+// to it who has never been sent a value.
+//
+// The backoff is a property of the QUERY -- it has not moved for a while -- but
+// being served is a property of a CLIENT. A new subscriber inherits a backoff
+// it had no part in creating, and on a skipped round it is told the query is
+// "still reading what it already has", which it does not have. Measured: with
+// the round counter odd it receives nothing at all that round.
+//
+// Only the streak is cleared, because the streak is the only thing gating
+// whether the query is asked. The reading is left alone: waking has no business
+// editing what the query last read, and the two are independent -- who receives
+// a frame is decided by states.advance, not by this reading, whose only job is
+// to say whether the streak continues.
+func (s *steadyQueryRounds) wake(query string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.rounds, query)
+}
+
+// queries returns every query this tracker still holds anything for.
+//
+// It exists so the post-round sweep can check this tracker as well as the
+// sequence states. Two structures that must agree about which queries are live
+// and only one of them swept is a leak by construction, whatever either one
+// does correctly on its own.
+func (s *steadyQueryRounds) queries() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Both maps, because a query can be in either: last is written every time
+	// a query is asked, rounds only once it has held still. Sweeping on one of
+	// them would leave the other holding the query it was supposed to drop,
+	// which is the bug this exists to fix, one level down.
+	held := make([]string, 0, len(s.last))
+	seen := make(map[string]struct{}, len(s.last))
+	for query := range s.last {
+		seen[query] = struct{}{}
+		held = append(held, query)
+	}
+	for query := range s.rounds {
+		if _, already := seen[query]; already {
+			continue
+		}
+		seen[query] = struct{}{}
+		held = append(held, query)
+	}
+	return held
 }
 
 // forget drops a query nobody subscribes to any more.
