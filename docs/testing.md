@@ -377,6 +377,44 @@ Two things worth taking from it:
   — a parity, a modulus, a batch boundary, a retry counter — iterate over the
   phases instead of picking one.
 
+### The other way a fixture fails: it cannot say the thing
+
+The parity case above is a fixture too **regular** to discriminate. This is a
+fixture not **expressive** enough to state the hazard, and it is worth telling
+apart because the remedy is different: raggedness does not help if the failing
+case cannot be written down at all.
+
+The dashboard's column rule decides whether a column's rows disagree. It read
+each row's SAMPLE. Prometheus info metrics carry their reading in a label and
+their sample is `1` on every row:
+
+```
+snmp_ifalias_info{ifindex="1",value="uplink to core"} 1
+snmp_ifalias_info{ifindex="2",value="server rack 3"} 1
+```
+
+So the rule found one distinct value across a hundred differently named
+interfaces, called the column uniform, and dropped it — the column whose entire
+purpose is naming rows, removed from a table whose entire purpose is naming
+rows.
+
+Seven tests covered that rule. None could fail, because the test stub could set
+**samples only**: `Values map[string][]float64`. "Two info rows that differ" was
+not a sentence the fixture could utter. The single input class the rule got
+wrong was the single input class the tests could not construct.
+
+> **A fixture that cannot express the failure cannot be evidence against it.**
+
+The fix is to the fixture's vocabulary, not to any test: the stub grew
+`Labels map[string][]string`, and only then could a test be written that fails.
+
+How to notice it before a reviewer does: look at what your fixture's *type* can
+represent, and compare that against the shapes the production code accepts. A
+stub taking `[]float64` cannot represent a metric whose reading is not a float,
+and the code under test accepted exactly such metrics. That gap is visible
+without knowing the defect — it is a question about the fixture's type, not
+about the bug.
+
 
 Two related distinctions worth keeping beside this, because they are the same
 shape and this repository has now met all three in one day:
