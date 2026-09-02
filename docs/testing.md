@@ -108,6 +108,40 @@ catch most of these before they are written:
   that is paired with a positive one: "the departed device exported nothing" is
   worth little without "the current device still does".
 
+## A test that documents the bug as intended
+
+The families above are tests that cannot fail. This one is worse: it fails
+correctly, on exactly the behaviour it names, and the behaviour is a defect.
+
+`TestTwoReadingsForOneInstantAreCollapsed` asserted that when a batch carried
+two readings for one series at one millisecond, the encoder kept the second and
+dropped the first. That is what the code did. It is also a sample discarded
+with no counter moved and the flush returning nil — the silent loss the whole
+package exists to end — and the test held it in place by name, with a comment
+explaining why it was right.
+
+It cost nothing to write and it would have cost the next person a lot. Whoever
+fixed `orderedSamples` properly would have watched a well-named test go red and
+concluded they had broken something. A passing test is normally evidence; this
+one was a lock on the defect, and it looked like coverage the entire time.
+
+The check is not mechanical, because mutation does not help — mutate the code
+and the test fails, which is precisely the problem. Ask instead:
+
+- **does this assertion describe an outcome anyone would want?** Not "does the
+  code do this", which is how it got written, but "if a reviewer read only this
+  assertion, would they call it correct?" "Kept 150 and dropped 100" does not
+  survive that question.
+- **name the outcome, not the mechanism.** A test called "two readings for one
+  instant are collapsed" is a test about an implementation detail, and an
+  implementation detail cannot be wrong on its own terms. A test called "two
+  readings for one instant are one delivery and one discard" states a claim that
+  can be disagreed with, which is what makes it worth asserting.
+
+A test is a claim about what SHOULD happen. Writing down what does happen,
+carefully, is a different activity, and the more careful it looks the longer it
+survives.
+
 ## A bound test whose threshold equals the unbounded behaviour
 
 `TestShutdownIsBounded` used a handler that answered in 200ms and asserted that
@@ -195,6 +229,78 @@ Two things worth keeping from that:
 
 If a test's outcome depends on timing at all, "it passed" needs a count beside
 it. `-count=20` on the one test, in isolation, is the cheap version.
+
+## A flaky test can be the only evidence you have of a race
+
+`TestASampleTooOldToLandIsDroppedRatherThanRetriedForever` failed about 1 run
+in 30 under load. Everything about it said timing: a background sender, an age
+horizon, a barrier waited on with a deadline. The obvious response to a
+1-in-30 timing-shaped failure is to widen the margin, and it would have worked
+— the test would have gone green and stayed green.
+
+It was a data-loss bug in production code. `Flush` enqueued its batch and its
+barrier as two separate steps under two separate holds of the buffer lock. The
+sender could take the batch in between, expire the aged sample, and find no
+barrier behind it to charge — so the `Flush` responsible for that sample
+returned **nil having lost it**. The intermittent failure was the exporter
+reporting success while discarding, caught in the act.
+
+**"Make the flake stop" and "fix the bug" are opposite actions that produce
+identical green suites.** Widening the margin would have shipped the race and
+permanently silenced the only thing reporting it.
+
+So before touching a flaky test:
+
+- **ask what the failure would mean if it were not a coincidence.** Here it
+  meant a barrier that should have been charged was not — which is a sentence
+  about the exporter, not about the test.
+- **fix it by construction rather than by widening the margin.** The remedy was
+  `enqueueAll`, submitting batch and barrier under one hold so no interleaving
+  exists. The test was not changed at all.
+- **measure at power, before and after.** 1/30 is a rate, not a diagnosis, and
+  0/30 afterwards proves nothing at a 1.7% event. The evidence was 2/120 with
+  the cause restored against 0/120 with it fixed.
+
+## A race test that cannot reach the race
+
+The retirement-gate test in `internal/poller` was named after the defect it
+existed to catch, asserted exactly the right invariant, and passed with the fix
+in place. Mutating the fix away produced **0 detections in 2,000 iterations**.
+
+In the broken gate the window between checking `retiring[name]` and installing
+the worker is *one statement wide*. One registration racing one removal
+essentially never lands in it, so the test would have been green forever
+against both the fixed and the broken code, while carrying the name of the race
+it could not see. Nothing about reading it would have suggested that.
+
+**Sixteen registrations against one removal reach the window about once in 45
+iterations.** At 600 iterations that is 10 detections in 10 mutated runs, worst
+case at iteration 149, against 0 in 4,800 with the gate fixed — and the whole
+test costs 1.3 seconds.
+
+The reason raising contention is a fix rather than a way of making a flaky test
+flakier is worth stating on its own:
+
+> **Reaching the violating state is probabilistic. Observing it must not be.**
+
+The removal is parked at its commit barrier, so a name it has claimed stays
+claimed and a worker listed under a claimed name stays listed. Both halves of
+the violating state persist until the test releases them, which means a single
+check sees it — there is no sampling window to get wrong and no sleep to tune.
+Sixteen adders raise the probability of *reaching* the state without touching
+the reliability of *seeing* it. A change that raised both would be a coin flip
+dressed as coverage.
+
+Two habits follow:
+
+- **Mutate before you believe a concurrency test, and read the count.** An
+  expected failure that does not arrive is the finding. Here it was the only
+  instrument that worked: reading the test, reasoning about the interleaving and
+  a second reviewer's eye all agreed it was a good test.
+- **Freeze the state you assert on, then race for it.** Park the other party
+  somewhere it must stop — a held lock, a barrier — so the state under test
+  cannot dissolve while you look at it. Then add contention until the
+  interleaving is reliably reached, and report the rate.
 
 ## Say what a number means
 
