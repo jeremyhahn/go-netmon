@@ -337,6 +337,47 @@ A useful smell: if you can describe your fixture as "N things, each with M
 values", it probably cannot distinguish per-thing logic from per-set logic. Give
 one of them a different M.
 
+### Worked example: the author sprang this trap within the hour
+
+The section above was written on the afternoon of 2026-09-02. That same evening,
+its author wrote this test for a websocket backoff defect:
+
+```go
+for i := 0; i < SteadyRoundsBeforeBackoff+1; i++ {
+    h.streamMetrics(context.Background())     // warm up past the backoff
+}
+joined := subscriber()
+h.Subscribe(joined, "q")
+h.streamMetrics(context.Background())         // and join
+// assert the new subscriber got a value
+```
+
+It passed. The defect was present.
+
+A backed-off query is asked on **even rounds only**, so whether a new subscriber
+is served depends on the parity of the round it joins on. Seven warm-up rounds
+put the join on round eight, which is even, which is a round the query is asked
+on anyway. **The test measured the arithmetic of its own warm-up, not the rule.**
+Measured afterwards, at matching effort: the even arm passes with the defect
+present, and only the odd arm catches it.
+
+Round parity is an axis the rule reads. The section above says to vary every
+axis the rule reads. Knowing that did not help, and the fix is the same one this
+file keeps arriving at: the test now runs **both** parities in a loop, so the
+question cannot be decided by how many warm-up rounds someone happened to write.
+
+Two things worth taking from it:
+
+- **Knowing a trap does not protect you from it.** That is the argument for
+  construction over documentation, applied to this document. A section naming a
+  hazard did not stop its own author walking into the hazard the same day; what
+  stops it is a fixture that varies the axis, or a loop that covers both cases.
+- **"Warm up N times, then act" is a smell of its own.** Any fixed N lands on
+  one phase of whatever cycle the code under test has. If the code has a cycle
+  — a parity, a modulus, a batch boundary, a retry counter — iterate over the
+  phases instead of picking one.
+
+
 Two related distinctions worth keeping beside this, because they are the same
 shape and this repository has now met all three in one day:
 
