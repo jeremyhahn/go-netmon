@@ -250,6 +250,9 @@ func (s *Server) generateDashboard(ctx context.Context, device *storage.Device, 
 		wanted[m] = true
 	}
 
+	// Sorted so construction is deterministic -- the same device produces the
+	// same dashboard on every request. This is NOT the display order; see the
+	// sort by title below.
 	names := make([]string, 0, len(available))
 	for name := range available {
 		names = append(names, name)
@@ -345,6 +348,8 @@ func (s *Server) generateDashboard(ctx context.Context, device *storage.Device, 
 		panels = append(panels, buildPanel(entry, name, module, device.Name, window))
 		cov.Charts++
 	}
+
+	sortPanelsForDisplay(panels)
 
 	coverage := make([]MIBCoverage, 0, len(byModule))
 	for _, c := range byModule {
@@ -536,6 +541,41 @@ func escapeLabelValue(value string) string {
 const unattributedModule = "(no module)"
 
 // panelTitle prefers the MIB object name, which reads better than the metric.
+// sortPanelsForDisplay orders panels by the words the reader can see.
+//
+// They used to arrive in published-metric-name order, which is the key the
+// generator iterates and NOT the string on the card: the card reads
+// "IF-MIB - ifHCInOctets" while the sort key was "snmp_ifHCInOctets". Those
+// agree only when the metric name is derived from the object name, and the
+// catalog deliberately does not guarantee that -- a derived family has no MIB
+// object at all, so its title IS its metric name and it sorted among the
+// module-prefixed titles rather than among them. Measured on dist-01: 220
+// panels, 0 out-of-order transitions by metric name and 6 by title, e.g.
+// "ENTITY-MIB - entPhysicalParentRelPos" followed by
+// "CISCO-ENTITY-SENSOR-MIB - entSensorPrecision".
+//
+// A list sorted by an invisible key is indistinguishable from an unsorted one,
+// which is how the owner read it (2026-09-02).
+//
+// Case-insensitive, because alphabetical to a reader is not byte order: every
+// module-prefixed title is uppercase and every bare metric name is lowercase,
+// so a byte-order sort puts all of the latter in a clump at the end rather
+// than in their places. Ties fall back to the exact title and then the metric,
+// so the order is total and two runs cannot differ.
+func sortPanelsForDisplay(panels []Panel) {
+	sort.SliceStable(panels, func(i, j int) bool {
+		a, b := panels[i], panels[j]
+		af, bf := strings.ToLower(a.Title), strings.ToLower(b.Title)
+		if af != bf {
+			return af < bf
+		}
+		if a.Title != b.Title {
+			return a.Title < b.Title
+		}
+		return a.Metric < b.Metric
+	})
+}
+
 func panelTitle(e CatalogEntry, metric string) string {
 	if e.Module != "" && e.Object != "" {
 		return e.Module + " - " + e.Object

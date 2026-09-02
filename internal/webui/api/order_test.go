@@ -279,3 +279,76 @@ func seriesNamesOf(t *testing.T, series []TimeSeriesData) []string {
 	}
 	return names
 }
+
+// TestPanelsArriveInTheOrderTheirTitlesRead covers a list that was sorted by a
+// key the reader cannot see.
+//
+// Panels were ordered by published metric name, which is what the generator
+// iterates. The card shows panelTitle -- "IF-MIB - ifHCInOctets" -- and the two
+// agree only when the metric name is derived from the object name. The catalog
+// deliberately does not guarantee that: a derived family has no MIB object, so
+// its title IS its bare metric name. Measured on dist-01 before the fix: 220
+// panels, 0 out-of-order transitions by metric name and 6 by title.
+//
+// A list sorted by an invisible key is indistinguishable from an unsorted one,
+// and that is how it was reported (owner, 2026-09-02).
+//
+// The fixture is built so metric order and title order DISAGREE, and so that
+// byte order and alphabetical order disagree too -- the derived family's title
+// is lowercase and every module-prefixed title is uppercase, so a byte-order
+// sort clumps it at the end instead of placing it by letter.
+func TestPanelsArriveInTheOrderTheirTitlesRead(t *testing.T) {
+	catalog := []map[string]interface{}{
+		// Metric name sorts first, title sorts last.
+		{catMetric: "snmp_aaa_zulu", catModule: "ZZZ-MIB", catObject: "zulu",
+			catKind: "gauge", catDescription: "sorts last by title, first by metric"},
+		// Metric name sorts last, title sorts first.
+		{catMetric: "snmp_zzz_alpha", catModule: "AAA-MIB", catObject: "alpha",
+			catKind: "gauge", catDescription: "sorts first by title, last by metric"},
+		// A derived family: no object, so its title is the bare metric name.
+		// Lowercase, so byte order would put it after every module title.
+		{catMetric: "snmp_mmm_derived", catModule: "", catObject: "",
+			catKind: "gauge", catDescription: "no MIB object; title is the metric"},
+	}
+	reported := []string{"snmp_aaa_zulu", "snmp_zzz_alpha", "snmp_mmm_derived"}
+
+	s := newTestServer(t)
+	s.promClient = catalogClient(t, catalogFixture{
+		Retained: catalog, Current: catalog, Device: reported,
+	})
+	deviceID := storeDevice(t, s, "dist-01", "192.0.2.14")
+	ctx := context.Background()
+	for _, name := range []string{"ZZZ-MIB", "AAA-MIB"} {
+		mib := &storage.MIB{Name: name, FilePath: "/mibs/" + name + ".mib"}
+		if err := s.storage.CreateMIB(ctx, mib); err != nil {
+			t.Fatalf("CreateMIB %s: %v", name, err)
+		}
+		if err := s.storage.AssignMIBToDevice(ctx, deviceID, mib.ID); err != nil {
+			t.Fatalf("AssignMIBToDevice %s: %v", name, err)
+		}
+	}
+
+	rec := do(t, s, http.MethodGet,
+		"/api/devices/"+itoa(deviceID)+"/dashboard", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	dash := decodeDashboard(t, rec.Body.String())
+
+	titles := make([]string, 0, len(dash.Panels))
+	metrics := make([]string, 0, len(dash.Panels))
+	for _, p := range dash.Panels {
+		titles = append(titles, p.Title)
+		metrics = append(metrics, p.Metric)
+	}
+
+	// Spelled out rather than derived by sorting the result, which would hold
+	// for any order the generator happened to produce.
+	want := []string{"AAA-MIB - alpha", "snmp_mmm_derived", "ZZZ-MIB - zulu"}
+	if !slices.Equal(titles, want) {
+		t.Errorf("panel titles = %v, want %v\n"+
+			"  (metric order was %v, so a sort by metric name gives the wrong answer,\n"+
+			"   and a byte-order sort puts the lowercase title last instead of second)",
+			titles, want, metrics)
+	}
+}
