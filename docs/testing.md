@@ -386,6 +386,42 @@ shape and this repository has now met all three in one day:
 - **absent is not zero.** A counter that does not exist yet is not a counter
   reading nothing; see the export-counter work and `#73`.
 
+## An assertion that reaches its evidence through the code under test
+
+A test can fail to fail for the *same reason* the code is wrong. If the
+observation and the behaviour share a dependency, a defect in the shared thing
+is invisible from both sides at once.
+
+Two instances, a day apart in the same repository:
+
+**A shared constant.** `TestEveryLabeledExportCounterPublishesZeroBeforeAnythingHappens`
+compared the children a helper created against `dropReasons` — the very list the
+helper reads. Removing a reason moved both sides of the assertion together and
+the test passed. Fixed by spelling the expected set out literally.
+
+**A shared accessor**, which is harder to see because it looks like good
+practice. The websocket sweep uses `steadyQueryRounds.queries()` to decide what
+to drop, and the test asserted through `queries()` too. A `queries()` that
+reported only one of the tracker's two maps would hide a leaked entry from the
+sweep **and** from the assertion — measured: that version of the test passed
+under exactly that mutation. Fixed by reading the maps directly, under the
+tracker's own lock.
+
+Reaching through the public accessor is normally the right instinct. It is the
+wrong one here, and the rule is short:
+
+> **An assertion must not reach its evidence through the machinery it is
+> testing.**
+
+Get the observation from somewhere the defect cannot reach: the underlying
+field, a second independent path, or a value written out by hand. A test in the
+same package can read unexported state, and should when the alternative is
+asking the suspect for its own alibi.
+
+The tell is that a mutation you expect to fail does not. That is a finding about
+the *claim*, not evidence that the test is merely weak — see "Mutate before you
+believe a test", which is the instrument that caught both of these.
+
 ## Say what a number means
 
 An assertion tolerance is a claim. `domTolerance` in the optical DOM tests is
