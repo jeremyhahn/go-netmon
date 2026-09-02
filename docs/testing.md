@@ -302,6 +302,49 @@ Two habits follow:
   cannot dissolve while you look at it. Then add contention until the
   interleaving is reliably reached, and report the rate.
 
+## A fixture too regular to tell the rules apart
+
+The uniformity rule behind the dashboard's table asks, per column, whether the
+rows disagree. The first implementation asked whether the **table** had more
+than one row and applied that answer to every column — so a column that had
+answered for a single row was judged uniform on its *neighbours'* data and left
+out of the table as though its rows had agreed.
+
+Five tests covered that rule. None of them could see it, and the reason is the
+transferable part:
+
+> **Every column in every fixture had the same number of rows. The fixture
+> agreed with the bug.**
+
+Not a test that cannot fail, not a test that fails for the wrong reason, not a
+test whose threshold is looser than the defect. Each of these tests *could*
+fail, on the behaviour it named. They were blind because the input was too
+regular to distinguish the rule that was implemented from the rule that was
+meant — three columns of three rows each cannot tell "per column" from "per
+table", because the two agree on every such input.
+
+The defence is ragged fixtures, and the general form is:
+
+> **Make the fixture disagree with itself along every axis the rule reads.**
+
+The rule here reads two things — a column's row count and its distinct-value
+count — so the fixture must vary both independently. The test that found it has
+one column with four rows that agree and another with a single row; under the
+table-wide count the second is dropped, under the per-column count it is kept,
+and no amount of symmetric data separates those.
+
+A useful smell: if you can describe your fixture as "N things, each with M
+values", it probably cannot distinguish per-thing logic from per-set logic. Give
+one of them a different M.
+
+Two related distinctions worth keeping beside this, because they are the same
+shape and this repository has now met all three in one day:
+
+- **"nothing to compare" is not "everything agrees."** Only the second justifies
+  leaving a column out. Reading the first as the second is what the bug did.
+- **absent is not zero.** A counter that does not exist yet is not a counter
+  reading nothing; see the export-counter work and `#73`.
+
 ## Say what a number means
 
 An assertion tolerance is a claim. `domTolerance` in the optical DOM tests is
