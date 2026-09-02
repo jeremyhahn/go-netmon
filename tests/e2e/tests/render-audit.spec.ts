@@ -31,6 +31,19 @@ test.use({
   },
 });
 
+// openFleetDevice sets the device selector's value and fires its change event.
+// The selector is populated by a separate load from the one that reveals the
+// fleet overview, so asking for a device before its option exists sets a value
+// the select does not have, fires a change nothing matches, and leaves the page
+// on no device at all -- which reads downstream as "nothing was subscribed".
+async function openDeviceById(page: Page, deviceId: number) {
+  await expect(
+    page.locator(`#dashboardDeviceSelect option[value="${deviceId}"]`),
+    `device ${deviceId} never appeared in the selector`,
+  ).toHaveCount(1, { timeout: 30000 });
+  await page.evaluate(id => (window as any).app.openFleetDevice(id), deviceId);
+}
+
 const ASSETS: [string, string, string][] = [
   ['**/js/app.js*', 'js/app.js', 'text/javascript'],
   ['**/js/chart-theme.js*', 'js/chart-theme.js', 'text/javascript'],
@@ -59,8 +72,21 @@ type CardState = {
 
 // auditDevice opens one device and classifies every card on every MIB tab.
 async function auditDevice(page: Page, deviceId: number) {
-  await page.evaluate(id => (window as any).app.openFleetDevice(id), deviceId);
-  await page.waitForTimeout(6000);
+  await openDeviceById(page, deviceId);
+
+  // Wait for the page to actually BE on this device before reading anything
+  // off it. A fixed pause was enough while switching device took seconds; the
+  // dashboard is fetched in one request now, and the read landed on the
+  // previous device's markup -- so every row of the report named the device
+  // before it, and the first read found an empty page.
+  await page.waitForFunction(id => {
+    const app = (window as any).app;
+    if (String(app.currentDashboardDevice) !== String(id)) return false;
+    const held = app.deviceDashboards?.[id];
+    if (!held) return false;
+    return document.querySelectorAll('#mibTabList .tab-button').length > 0;
+  }, deviceId, { timeout: 60000 });
+  await page.waitForTimeout(2000);
 
   // Visit each MIB tab: cards on a hidden tab never render.
   const tabs = await page.locator('#mibTabsContainer [data-mib], #mibTabsContainer .mib-tab').all();
@@ -79,7 +105,7 @@ async function auditDevice(page: Page, deviceId: number) {
   // empty once that lands. Classifying before then reports a verdict the app
   // has not reached yet, so settle first -- but only as long as it takes.
   await page.waitForFunction(() => {
-    const cards = Array.from(document.querySelectorAll('.chart-container, .widget, .chart-card'));
+    const cards = Array.from(document.querySelectorAll('.panel'));
     return !cards.some(card =>
       /waiting for data/i.test(card.textContent || '') && !card.classList.contains('is-nodata'));
   }, undefined, { timeout: 45000 }).catch(() => { /* report whatever is left */ });
@@ -87,11 +113,11 @@ async function auditDevice(page: Page, deviceId: number) {
   return page.evaluate(() => {
     const app = (window as any).app;
     const out: CardState[] = [];
-    for (const el of Array.from(document.querySelectorAll('[id^="chart-"]'))) {
+    for (const el of Array.from(document.querySelectorAll('.chart-canvas'))) {
       const id = (el as HTMLElement).id;
-      const card = el.closest('.chart-container, .widget, .chart-card') as HTMLElement | null;
+      const card = el.closest('.panel') as HTMLElement | null;
       const chart = app.charts?.[id];
-      const title = card?.querySelector('h3, .chart-title, .widget-title')?.textContent?.trim() || id;
+      const title = card?.querySelector('.panel-title')?.textContent?.trim() || id;
 
       let state: CardState['state'] = 'unknown';
       if (card?.classList.contains('is-nodata')) state = 'nodata';
@@ -102,11 +128,21 @@ async function auditDevice(page: Page, deviceId: number) {
       out.push({ id, state, title });
     }
     // Status tiles are cards too, and they carry text rather than a plot.
-    const tiles = Array.from(document.querySelectorAll('[id^="status-"]')).map(el => ({
-      id: (el as HTMLElement).id,
-      state: (/loading/i.test(el.textContent || '') ? 'waiting' : 'plotted') as CardState['state'],
-      title: (el.textContent || '').slice(0, 40),
-    }));
+    const tiles = Array.from(document.querySelectorAll('.status-value')).map(el => {
+      const tile = el as HTMLElement;
+      const card = tile.closest('.panel');
+      let state: CardState['state'] = 'plotted';
+      // A tile that has never had a sample carries data-waiting until its
+      // deadline, and is marked is-nodata after it.
+      if (card?.classList.contains('is-nodata')) state = 'nodata';
+      else if (tile.dataset.waiting) state = 'waiting';
+      return {
+        id: tile.id,
+        state,
+        title: card?.querySelector('.panel-title')?.textContent?.trim()
+          || (tile.textContent || '').slice(0, 40),
+      };
+    });
     return [...out, ...tiles];
   });
 }

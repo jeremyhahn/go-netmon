@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -96,6 +97,27 @@ func (p *PrometheusClient) Query(ctx context.Context, query string) ([]websocket
 
 		value, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
+			continue
+		}
+
+		// NaN and the infinities do not cross this boundary.
+		//
+		// Prometheus really returns them -- "NaN" is how it encodes an
+		// undefined result, and a division or a counter reset produces one on
+		// this fleet today. ParseFloat accepts the string happily, and then
+		// encoding/json REFUSES to marshal the value: "json: unsupported
+		// value: NaN".
+		//
+		// That failure lands nowhere useful. A metric frame that cannot be
+		// marshaled is never sent, while the sequence has already advanced, so
+		// the panel stops updating for as long as the NaN persists and nothing
+		// on screen says why. One NaN in an alarm's value would take the whole
+		// bell response with it.
+		//
+		// Dropping it is not a workaround but the faithful reading: NaN is
+		// Prometheus saying there is no value here, and a sample is how this
+		// API says there is one.
+		if math.IsNaN(value) || math.IsInf(value, 0) {
 			continue
 		}
 

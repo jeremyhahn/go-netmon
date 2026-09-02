@@ -189,21 +189,21 @@ Full DESCRIPTION text is carried. It is 2,014 KiB across 9,638 objects (mean
 symbol-deduplicated, so storage is not the constraint and the recurring cost is
 fixed.
 
-## The read contract: lookback, and newest wins
+## The read contract: two reads, and the one still being written wins
 
 Two rules, and they are needed together because each creates the problem the
 other solves.
 
-**1. Query with a lookback, not at an instant:**
+**1. Read the wide window, so a missed emission is invisible:**
 
     last_over_time(snmp_metric_catalog[1h])
 
 Every panel depends on the catalog, so its failure mode is unusual: the metrics
 keep arriving and look perfectly healthy while every description disappears at
-once, fleet-wide, from one emitter's bad minute. A point query makes catalog
-freshness load-bearing for the whole UI. A lookback makes a missed emission
-invisible, and turns a total outage into a slow degradation that the alerts
-below catch first.
+once, fleet-wide, from one emitter's bad minute. A point query alone makes
+catalog freshness load-bearing for the whole UI. The lookback makes a missed
+emission invisible, and turns a total outage into a slow degradation that the
+alerts below catch first.
 
 `deploy/rules/catalog.yml` alerts on write failure, on nothing being published
 at all, and on published metrics the catalog cannot describe. Note that
@@ -211,24 +211,58 @@ at all, and on published metrics the catalog cannot describe. Note that
 evaluate and appear as `ALERTS` series but do not page anyone until one is
 wired up.
 
-**2. Resolve duplicates per `metric=` by newest sample.**
+**2. Read the current rows too, and lay them over the window:**
+
+    snmp_metric_catalog
 
 Module, description, unit and identity are all labels, so a MIB reload that
 changes any of them produces a *different series*. The emitter stops writing
-the superseded one immediately, but the lookback above keeps it queryable for
-as long as the window — so within that window a consumer can see two rows for
-one `metric=` with conflicting contracts.
+the superseded one immediately, but rule 1 keeps it queryable for as long as
+the window — so within that window a consumer sees two rows for one `metric=`
+with conflicting contracts.
 
-The current row is always the one with the newest sample, because only the
-current row is still being written. In PromQL, take the maximum timestamp per
-metric:
+The current row is the one still being written, and a plain instant selector is
+how Prometheus is asked that: a series answers one only while it has a sample
+inside its lookback delta, and the emitter's two-minute interval is well inside
+it. Read both, key both by `metric=`, and let the current read win. Whatever the
+window still holds for a metric nothing is publishing is exactly what rule 1 is
+for.
 
-    last_over_time(snmp_metric_catalog[1h])
-      and on (metric) (
-        timestamp(last_over_time(snmp_metric_catalog[1h]))
-          == on (metric) group_left max by (metric) (
-               timestamp(last_over_time(snmp_metric_catalog[1h])))
-      )
+**This resolves a reload within minutes, not instantly.** Remote write carries
+no stale markers, so Prometheus keeps selecting the superseded sample until it
+ages past the lookback delta — five minutes by default. During that overlap
+both rows answer the current read and nothing in the data distinguishes them.
+The consumer therefore orders the tie on the full label set of the row — every
+field it carries, length-prefixed so the encoding is injective. The answer is
+not necessarily the right one for those few minutes, but it is the *same* one
+every time, so a page reload cannot flip a description between two modules.
+After the overlap the superseded row falls out of the current read on its own
+and the answer is correct. This bounds the ambiguity at the lookback delta
+instead of the full hour, which is what the old rule left it at.
+
+**This cannot be done by comparing timestamps, and an earlier version of this
+document said it could.** A range-vector function stamps its output at the
+query's evaluation time, not at the time of the sample it selected. Measured
+against monitor-01's Prometheus 3.14.0: the two live rows for `snmp_chassisType`,
+last written at `1788303900` and `1788304140`, both came back stamped
+`1788304293` — the instant the query ran. The `max by (metric) (timestamp(...))`
+expression this section used to prescribe therefore compares a constant against
+itself, matches every row, and resolves nothing; whichever row Prometheus
+returned first won. `internal/webui/api/catalog.go` implemented that rule
+faithfully and was a no-op in production.
+
+The subquery that *would* carry true sample times is correct and was rejected
+on cost:
+
+    last_over_time(timestamp(snmp_metric_catalog)[1h:1m])
+
+Measured on monitor-01 over 12,324 catalog rows and 14,383 enum rows: 3.4–5.2 s for
+the subquery against 0.5–0.7 s (catalog) and 0.4–0.6 s (enums) for the plain
+reads, on every dashboard load. Two reads per family is twice the *work* of the
+single wide read it replaces; `internal/webui/api/catalog.go` issues all four
+concurrently, so the wall-clock cost is the slowest read rather than their sum,
+and a Prometheus that is timing out costs one client timeout instead of four in
+a row.
 
 **The tension is deliberate and worth naming:** a longer lookback buys
 resilience against a missed emission and, by exactly the same mechanism,
@@ -236,6 +270,16 @@ extends the window in which a superseded row is still visible. Neither rule is
 optional. There is no `generation` label on the rows because there does not
 need to be one — and adding one would mint 20,390 fresh series on every
 reload, which is a worse cure than the disease.
+
+**`snmp_metric_enum` follows the same two reads**, resolved per `(metric,
+value)` rather than per `metric`. A reload that renames value 1 from `up` to
+`active` writes a different series, so both labels sit in the window; the
+current read carries only the value the reload touched, and it is laid over the
+retained decode one value at a time. Replacing the decode wholesale would blank
+the untouched values of the same enumeration. A value the reload *removed*
+lingers until the window passes, which is the safe direction: a decode nobody
+sends any more is inert, where dropping the retained rows would blank a working
+enumeration whenever an emission was late.
 
 ## The published set records delivery, not intent
 

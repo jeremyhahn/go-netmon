@@ -879,18 +879,6 @@ test-webui-websocket: ## Run Web UI websocket package tests
 	@echo "Running Web UI websocket tests..."
 	$(GOTEST) -v -race -coverprofile=coverage-webui-websocket.out ./internal/webui/websocket/...
 
-test-dashboard: ## Run dashboard generator package tests
-	@echo "Running dashboard generator tests..."
-	$(GOTEST) -v -race -coverprofile=coverage-dashboard.out ./internal/webui/dashboard/...
-
-bench-dashboard: ## Run dashboard generator package benchmarks
-	$(GOTEST) -bench=. -benchmem ./internal/webui/dashboard/...
-
-coverage-dashboard: ## Generate dashboard generator package coverage
-	@mkdir -p $(COVERAGE_DIR)
-	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage-dashboard.out ./internal/webui/dashboard/...
-	$(GOCOVER) -html=$(COVERAGE_DIR)/coverage-dashboard.out -o $(COVERAGE_DIR)/coverage-dashboard.html
-	@echo "Dashboard generator coverage: $(COVERAGE_DIR)/coverage-dashboard.html"
 bench-webui: ## Run Web UI package benchmarks
 	$(GOTEST) -bench=. -benchmem ./internal/webui/...
 

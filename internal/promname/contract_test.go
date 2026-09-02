@@ -13,7 +13,6 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib/storage"
 	"github.com/jeremyhahn/go-netmon/internal/promname"
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
-	"github.com/jeremyhahn/go-netmon/internal/webui/dashboard"
 )
 
 // The OIDs and objects the contract is checked against: one scalar, one table
@@ -276,55 +275,22 @@ func TestQueryBuilderNamesMatchExporter(t *testing.T) {
 	}
 }
 
-// TestDashboardWidgetsNameExporterMetrics pins the web UI dashboard spec to the
-// exporter. The browser queries whatever metric name the spec hands it, so a
-// widget naming a metric that does not exist is six cards reading "Waiting for
-// data..." forever.
-func TestDashboardWidgetsNameExporterMetrics(t *testing.T) {
-	store := contractStore(t)
-	samples := exported(t, store, ifNumberOID+".0", ifInOctetsOID+".10", bgpPrefixOID+".1.4.203.0.113.202")
-
-	spec, err := dashboard.GenerateDashboard(store, testModule)
-	if err != nil {
-		t.Fatalf("generate dashboard: %v", err)
-	}
-
-	wantByObject := map[string]string{
-		"ifNumber":                           samples[ifNumberOID+".0"].Name,
-		"ifInOctets":                         samples[ifInOctetsOID+".10"].Name,
-		"cbgpPeer2FsmEstablishedTransitions": samples[bgpPrefixOID+".1.4.203.0.113.202"].Name,
-	}
-
-	seen := make(map[string]bool, len(wantByObject))
-	check := func(objectName, metric string) {
-		want, tracked := wantByObject[objectName]
-		if !tracked {
-			return
-		}
-		seen[objectName] = true
-		if metric != want {
-			t.Errorf("widget %s carries metric %q, exporter emitted %q", objectName, metric, want)
-		}
-	}
-
-	for _, widget := range spec.ScalarWidgets {
-		check(widget.Name, widget.Metric)
-	}
-	for _, table := range spec.TableWidgets {
-		for _, chart := range table.MetricCharts {
-			check(chart.Name, chart.Metric)
-		}
-		for _, field := range table.StatusFields {
-			check(field.Name, field.Metric)
-		}
-	}
-
-	for objectName := range wantByObject {
-		if !seen[objectName] {
-			t.Errorf("dashboard spec has no widget for %s, so its naming is unchecked", objectName)
-		}
-	}
-}
+// The web UI's half of this gate moved, because the drift it guarded can no
+// longer happen here.
+//
+// It used to generate a dashboard specification from this MIB store and check
+// that every widget named a metric the exporter emits. A panel's metric name is
+// no longer derived from a MIB object at all: it is a name Prometheus told the
+// server it is holding for that device, so a panel naming a metric nothing
+// publishes cannot be constructed.
+//
+// What CAN still drift is the identity join a panel query is built around --
+// the catalog declares which index labels to match on, and if those disagree
+// with the labels the exporter attaches, the join matches nothing and every
+// line on the panel loses its name. That gate is
+// TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches in internal/metrics,
+// which is where the catalog is built and so where the two sides can be
+// compared without a second implementation of either.
 
 // TestIndexLabelsMatchExporter pins the label names a consumer selects a table
 // row by to the labels the exporter actually attaches.
@@ -359,46 +325,6 @@ func TestIndexLabelsMatchExporter(t *testing.T) {
 				t.Errorf("label %s = %q, want %q", label, value, tt.wantValue)
 			}
 		})
-	}
-}
-
-// TestDashboardInstanceSelectorMatchesExporter pins the label a dashboard picks
-// a table row by -- the one the browser puts in its query -- to the labels the
-// exporter attaches to that table's samples.
-func TestDashboardInstanceSelectorMatchesExporter(t *testing.T) {
-	store := contractStore(t)
-	samples := exported(t, store, ifInOctetsOID+".10", bgpPrefixOID+".1.4.203.0.113.202")
-
-	spec, err := dashboard.GenerateDashboard(store, testModule)
-	if err != nil {
-		t.Fatalf("generate dashboard: %v", err)
-	}
-	if len(spec.TableWidgets) == 0 {
-		t.Fatal("dashboard spec has no table widgets, so no selector is checked")
-	}
-
-	// One representative sample per table, keyed by the table's name.
-	sampleForTable := map[string]*metrics.Sample{
-		"ifTable":        samples[ifInOctetsOID+".10"],
-		"cbgpPeer2Table": samples[bgpPrefixOID+".1.4.203.0.113.202"],
-	}
-
-	for _, widget := range spec.TableWidgets {
-		sample, known := sampleForTable[widget.TableName]
-		if !known {
-			t.Fatalf("unexpected table widget %q; the test's sample map needs updating", widget.TableName)
-		}
-
-		if _, found := sample.Labels[widget.InstanceSelector.LabelName]; !found {
-			t.Errorf("table %s selects rows by label %q, which the exporter does not attach; it emitted %v",
-				widget.TableName, widget.InstanceSelector.LabelName, sample.Labels)
-		}
-		for _, label := range widget.InstanceSelector.IndexLabels {
-			if _, found := sample.Labels[label]; !found {
-				t.Errorf("table %s lists index label %q, which the exporter does not attach; it emitted %v",
-					widget.TableName, label, sample.Labels)
-			}
-		}
 	}
 }
 
@@ -624,5 +550,72 @@ func TestEntitySensorMetricNameCoversEveryType(t *testing.T) {
 				t.Errorf("%q does not carry the exporter's prefix %q", tt.want, promname.Prefix)
 			}
 		})
+	}
+}
+
+// TestIdentityLabelMatchesTheLabelTheExporterAttaches pins the derivation a
+// panel names its lines by.
+//
+// The catalog says an interface row's identity lives on snmp_ifdescr_info. A
+// consumer holding the reading does not have to go and get it: the exporter
+// promotes a table's status columns onto its own readings, so the same value is
+// already there as ifdescr. promname.IdentityLabel is the step from the one
+// name to the other, and it is exact rather than a guess only because both are
+// the column name lowercased.
+//
+// If it drifts, every line of every table panel silently falls back to being
+// named after the panel -- forty interfaces all called "IF-MIB - ifInOctets".
+func TestIdentityLabelMatchesTheLabelTheExporterAttaches(t *testing.T) {
+	store := contractStore(t)
+
+	// The status column has to be in the same conversion as the reading: the
+	// exporter promotes a column's value onto its siblings from what it just
+	// polled, so asking for the reading alone produces no name to promote.
+	samples := metrics.ConvertSNMPResultsWithTableIndexes(
+		"contract-device",
+		[]*snmp.Result{
+			{OID: ifDescrOID + ".10", Type: gosnmp.OctetString,
+				Value: []byte("GigabitEthernet0/0"), Timestamp: time.Unix(0, 0)},
+			{OID: ifInOctetsOID + ".10", Type: gosnmp.Counter32,
+				Value: uint(4200), Timestamp: time.Unix(0, 0)},
+		},
+		nil, metrics.NewTableIndexCache(store), nil)
+
+	var reading *metrics.Sample
+	for _, sample := range samples {
+		if sample.Name == promname.MetricName("ifInOctets") {
+			reading = sample
+			break
+		}
+	}
+	if reading == nil {
+		t.Fatalf("the exporter emitted no reading for ifInOctets; it emitted %v", samples)
+	}
+
+	label := promname.IdentityLabel(promname.InfoMetricName("ifDescr"))
+
+	// The derivation has to land on the label naming convention, not near it.
+	if want := promname.IndexLabel("ifDescr"); label != want {
+		t.Errorf("IdentityLabel(InfoMetricName(\"ifDescr\")) = %q, want %q", label, want)
+	}
+	// And that label has to be one the exporter really attached.
+	if got, want := reading.Labels[label], "GigabitEthernet0/0"; got != want {
+		t.Errorf("the reading's %q label = %q, want %q; it carries %v",
+			label, got, want, reading.Labels)
+	}
+}
+
+// TestIdentityLabelRefusesANameItCannotDerive covers the input that is not an
+// info metric at all.
+//
+// A catalog row with no identity metric leaves the field empty, and a renderer
+// must not then be handed "" as a label to read -- every series carries no
+// label called "", so it would match nothing while looking like an answer.
+func TestIdentityLabelRefusesANameItCannotDerive(t *testing.T) {
+	for _, input := range []string{"", "snmp_ifInOctets", "ifdescr_info", "not a metric"} {
+		if got := promname.IdentityLabel(input); got != "" {
+			t.Errorf("IdentityLabel(%q) = %q, want empty: it is not an info metric name",
+				input, got)
+		}
 	}
 }

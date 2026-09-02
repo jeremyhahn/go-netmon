@@ -41,7 +41,7 @@ func coverageMIB() []*mib.OIDMetadata {
 		},
 		// A text status column: published ONLY as an info metric.
 		{
-			OID: ".1.3.6.1.2.1.31.1.1.1.1", Name: "ifName", Module: "IF-MIB", Parent: ".1.3.6.1.2.1.2.2.1",
+			OID: ".1.3.6.1.2.1.2.2.1.2", Name: "ifDescr", Module: "IF-MIB", Parent: ".1.3.6.1.2.1.2.2.1",
 			Type: "DisplayString", Access: "read-only", IsColumn: true,
 			Description: "The textual name of the interface.",
 			ObjectClass: mib.ObjectClassStatusColumn, EntryOID: ".1.3.6.1.2.1.2.2.1",
@@ -70,7 +70,7 @@ func coverageResults() []*snmp.Result {
 	return []*snmp.Result{
 		{OID: ".1.3.6.1.2.1.2.2.1.10.1", Type: gosnmp.Counter32, Value: uint(4200), Timestamp: when},
 		{OID: ".1.3.6.1.2.1.2.2.1.8.1", Type: gosnmp.Integer, Value: 1, Timestamp: when},
-		{OID: ".1.3.6.1.2.1.31.1.1.1.1.1", Type: gosnmp.OctetString, Value: []byte("Ethernet1/3"), Timestamp: when},
+		{OID: ".1.3.6.1.2.1.2.2.1.2.1", Type: gosnmp.OctetString, Value: []byte("Ethernet1/3"), Timestamp: when},
 		{OID: ".1.3.6.1.4.1.21317.1.3.1.13.1.9.2.0", Type: gosnmp.OctetString, Value: []byte("PSU2 is on"), Timestamp: when},
 	}
 }
@@ -100,11 +100,11 @@ func TestCatalogDescribesEveryPublishedFamily(t *testing.T) {
 		IndexColumns: []mib.IndexColumn{
 			{Name: "ifIndex", OID: ".1.3.6.1.2.1.2.2.1.1", Type: "Integer32", BaseType: "Integer32"},
 		},
-	}, []string{".1.3.6.1.2.1.2.2.1.10", ".1.3.6.1.2.1.2.2.1.8", ".1.3.6.1.2.1.31.1.1.1.1"})
+	}, []string{".1.3.6.1.2.1.2.2.1.10", ".1.3.6.1.2.1.2.2.1.8", ".1.3.6.1.2.1.2.2.1.2"})
 
 	statusColumns := map[string][]statusColumnInfo{
 		".1.3.6.1.2.1.2.2.1": {
-			{Name: "ifName", OID: ".1.3.6.1.2.1.31.1.1.1.1", ColumnID: "1", LabelName: "ifname"},
+			{Name: "ifDescr", OID: ".1.3.6.1.2.1.2.2.1.2", ColumnID: "2", LabelName: "ifdescr"},
 			{Name: "ifOperStatus", OID: ".1.3.6.1.2.1.2.2.1.8", ColumnID: "8", LabelName: "ifoperstatus"},
 		},
 	}
@@ -184,7 +184,7 @@ func TestCatalogKindMatchesHowTheFamilyIsPublished(t *testing.T) {
 		{"snmp_ifInOctets", MetricKindCounter, "octets"},
 		{"snmp_ifOperStatus", MetricKindEnum, ""},
 		{"snmp_ifoperstatus_info", MetricKindString, ""},
-		{"snmp_ifname_info", MetricKindString, ""},
+		{"snmp_ifdescr_info", MetricKindString, ""},
 		{"snmp_psu2status_info", MetricKindString, ""},
 	}
 
@@ -209,7 +209,7 @@ func TestCatalogKindMatchesHowTheFamilyIsPublished(t *testing.T) {
 
 	// A text object never reaches the numeric path, so its numeric name is a
 	// name nothing writes and the catalog must not claim it.
-	for _, neverPublished := range []string{"snmp_ifName", "snmp_PSU2Status"} {
+	for _, neverPublished := range []string{"snmp_ifDescr", "snmp_PSU2Status"} {
 		if _, found := index.entryFor(neverPublished); found {
 			t.Errorf("the catalog describes %s, which the exporter never publishes", neverPublished)
 		}
@@ -219,12 +219,12 @@ func TestCatalogKindMatchesHowTheFamilyIsPublished(t *testing.T) {
 // TestCatalogDescribesTheIdentityMetricItPointsAt checks that
 // identity_info_metric names a family the catalog can also describe.
 //
-// A renderer told to join snmp_ifname_info, only to find the catalog says
+// A renderer told to join snmp_ifdescr_info, only to find the catalog says
 // nothing about it, is being sent somewhere it cannot follow.
 func TestCatalogDescribesTheIdentityMetricItPointsAt(t *testing.T) {
 	objects := coverageMIB()
 	statusColumns := map[string][]statusColumnInfo{
-		".1.3.6.1.2.1.2.2.1": {{Name: "ifName"}, {Name: "ifOperStatus"}},
+		".1.3.6.1.2.1.2.2.1": {{Name: "ifDescr"}, {Name: "ifOperStatus"}},
 	}
 	index := newCatalogIndex(objects, newTableSet(), statusColumns)
 
@@ -254,12 +254,14 @@ var _ = context.Background
 // with the same metric= and conflicting contracts.
 //
 // The producer's half of the contract is what this asserts: after a reload the
-// emitter writes the new row and stops writing the old one, so the current row
-// is always the one with the newest sample. The consumer's half -- resolve
-// duplicates per metric= by newest sample -- is documented in
-// docs/metrics/metric-catalog.md, and both halves are needed together: the
-// lookback that buys resilience against a missed emission is the same lookback
-// that keeps a superseded row visible.
+// emitter writes the new row and STOPS WRITING the old one. That is the whole
+// basis of the consumer's half -- read the current rows with a plain selector
+// and lay them over the wide window, so the row still being written wins --
+// which is documented in docs/metrics/metric-catalog.md. Both halves are needed
+// together: the lookback that buys resilience against a missed emission is the
+// same lookback that keeps a superseded row visible. (The consumer cannot do it
+// by comparing sample timestamps; a last_over_time read stamps every row with
+// the query's evaluation time. See the same document.)
 func TestCatalogAfterReloadWritesOnlyTheCurrentRow(t *testing.T) {
 	before := []*mib.OIDMetadata{{
 		OID: ".1.3.6.1.2.1.2.2.1.10", Name: "ifInOctets", Module: "IF-MIB",
@@ -315,10 +317,161 @@ func TestCatalogAfterReloadWritesOnlyTheCurrentRow(t *testing.T) {
 	}
 
 	// And the superseded label set is genuinely no longer written, which is
-	// what makes "newest sample wins" resolve to the current row.
+	// what drops it out of the consumer's current read and lets that read
+	// decide.
 	for _, sample := range second {
 		if sample.Labels[labelCatalogModule] == "IF-MIB" {
-			t.Error("the emission still writes the superseded row; newest-wins would not converge")
+			t.Error("the emission still writes the superseded row; the consumer's current read would not converge")
 		}
+	}
+}
+
+// TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches is the drift gate the
+// dashboard's identity join stands on.
+//
+// A panel of forty interfaces has to put a name on each line. The name is not
+// on the series -- a table column carries only its index labels -- so the
+// dashboard joins the info metric the catalog names, matching on the index
+// labels the catalog declares:
+//
+//	snmp_ifInOctets{...} * on(device,ifindex) group_left(value) snmp_ifname_info{...}
+//
+// If those declared labels are not the labels the exporter actually attaches,
+// the join matches nothing. Every line keeps its data and loses its name, which
+// is exactly the class of failure that is invisible from either side alone: the
+// catalog is self-consistent, the samples are self-consistent, and the panel is
+// wrong.
+//
+// This replaces the two dashboard cases in internal/promname/contract_test.go.
+// They generated a specification from a MIB store and checked its widgets named
+// metrics the exporter emits; a panel's metric name now comes from Prometheus
+// itself, so that drift cannot occur, while this one can.
+func TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches(t *testing.T) {
+	objects := coverageMIB()
+
+	cache := &TableIndexCache{friendlyNameCache: make(map[string]string)}
+	tables := newTableSet()
+	tables.add(&TableIndexInfo{
+		TableOID: ".1.3.6.1.2.1.2.2", EntryOID: ".1.3.6.1.2.1.2.2.1",
+		IndexNames: []string{"ifIndex"},
+		IndexColumns: []mib.IndexColumn{
+			{Name: "ifIndex", OID: ".1.3.6.1.2.1.2.2.1.1", Type: "Integer32", BaseType: "Integer32"},
+		},
+	}, []string{".1.3.6.1.2.1.2.2.1.10", ".1.3.6.1.2.1.2.2.1.8", ".1.3.6.1.2.1.2.2.1.2"})
+
+	statusColumns := map[string][]statusColumnInfo{
+		".1.3.6.1.2.1.2.2.1": {
+			{Name: "ifDescr", OID: ".1.3.6.1.2.1.2.2.1.2", ColumnID: "2", LabelName: "ifdescr"},
+			{Name: "ifOperStatus", OID: ".1.3.6.1.2.1.2.2.1.8", ColumnID: "8", LabelName: "ifoperstatus"},
+		},
+	}
+	catalog := newCatalogIndex(objects, tables, statusColumns)
+
+	cache.publishIndex(&mibSweep{
+		names:         newObjectNameIndex(objects),
+		tables:        tables,
+		statusColumns: statusColumns,
+		catalog:       catalog,
+	})
+
+	// The labels the exporter actually attached, per published family.
+	samples := ConvertSNMPResultsWithTableIndexes("dist-01", coverageResults(), nil, cache, nil)
+	attached := map[string]map[string]string{}
+	for _, sample := range samples {
+		attached[sample.Name] = sample.Labels
+	}
+	if len(attached) == 0 {
+		t.Fatal("the conversion produced no samples; the fixture is not exercising anything")
+	}
+
+	checked := 0
+	for name, labels := range attached {
+		entry, described := catalog.entryFor(name)
+		if !described {
+			continue
+		}
+		// A scalar has no row and no index; there is nothing here to check.
+		if len(entry.IndexLabels) == 0 && entry.IdentityInfoMetric == "" {
+			continue
+		}
+
+		for _, label := range entry.IndexLabels {
+			if _, found := labels[label]; !found {
+				t.Errorf("the catalog says %s is indexed by %q, which the exporter does not "+
+					"attach; it emitted %v. A panel joining on that label matches nothing "+
+					"and every line loses its name.", name, label, labels)
+			}
+			checked++
+		}
+
+		// And the label the identity info metric's name derives to has to be
+		// one the exporter really puts on the reading. promname.IdentityLabel
+		// is the derivation consumers use; it cannot be called from here
+		// because promname imports this package, so the rule is repeated below
+		// and TestIdentityLabelMatchesTheLabelTheExporterAttaches in
+		// internal/promname pins the two together against real samples.
+		if identity := identityLabelOf(entry.IdentityInfoMetric); identity != "" {
+			// Only for the readings of the table, not for the info family
+			// itself -- an info metric does not carry its own name twice.
+			if entry.Kind != MetricKindString {
+				if _, found := labels[identity]; !found {
+					t.Errorf("the catalog names %s as where %s's row identity lives, so a "+
+						"renderer reads the label %q; the exporter emitted %v",
+						entry.IdentityInfoMetric, name, identity, labels)
+				}
+				checked++
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no index label or identity metric was checked; the fixture no longer " +
+			"produces a table column and this gate is asserting nothing")
+	}
+}
+
+// identityLabelOf is promname.IdentityLabel, which this package cannot import
+// because promname imports it. See the note at its only call site.
+func identityLabelOf(infoMetric string) string {
+	if infoMetric == "" {
+		return ""
+	}
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(infoMetric, metricNamePrefix), "_info")
+	if trimmed == infoMetric {
+		return ""
+	}
+	return trimmed
+}
+
+// TestTheDeviceIdentityFamilyIsDescribed covers the other family this collector
+// derives rather than reads.
+//
+// snmp_system_info collapses the whole system group into one series whose
+// labels are sysDescr, sysContact and the rest, so no MIB object is published
+// under that name and nothing derived from a sweep of the MIB store can
+// describe it. Undescribed, a renderer sees an unknown kind and plots a line
+// through the constant 1 -- and because the family carries no module either, it
+// does so on every module tab of every device. Measured on core-01: ten
+// tabs, ten flat lines.
+func TestTheDeviceIdentityFamilyIsDescribed(t *testing.T) {
+	var found *CatalogEntry
+	for _, entry := range derivedCatalogEntries() {
+		if entry.Metric == systemInfoMetricName {
+			found = entry
+			break
+		}
+	}
+
+	if found == nil {
+		t.Fatalf("%s has no derived catalog entry, so it renders as an unlabeled "+
+			"line through the constant 1 on every module tab", systemInfoMetricName)
+	}
+	if found.Kind != MetricKindString {
+		t.Errorf("kind = %q, want %q: every one of its values is text and the "+
+			"sample is always 1", found.Kind, MetricKindString)
+	}
+	if found.Description == "" {
+		t.Error("the entry carries no description, which is the only thing a text " +
+			"panel has to put on the card")
 	}
 }

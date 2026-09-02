@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // Config represents the main application configuration
 type Config struct {
@@ -12,6 +15,43 @@ type Config struct {
 	Devices    []Device         `yaml:"devices"`
 	MIBModules []MIBModule      `yaml:"mib_modules"`
 	Logging    LoggingConfig    `yaml:"logging"`
+
+	// Alarms are the conditions an operator wants to be told about. They are
+	// read by the web UI, which evaluates them and rings the bell; the poller
+	// ignores them. Both processes read this one file on purpose -- two copies
+	// drift, and a pair disagreeing about anything in here is a fault nobody
+	// can see.
+	Alarms []AlarmRule `yaml:"alarms"`
+}
+
+// AlarmRule is one condition worth telling an operator about.
+//
+// It is a PromQL expression rather than a threshold on a named metric, and
+// that is the point: the metrics worth alarming on include the families the
+// poller DERIVES and the OIDs no MIB describes, and a rule that had to name a
+// MIB object could reach neither. It is also the form an operator already
+// knows, so a rule can be tried in Prometheus's own console before it is
+// written down here.
+type AlarmRule struct {
+	// Name identifies the rule and is what the reader sees first.
+	Name string `yaml:"name"`
+
+	// Expr fires for every series it returns, so a rule about interfaces
+	// fires once per interface rather than once per device.
+	Expr string `yaml:"expr"`
+
+	// Severity is one of critical, warning, info.
+	Severity string `yaml:"severity"`
+
+	// Summary is one line saying what is wrong; Description is the longer
+	// text shown when the reader opens the alarm.
+	Summary     string `yaml:"summary"`
+	Description string `yaml:"description"`
+
+	// For is how long the expression must keep returning a series before the
+	// alarm is raised, as a duration ("5m"). It is what separates a condition
+	// from a blip. Empty means raise it on the first evaluation.
+	For string `yaml:"for"`
 }
 
 // GlobalConfig contains global application settings
@@ -230,7 +270,63 @@ func (c *Config) Validate() error {
 		return &ValidationError{Field: "logging.file", Message: "required when logging.output is \"file\""}
 	}
 
+	return validateAlarms(c.Alarms)
+}
+
+// validateAlarms rejects a rule that could not do anything useful.
+//
+// The check is deliberately shallow: it does not parse the PromQL, because
+// this process is not the one that evaluates it and a rule that Prometheus
+// rejects is reported by the evaluator against the real engine rather than
+// guessed at here. What it does catch is the shape -- a rule with no name
+// cannot be shown, one with no expression can never fire, and a severity
+// nobody recognizes sorts a critical alarm to the bottom of the bell.
+func validateAlarms(rules []AlarmRule) error {
+	seen := make(map[string]bool, len(rules))
+
+	for i, rule := range rules {
+		field := "alarms[" + strconv.Itoa(i) + "]"
+
+		if rule.Name == "" {
+			return &ValidationError{Field: field + ".name", Message: "cannot be empty"}
+		}
+		if seen[rule.Name] {
+			return &ValidationError{
+				Field:   field + ".name",
+				Message: "duplicate alarm name: " + rule.Name,
+			}
+		}
+		seen[rule.Name] = true
+
+		if rule.Expr == "" {
+			return &ValidationError{
+				Field:   field + ".expr",
+				Message: "cannot be empty: a rule with no expression can never fire",
+			}
+		}
+		if !validAlarmSeverities[rule.Severity] {
+			return &ValidationError{
+				Field:   field + ".severity",
+				Message: "must be one of: critical, warning, info",
+			}
+		}
+		if rule.For != "" {
+			if _, err := time.ParseDuration(rule.For); err != nil {
+				return &ValidationError{
+					Field:   field + ".for",
+					Message: "is not a duration: " + err.Error(),
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// validAlarmSeverities are the severities an operator may write. They mirror
+// internal/webui/alarm, which cannot be imported here: the poller reads this
+// package and has no business linking the web UI's alarm engine.
+var validAlarmSeverities = map[string]bool{
+	"critical": true, "warning": true, "info": true,
 }
 
 // Validate validates a device configuration

@@ -392,25 +392,35 @@ func indexLabelNames(table *TableIndexInfo) []string {
 	return names
 }
 
-// identityInfoMetric names the info metric a renderer joins against to put a
-// human-readable name on each line of a panel.
+// identityInfoMetric names the family a renderer gets a row's name from.
 //
 // A table's status columns are the candidates -- ifName, ifDescr, ifAlias --
 // and the MIB does not declare which of them names the row. The preference
 // below is a presentation convention and is documented as one: a column whose
-// name ends in "Name" is what an operator calls the thing, a description is
-// the fallback, and an alias is the operator's own label and so the least
-// likely to be populated. Where none of those match, the first status column
-// in sorted order is used, which is arbitrary but identical on every collector
-// given the same MIBs.
+// name ends in "Name" is what an operator calls the thing, a description is the
+// fallback, and an alias is the operator's own label and so the least likely to
+// be populated.
+//
+// ENUMERATED columns are excluded outright, and that is not a preference. An
+// enumeration has a handful of values by construction, so it cannot tell two
+// rows apart -- it is a state, not a name. cbgpPeer2Table has no Name, Descr or
+// Alias column, so the sorted-order fallback elected cbgpPeer2AdminStatus, and
+// on core-01 every row of every panel in that table was labeled "start":
+// eight BGP peers, eight lines, one name between them. An unnamed row falls
+// back to its index, which is the peer's address and tells them apart exactly.
+//
+// Where no candidate survives, the answer is no identity at all rather than a
+// bad one.
 func identityInfoMetric(columns []statusColumnInfo) string {
-	if len(columns) == 0 {
-		return ""
-	}
-
 	names := make([]string, 0, len(columns))
 	for _, column := range columns {
+		if column.Meta != nil && len(column.Meta.EnumValues) > 0 {
+			continue
+		}
 		names = append(names, column.Name)
+	}
+	if len(names) == 0 {
+		return ""
 	}
 	sort.Strings(names)
 
@@ -421,7 +431,19 @@ func identityInfoMetric(columns []statusColumnInfo) string {
 			}
 		}
 	}
-	return infoMetricName(names[0])
+
+	// Nothing declared itself a name, so this table has no identity. There
+	// used to be a fallback here -- the first status column in sorted order --
+	// and it was a guess dressed as an answer. With enumerations excluded it
+	// elected cbgpPeer2LastError on cbgpPeer2Table, so every BGP peer on
+	// core-01's dashboard was called "04:00": the hex rendering of a last
+	// error code, identical across all eight rows.
+	//
+	// Returning nothing sends a renderer to the row's index instead, which for
+	// that table is the peer's address. An index is never friendly and never
+	// wrong, and "never wrong" is the property a label has to have before
+	// "friendly" is worth anything.
+	return ""
 }
 
 // derivedCatalogEntries describes the metrics this collector produces rather
@@ -445,7 +467,24 @@ func identityInfoMetric(columns []statusColumnInfo) string {
 // declares no UNITS on entSensorValue, and the collector knows the unit
 // exactly because it scaled the reading into it.
 func derivedCatalogEntries() []*CatalogEntry {
-	entries := make([]*CatalogEntry, 0, len(sensorUnitSuffixes)+1)
+	entries := make([]*CatalogEntry, 0, len(sensorUnitSuffixes)+2)
+
+	// The device's own identity. It is derived rather than read: the system
+	// group's objects are collapsed into one info series whose labels are
+	// sysDescr, sysContact and the rest, so no MIB object is published under
+	// this name and a sweep of the store cannot describe it.
+	//
+	// Undescribed, a consumer sees an unknown kind and draws a line through
+	// the constant 1 -- one flat, meaningless panel on every module tab of
+	// every device, because the family carries no module either. Measured on
+	// core-01: ten tabs, ten of them.
+	entries = append(entries, &CatalogEntry{
+		Metric: systemInfoMetricName,
+		Kind:   MetricKindString,
+		Description: "The device's system group -- sysDescr, sysObjectID, sysContact, " +
+			"sysName, sysLocation and sysServices -- collapsed into one series " +
+			"carrying each as a label. There is no number to plot: every value is text.",
+	})
 
 	seen := make(map[string]bool, len(sensorUnitSuffixes)+1)
 	for _, sensorType := range sortedSensorTypes() {

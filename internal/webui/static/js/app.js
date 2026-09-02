@@ -50,6 +50,32 @@ const PAGER_SIZE_KEY = 'netmon-page-size';
 // reaches its terminal state at the same moment in both shapes.
 const FIRST_SAMPLE_TIMEOUT = 30000;
 
+// How often the bell re-reads what is firing. The server evaluates on its own
+// interval, so asking faster only re-reads the same answer.
+const ALARM_POLL_INTERVAL = 15000;
+
+// How many rows a tile shows before it offers the rest.
+//
+// Eight is what fits beside a chart of the same height, so a row of tiles and a
+// row of charts line up rather than stepping. A tile with forty interfaces on
+// it is a list nobody reads to the bottom of anyway; what matters is that it
+// does not clip one through the middle.
+const PANEL_ROWS_VISIBLE = 8;
+
+// Labels the bell does not repeat in an alarm's detail line: the device has its
+// own line, and the rest are bookkeeping rather than anything to act on.
+const ALARM_LABELS_HIDDEN = new Set(['__name__', 'device', 'source', 'instance', 'job']);
+
+// UNATTRIBUTED_MODULE is what the server calls the metrics no MIB module
+// claims, in its coverage table. The rail shows them under the same name, so a
+// warning about the bucket and the tab holding it read as the same thing.
+const UNATTRIBUTED_MODULE = '(no module)';
+
+// UNREADABLE_MODULE holds everything when the catalog could not be read at all.
+// Nothing has a module then, and filing it under "(no module)" would say no MIB
+// claims these metrics when the truth is that nothing could be asked.
+const UNREADABLE_MODULE = '(catalog unavailable)';
+
 // The terminal wording, in one place, because a card and a tile describing the
 // same silent object must not describe it differently. It says what is known —
 // nothing arrived — and not why, which the UI cannot tell.
@@ -96,10 +122,19 @@ class MonitoringApp {
     constructor() {
         this.ws = null;
         this.charts = {};
-        // The most recent reading for each subscribed query. A steady query is
-        // announced by name rather than re-sent, and this is what those names
-        // resolve back to.
+        // The most recent reading for each subscribed query, and the sequence
+        // number that names it: Map(query -> { seq, byKey: Map(key -> sample) }).
+        //
+        // It is the authoritative copy. A steady query is announced by name
+        // rather than re-sent and resolves back to this; a changed query
+        // usually arrives as a delta, which is applied to this. The sequence is
+        // what says whether that delta belongs to what is held.
         this.lastReadings = new Map();
+
+        // Queries this browser has asked the server to resend whole, so a run
+        // of deltas it cannot apply does not become a run of requests.
+        this.pendingResync = new Set();
+
         this.reconnectInterval = 3000;
         this.currentView = 'dashboard';
         this.currentDevice = null;
@@ -107,7 +142,7 @@ class MonitoringApp {
         this.devices = [];
         this.profiles = [];
         this.mibs = [];
-        this.deviceDashboards = {}; // { deviceId: { mibs: [], dashboards: {} } }
+        this.deviceDashboards = {}; // { deviceId: { mibs: [{name}], dashboards: Map(module -> {panels, warnings}) } }
 
         // MIB browser: the module list as last rendered, plus per-module details
         // fetched on first expand and kept so re-expanding costs nothing.
@@ -153,7 +188,6 @@ class MonitoringApp {
         this.currentTimeRange = '6h';
         this.activeMibTab = null;
         this.tableMetadata = {}; // { mibId: { tables: [...] } }
-        this.instanceSelections = {}; // { chartId: selectedInstance }
 
         // Track active WebSocket subscriptions per dashboard
         // Key: "deviceId-mibName", Value: { metricQueries: Set(), statusQueries: Set(), objects: Map(query -> obj) }
@@ -162,12 +196,18 @@ class MonitoringApp {
         // Track current selected device for re-subscription on reconnect
         this.currentDashboardDevice = null;
 
+        // Which dashboard load is the current one.
+        //
+        // Loading a device is a chain of awaits -- device status, the dashboard
+        // payload, then one module pane at a time -- and a reader who moves on
+        // does not cancel any of it. Every step compares this counter against
+        // the value it captured at the start and gives up if it has moved, so
+        // the load a reader left cannot paint its panels over the one they are
+        // looking at now, or resubscribe the queries the teardown just dropped.
+        this.dashboardLoad = 0;
+
         // Cards registered but not yet plotted; see initializeEmptyChart.
         this.pendingCharts = new Map();
-
-        // Widgets whose spec arrived without a metric name, so the failure is
-        // logged once per widget instead of once per render. See specMetric().
-        this.reportedMissingMetrics = new Set();
 
         // Load state from localStorage
         this.loadState();
@@ -190,6 +230,211 @@ class MonitoringApp {
         this.showFleetOverview();
 
         this.startDashboardRefresh();
+        this.startAlarmPolling();
+        this.bindAlarmBell();
+        this.bindPanelExpanders();
+    }
+
+    // The bell has a tick of its own, and a slow one.
+    //
+    // It is not tied to the dashboard's because it is not about the dashboard:
+    // an alarm is worth seeing whichever page the reader is on, including the
+    // ones that show no metrics at all. The server evaluates on its own
+    // interval, so asking faster than that would only re-read the same answer.
+    startAlarmPolling() {
+        const poll = () => {
+            if (document.visibilityState === 'visible') this.refreshAlarms();
+        };
+        poll();
+        setInterval(poll, ALARM_POLL_INTERVAL);
+        document.addEventListener('visibilitychange', poll);
+    }
+
+    // refreshAlarms reads what is firing and redraws the bell.
+    async refreshAlarms() {
+        try {
+            const response = await fetch('/api/alarms');
+            if (!response.ok) return;
+            this.renderAlarms(await response.json());
+        } catch (error) {
+            // A bell that cannot be read is not a bell that says all-clear.
+            // The badge keeps whatever it last knew rather than clearing, and
+            // the failure is a console record rather than a toast, because a
+            // toast every fifteen seconds during an outage is its own problem.
+            console.error('Could not read the alarms:', error);
+        }
+    }
+
+    // renderAlarms draws the badge and the list behind it.
+    renderAlarms(state) {
+        const alarms = state.alarms || [];
+        const badge = document.getElementById('alarmBadge');
+        const button = document.getElementById('alarmBellBtn');
+        const list = document.getElementById('alarmList');
+        const watching = document.getElementById('alarmWatching');
+        if (!badge || !button || !list) return;
+
+        badge.textContent = alarms.length > 99 ? '99+' : String(alarms.length);
+        badge.hidden = alarms.length === 0;
+
+        // The bell's own colour is the worst thing in it, so the reader knows
+        // whether to open it without opening it.
+        const worst = alarms.length > 0 ? alarms[0].severity : '';
+        button.classList.toggle('is-critical', worst === 'critical');
+        button.classList.toggle('is-warning', worst === 'warning');
+        button.classList.toggle('is-info', worst === 'info');
+        button.setAttribute('title', alarms.length === 0
+            ? 'Alarms — nothing firing'
+            : `Alarms — ${alarms.length} firing`);
+
+        if (watching) {
+            // "Nothing is wrong", "nothing is being watched" and "nothing
+            // could be asked" are three different answers and the bell looks
+            // identical for all of them, so it says which.
+            if (state.unevaluated > 0) {
+                watching.textContent =
+                    `${state.unevaluated} of ${state.configured} rules could not be evaluated`;
+            } else {
+                watching.textContent = state.configured === 0
+                    ? 'No alarm rules are configured'
+                    : `${state.configured} rule${state.configured === 1 ? '' : 's'} watching`;
+            }
+        }
+        // A rule that could not be asked is not a rule that found nothing, and
+        // the badge must not read as an all-clear while that is true.
+        button.classList.toggle('is-degraded', state.unevaluated > 0);
+
+        if (alarms.length === 0) {
+            let empty;
+            if (state.unevaluated > 0) {
+                empty = 'None of the rules could be evaluated, so this is not an ' +
+                    'all-clear. Check that Prometheus is answering.';
+            } else if (state.configured === 0) {
+                empty = 'Nothing is being watched. Add rules under <code>alarms:</code> ' +
+                    'in the configuration file.';
+            } else {
+                empty = 'Nothing is firing.';
+            }
+            list.innerHTML = `<p class="alarm-empty">${empty}</p>`;
+            return;
+        }
+
+        list.innerHTML = alarms.map(a => this.alarmRowHtml(a)).join('');
+    }
+
+    // alarmRowHtml is one firing alarm.
+    alarmRowHtml(alarm) {
+        // What the alarm is ABOUT, beyond the device: a rule that fires once
+        // per interface has to say which interface, or the reader is told to
+        // go and look rather than what to look at.
+        const about = Object.entries(alarm.labels || {})
+            .filter(([name]) => !ALARM_LABELS_HIDDEN.has(name))
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, value]) => `${name}=${value}`)
+            .join(' ');
+
+        return `
+            <article class="alarm-row is-${this.escapeAttr(alarm.severity || 'info')}">
+                <div class="alarm-row-head">
+                    <span class="alarm-severity">${this.escapeHtml(alarm.severity || '')}</span>
+                    <span class="alarm-since" title="${this.escapeAttr(alarm.since || '')}">${
+                        this.escapeHtml(this.sinceText(alarm.since))}</span>
+                </div>
+                <p class="alarm-summary">${this.escapeHtml(alarm.summary || alarm.rule)}</p>
+                ${alarm.device ? `<p class="alarm-device">${this.escapeHtml(alarm.device)}</p>` : ''}
+                ${about ? `<p class="alarm-about">${this.escapeHtml(about)}</p>` : ''}
+                ${alarm.description ? `<p class="alarm-description">${
+                    this.escapeHtml(alarm.description)}</p>` : ''}
+            </article>
+        `;
+    }
+
+    // sinceText says how long an alarm has been up, which is the thing a
+    // reader wants before they want the timestamp.
+    sinceText(since) {
+        const at = Date.parse(since);
+        if (isNaN(at)) return '';
+
+        const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+        if (seconds < 60) return `${seconds}s`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+        return `${Math.floor(seconds / 86400)}d`;
+    }
+
+    // bindPanelExpanders lets a tile show the rest of its rows.
+    //
+    // Delegated from the tab content rather than bound per tile: a device with
+    // 220 panels would otherwise add 220 listeners on every render, and every
+    // re-render would leak the previous set.
+    bindPanelExpanders() {
+        const content = document.getElementById('mibTabContent');
+        if (!content || this.panelExpandersBound) return;
+        this.panelExpandersBound = true;
+
+        content.addEventListener('click', event => {
+            const button = event.target.closest('[data-panel-more]');
+            if (!button) return;
+
+            const value = button.parentElement?.querySelector('.status-value')
+                || button.previousElementSibling?.closest('.status-value')
+                || button.closest('.panel')?.querySelector('.status-value');
+            if (!value) return;
+
+            value.dataset.expanded = value.dataset.expanded === '1' ? '0' : '1';
+
+            // Redraw from what the browser already holds, so expanding does not
+            // wait for the next tick.
+            const target = this.panelTargetFor(value.id);
+            if (target) {
+                const held = this.lastReadings.get(target.panel.query);
+                if (held) this.updatePanelTile(target, [...held.byKey.values()]);
+            }
+        });
+    }
+
+    // panelTargetFor finds the subscription entry that draws one element.
+    panelTargetFor(elementId) {
+        for (const [, subscription] of this.activeSubscriptions) {
+            for (const [, target] of subscription.objects) {
+                if (target.elementId === elementId) return target;
+            }
+        }
+        return null;
+    }
+
+    // bindAlarmBell opens and closes the panel.
+    bindAlarmBell() {
+        const button = document.getElementById('alarmBellBtn');
+        const panel = document.getElementById('alarmPanel');
+        if (!button || !panel) return;
+
+        const setOpen = open => {
+            panel.hidden = !open;
+            button.setAttribute('aria-expanded', open ? 'true' : 'false');
+        };
+
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            const opening = panel.hidden;
+            setOpen(opening);
+            // Opening it is a request for the current answer, not the one from
+            // up to fifteen seconds ago.
+            if (opening) this.refreshAlarms();
+        });
+
+        // Clicking away closes it, and so does Escape: a panel that can only
+        // be closed by hitting the same small button again is a panel that
+        // stays open.
+        document.addEventListener('click', event => {
+            if (!panel.hidden && !panel.contains(event.target)) setOpen(false);
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !panel.hidden) {
+                setOpen(false);
+                button.focus();
+            }
+        });
     }
 
     // The dashboard's single refresh tick. It drives whichever surface is on
@@ -367,28 +612,128 @@ class MonitoringApp {
     }
 
     handleMessage(message) {
-        if (message.type === 'metric_update') {
-            // The reading is kept so a later "still the same" can be replayed
-            // through this very path, rather than a second path that would
-            // drift away from it.
-            this.lastReadings.set(message.query, message.metrics);
-            this.updateDashboardCharts(message.query, message.metrics, message.timestamp);
+        switch (message.type) {
+            case 'metric_snapshot':
+                this.applySnapshot(message);
+                return;
+
+            case 'metric_delta':
+                this.applyDelta(message);
+                return;
+
+            case 'metrics_unchanged':
+                // These queries were re-read and found exactly as we already
+                // have them, so the server sent their names instead of their
+                // numbers. The charts still have to reach this tick: a live
+                // view whose line stops at the last change reads as data
+                // having stopped, and the duration of a steady value is itself
+                // something to see.
+                for (const query of message.queries || []) {
+                    const held = this.lastReadings.get(query);
+                    if (held) {
+                        this.updateDashboardCharts(query, [...held.byKey.values()],
+                            message.timestamp);
+                    }
+                }
+                return;
+
+            default:
+                return;
+        }
+    }
+
+    // applySnapshot replaces everything held for a query.
+    //
+    // It is what a client gets when it is new to a query, when it has fallen
+    // behind, and periodically regardless -- so whatever it was holding, right
+    // or wrong, is gone after this.
+    applySnapshot(message) {
+        // A frame for a query nobody is subscribed to any more is one the
+        // server had already queued when this browser moved on. Recording it
+        // would put back an entry the teardown just removed, and nothing would
+        // ever take it out again: measured walking nine devices, the held
+        // readings grew to 628 while only 185 were live.
+        if (!this.isSubscribed(message.query)) return;
+
+        const byKey = new Map();
+        for (const metric of message.metrics || []) {
+            byKey.set(this.sampleKey(metric.metric), metric);
+        }
+        this.lastReadings.set(message.query, { seq: message.seq, byKey });
+        this.pendingResync.delete(message.query);
+
+        this.updateDashboardCharts(message.query, [...byKey.values()], message.timestamp);
+    }
+
+    // applyDelta applies what changed -- but only to the reading it was
+    // computed against.
+    //
+    // This is the correctness bar of the whole stream. A delta names the
+    // sequence it belongs to. Applying it to anything else would produce a
+    // reading that is part current and part whatever this browser happened to
+    // have, and would go on rendering as though it were live. So a delta whose
+    // base is not what is held is DISCARDED, the query is left showing what it
+    // had rather than advancing, and the server is asked for the whole thing.
+    applyDelta(message) {
+        if (!this.isSubscribed(message.query)) return;
+
+        const held = this.lastReadings.get(message.query);
+        if (!held || held.seq !== message.base_seq) {
+            this.requestResync(message.query);
             return;
         }
 
-        if (message.type === 'metrics_unchanged') {
-            // These queries were re-read and found exactly as we already have
-            // them, so the server sent their names instead of their numbers.
-            // The charts still have to reach this tick: a live view whose line
-            // stops at the last change reads as data having stopped, and the
-            // duration of a steady value is itself something to see.
-            for (const query of message.queries || []) {
-                const reading = this.lastReadings.get(query);
-                if (reading) {
-                    this.updateDashboardCharts(query, reading, message.timestamp);
-                }
-            }
+        const delta = message.delta || {};
+        for (const metric of delta.changed || []) {
+            held.byKey.set(this.sampleKey(metric.metric), metric);
         }
+        for (const labels of delta.removed || []) {
+            held.byKey.delete(this.sampleKey(labels));
+        }
+        held.seq = message.seq;
+
+        this.updateDashboardCharts(message.query, [...held.byKey.values()], message.timestamp);
+    }
+
+    // isSubscribed reports whether any open tab is still watching a query.
+    //
+    // The subscriptions are the authority on what this browser is showing;
+    // lastReadings is a cache in front of them. Asking the cache whether it
+    // should hold something is circular, which is how it came to hold readings
+    // for three devices the reader had left.
+    isSubscribed(query) {
+        for (const [, subscription] of this.activeSubscriptions) {
+            if (subscription.objects.has(query)) return true;
+        }
+        return false;
+    }
+
+    // requestResync tells the server this browser has lost its place.
+    //
+    // The server resends on its own for a frame it could not queue. This is the
+    // half it cannot see: a frame that was queued, that the socket accepted,
+    // and that this browser could not apply. Asked once per query until the
+    // snapshot arrives, so a run of deltas does not turn into a run of
+    // requests.
+    requestResync(query) {
+        if (this.pendingResync.has(query)) return;
+        this.pendingResync.add(query);
+
+        console.warn(`Lost the place in ${query}; asking for the whole reading`);
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'resync', queries: [query] }));
+        }
+    }
+
+    // sampleKey identifies one series by its labels.
+    //
+    // The server sends a removed series as its whole label set rather than as a
+    // key, precisely so that this derivation does not have to match one written
+    // in Go character for character. It only has to be consistent with itself.
+    sampleKey(labels) {
+        return Object.keys(labels || {}).sort()
+            .map(name => `${name.length}:${name}${String(labels[name]).length}:${labels[name]}`)
+            .join('');
     }
 
     updateStatus(online) {
@@ -1273,6 +1618,14 @@ class MonitoringApp {
     // Called on load, when the device selector is cleared, and when the
     // Dashboard tab is re-entered with nothing selected.
     showFleetOverview() {
+        // The fleet is now what the page is showing, so any dashboard load
+        // still in flight is one the reader abandoned. Only STARTING another
+        // load used to end the previous one, which left the way out -- clearing
+        // the selector, navigating back, importing a config -- able to finish
+        // its fetch, replace the fleet with a device dashboard and subscribe to
+        // a device nobody asked for.
+        this.dashboardLoad++;
+
         const content = document.getElementById('dashboardContent');
         if (content) content.style.display = '';
         const tabs = document.getElementById('mibTabsContainer');
@@ -2227,14 +2580,19 @@ class MonitoringApp {
     // Profile Management
     // ========================================
 
-    async loadProfiles() {
+    // strict: true reports a failed read instead of swallowing it -- see
+    // loadDevices. An error response carrying valid JSON is a failure too: it
+    // parses to no `profiles` key, which reads as "there are none".
+    async loadProfiles({ strict = false } = {}) {
         try {
             const response = await fetch('/api/profiles');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             this.profiles = data.profiles || [];
             this.renderProfilesTable(this.profiles);
         } catch (error) {
             console.error('Error loading profiles:', error);
+            if (strict) throw error;
             this.showNotification('Failed to load profiles', 'error');
         }
     }
@@ -2435,14 +2793,16 @@ class MonitoringApp {
     // MIB Management
     // ========================================
 
-    async loadStoredMIBs() {
+    async loadStoredMIBs({ strict = false } = {}) {
         try {
             const response = await fetch('/api/mibs');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             this.mibs = data.mibs || [];
             this.renderStoredMIBsTable(this.mibs);
         } catch (error) {
             console.error('Error loading stored MIBs:', error);
+            if (strict) throw error;
             this.showNotification('Failed to load MIBs', 'error');
         }
     }
@@ -5108,7 +5468,7 @@ class MonitoringApp {
             if (warnings.length > 0) {
                 warnings.forEach(warning => this.showNotification(warning, 'warning', 15000));
             } else {
-                const count = (dashboardConfig.charts || []).length;
+                const count = (dashboardConfig.panels || []).length;
                 this.showNotification(`Dashboard generated: ${count} panels`, 'success');
             }
         } catch (error) {
@@ -5155,12 +5515,17 @@ class MonitoringApp {
         }
     }
 
+    // Routing one query's result to the panels that asked for it.
+    //
+    // Every subscription on this page came from a catalog panel, and a panel
+    // carries the query it was built with, so a result is matched by the query
+    // itself. The version this replaced also tried to match on "same metric
+    // name and same device" when the exact string missed -- machinery for the
+    // instance selector, which rewrote a subscription's query whenever the
+    // reader picked a different row. Panels draw every row at once, so their
+    // queries never change and an exact match is the whole rule.
     updateDashboardCharts(query, metrics, timestamp) {
-        console.log('updateDashboardCharts called:', { query, metricsCount: metrics?.length, timestamp });
-
-        // Skip if no metrics
-        if (!metrics || !Array.isArray(metrics) || metrics.length === 0) {
-            console.log('No metrics to update, skipping');
+        if (!metrics || !Array.isArray(metrics)) {
             return;
         }
 
@@ -5169,173 +5534,11 @@ class MonitoringApp {
         // which is also what lets a steady reading be replayed at a later tick
         // to carry its line forward.
         const time = new Date(timestamp * 1000);
-        console.log('Active subscriptions count:', this.activeSubscriptions.size);
 
-        // Live updates go to the subscribed charts. The branch that used to sit
-        // here fed the charts showDeviceDashboard built, which no longer exist.
-        // Iterate through all active subscriptions and update matching elements
-        this.activeSubscriptions.forEach((subscriptionData, dashboardKey) => {
-            const { metricQueries, statusQueries, objects } = subscriptionData;
-
-            console.log('Checking subscription:', { dashboardKey, query, hasMetricQueries: !!metricQueries, hasStatusQueries: !!statusQueries });
-
-            // Check if this query matches any of our subscriptions
-            // Try exact match first, then try all stored queries
-            let isMetric = metricQueries && metricQueries.has(query);
-            let isStatus = statusQueries && statusQueries.has(query);
-            let matchedQuery = query;
-
-            // If no exact match, try finding a matching query
-            if (!isMetric && !isStatus) {
-                // Check all stored queries
-                for (const storedQuery of [...(metricQueries || []), ...(statusQueries || [])]) {
-                    if (storedQuery === query) continue; // already checked
-
-                    // Simple check: if queries share same metric name and device
-                    const queryMetric = this.queryMetricName(query);
-                    const queryDevice = query.match(/device="([^"]+)"/)?.[1];
-                    const storedMetric = this.queryMetricName(storedQuery);
-                    const storedDevice = storedQuery.match(/device="([^"]+)"/)?.[1];
-
-                    if (queryMetric && storedMetric && queryDevice && storedDevice &&
-                        queryMetric === storedMetric && queryDevice === storedDevice) {
-                        isMetric = metricQueries && metricQueries.has(storedQuery);
-                        isStatus = statusQueries && statusQueries.has(storedQuery);
-                        matchedQuery = storedQuery;
-                        console.log('Found matching query by metric/device:', { query, matchedQuery: storedQuery });
-                        break;
-                    }
-                }
-            }
-
-            console.log('Query match result:', { isMetric, isStatus, query, matchedQuery });
-
-            if (!isMetric && !isStatus) {
-                console.log('Query does not match this subscription, skipping');
-                return;
-            }
-
-            // Get the object info for this query
-            const obj = objects.get(matchedQuery);
-            if (!obj) return;
-
-            // Parse dashboard key: "deviceId-mibName"
-            // MIB names can contain hyphens (e.g., "IF-MIB"), so split on first hyphen only
-            const firstHyphenIndex = dashboardKey.indexOf('-');
-            const deviceId = dashboardKey.substring(0, firstHyphenIndex);
-            const mibName = dashboardKey.substring(firstHyphenIndex + 1);
-
-            console.log(`Updating ${isStatus ? 'status' : 'chart'} for ${obj.name} from query: ${query}`);
-
-            if (isStatus) {
-                // Update status text element
-                const elementId = obj.statusId || `status-${deviceId}-${mibName}-${obj.name}`;
-                const statusElement = document.getElementById(elementId);
-
-                if (statusElement) {
-                    let actualValue;
-
-                    // A reading that is words arrives as an info metric: the
-                    // text is a label on a constant-1 series, so the sample is
-                    // always 1 and the label is the reading.
-                    //
-                    // The label is the evidence, rather than obj.isInfoMetric,
-                    // which the spec sets on a table's status fields and never
-                    // on a scalar. Every text scalar therefore displayed "1":
-                    // the ATEN KVM's power supplies, fan and temperature all
-                    // read 1 where the device was saying "PSU2 is abnormal,
-                    // please check the device".
-                    if (metrics[0]?.metric?.value !== undefined) {
-                        actualValue = metrics[0].metric.value;
-                    } else {
-                        // Extract actual value from metric value (numeric status fields)
-                        actualValue = metrics[0]?.value || 'N/A';
-                        if (typeof actualValue === 'object' && actualValue !== null) {
-                            // For boolean/enum objects, extract the numeric or string value
-                            if ('value' in actualValue) {
-                                actualValue = actualValue.value;
-                            } else if ('Value' in actualValue) {
-                                actualValue = actualValue.Value;
-                            } else {
-                                // Try to get first property value
-                                const keys = Object.keys(actualValue);
-                                if (keys.length > 0) {
-                                    actualValue = actualValue[keys[0]];
-                                } else {
-                                    actualValue = String(actualValue);
-                                }
-                            }
-                        }
-                    }
-
-                    // Get enum map from data attribute
-                    let enumData = {};
-                    try {
-                        const enumAttr = statusElement.getAttribute('data-enum');
-                        if (enumAttr) {
-                            enumData = JSON.parse(enumAttr);
-                        }
-                    } catch (e) {
-                        console.warn('Failed to parse enum data:', e);
-                    }
-                    // A sample after the timeout replaces the terminal state:
-                    // the tile reported what was known, not a prophecy.
-                    this.clearStatusNoData(statusElement);
-
-                    // Try to map value to enum string
-                    if (enumData && Object.keys(enumData).length > 0) {
-                        const enumKey = String(Math.floor(actualValue));
-                        statusElement.textContent = enumData[enumKey] || String(actualValue);
-                    } else {
-                        statusElement.textContent = this.formatStatusValue(actualValue, obj.type);
-                    }
-                    console.log(`Updated status ${elementId} with value: ${actualValue}`);
-                }
-            } else {
-                // Update chart
-                const chartId = obj.chartId || `chart-${deviceId}-${mibName}-${obj.name}`;
-                // Building on demand: a card off screen has no plot until a
-                // sample arrives for it or a reader scrolls to it.
-                const chart = this.chartFor(chartId);
-
-                if (chart) {
-                    metrics.forEach(m => {
-                        const option = chart.getOption();
-
-                        // The first sample turns the placeholder card into a chart.
-                        if (!chart._hasData) {
-                            this.revealChart(chartId);
-                            chart._hasData = true;
-                            chart._integerValued = !obj.useRate && Number.isInteger(m.value);
-                            chart._timeBand = netmonCharts.timeBand(0);
-                            chart._spanMs = 0;
-                            chart._sparse = true;
-                            chart.setOption(this.buildSeriesOption(chart, obj, [[time, m.value]]), true);
-                            console.log(`Initialized chart ${chartId} with first data point`);
-                        } else {
-                            // Append to existing data
-                            if (option.series && option.series[0]) {
-                                const data = option.series[0].data || [];
-                                data.push([time, m.value]);
-
-                                // Keep only last 200 points for performance
-                                if (data.length > 200) {
-                                    data.shift();
-                                }
-
-                                // Throttle chart updates - only update every 2 seconds
-                                const now = Date.now();
-                                const lastUpdate = chart._lastUpdate || 0;
-                                if (now - lastUpdate > 2000) {
-                                    const patch = this.chartUpdate(chart, obj, data, m.value);
-                                    chart.setOption(patch, false, false); // notMerge=false, lazyUpdate=false for efficiency
-                                    chart._lastUpdate = now;
-                                    console.log(`Updated chart ${chartId} with new data point`);
-                                }
-                            }
-                        }
-                    });
-                }
+        this.activeSubscriptions.forEach((subscription) => {
+            const target = subscription.objects.get(query);
+            if (target && target.panel) {
+                this.updatePanel(target, metrics, time);
             }
         });
     }
@@ -5347,40 +5550,6 @@ class MonitoringApp {
     // builder for it. Colours and date formats come from netmonCharts, which
     // reads the CSS design tokens, so nothing here needs to know the theme.
     // ========================================
-
-    buildSeriesOption(chart, obj, data) {
-        const useRate = obj.useRate || false;
-        const spanMs = this.seriesSpan(data);
-
-        return {
-            tooltip: {
-                trigger: 'axis',
-                axisPointer: { type: 'line' },
-                formatter: (params) => {
-                    if (!params || params.length === 0) return '';
-                    const param = params[0];
-                    const when = netmonCharts.timestampLabel(param.value[0], chart._spanMs || 0);
-                    const value = this.formatMetricValue(param.value[1], obj.name, useRate);
-                    return `${when}<br/>${obj.name}: <b>${value}</b>`;
-                }
-            },
-            grid: { left: 4, right: 14, top: 18, bottom: 2, containLabel: true },
-            xAxis: this.timeAxisOption(spanMs, data),
-            yAxis: this.valueAxisOption(chart, obj),
-            series: [{
-                type: 'line',
-                smooth: true,
-                symbol: 'circle',
-                symbolSize: 5,
-                // A line through one point draws nothing, so a lone sample is
-                // shown as the point it is.
-                showSymbol: data.length < 2,
-                data: data,
-                lineStyle: { width: 1.75 },
-                areaStyle: netmonCharts.areaStyle(chart, 0)
-            }]
-        };
-    }
 
     timeAxisOption(spanMs, data) {
         const option = {
@@ -5412,53 +5581,11 @@ class MonitoringApp {
         return option;
     }
 
-    valueAxisOption(chart, obj) {
-        const useRate = obj.useRate || false;
-        return {
-            type: 'value',
-            name: this.getMetricUnit(obj.name, useRate),
-            nameLocation: 'end',
-            nameGap: 10,
-            // An integer series must not be split into fractional ticks, or the
-            // labels round to the same string and the axis repeats itself.
-            minInterval: chart._integerValued ? 1 : 0,
-            axisLabel: {
-                hideOverlap: true,
-                formatter: (value) => this.formatAxisValue(value, obj.name)
-            }
-        };
-    }
-
     seriesSpan(data) {
         if (!data || data.length < 2) return 0;
         const first = new Date(data[0][0]).getTime();
         const last = new Date(data[data.length - 1][0]).getTime();
         return Math.max(0, last - first);
-    }
-
-    // Carries the new data plus only the axis options that have to change with
-    // it, so a steady-state append stays a series-only patch.
-    chartUpdate(chart, obj, data, latestValue) {
-        const patch = { series: [{ data: data }] };
-
-        const spanMs = this.seriesSpan(data);
-        chart._spanMs = spanMs;
-
-        const band = netmonCharts.timeBand(spanMs);
-        const sparse = data.length < 2;
-        if (band !== chart._timeBand || sparse !== chart._sparse) {
-            chart._timeBand = band;
-            chart._sparse = sparse;
-            patch.xAxis = this.timeAxisOption(spanMs, data);
-            patch.series[0].showSymbol = sparse;
-        }
-
-        if (chart._integerValued && !Number.isInteger(latestValue)) {
-            chart._integerValued = false;
-            patch.yAxis = this.valueAxisOption(chart, obj);
-        }
-
-        return patch;
     }
 
     // ========================================
@@ -5549,197 +5676,17 @@ class MonitoringApp {
         if (tile) tile.classList.remove('is-nodata');
     }
 
-    // A card whose widget the server could not name a metric for. This is a
-    // terminal state, not a wait: nothing will ever arrive for it.
-    markChartSpecError(chartId, detail) {
-        const card = this.chartCard(chartId);
-        if (!card) return;
-
-        card.classList.add('is-empty', 'is-nodata');
-        const message = card.querySelector('.chart-empty-title');
-        const message2 = card.querySelector('.chart-empty-detail');
-        if (message) message.textContent = 'Unavailable';
-        if (message2) message2.textContent = detail;
-    }
-
-    markStatusSpecError(statusId, detail) {
-        const statusElement = document.getElementById(statusId);
-        if (statusElement) statusElement.textContent = detail;
-    }
-
     // ========================================
     // METRIC NAMES AND QUERIES
     // ========================================
-    // The exporter names a series after the MIB object it instantiates and
-    // carries the row index in labels, so a metric name is no longer derivable
-    // from an instance OID. internal/webui/dashboard/generator.go resolves the
-    // name once, server side, and ships it on every widget;
-    // internal/promname/contract_test.go pins that resolution to what the
-    // exporter actually emits. The frontend's job is to use what it is given.
-
-    // escapeLabelValue escapes a value for a PromQL label matcher.
-    escapeLabelValue(value) {
-        return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    }
-
-    // metricQuery builds `name{device="…",label="…"}`. Selecting by name rather
-    // than by a __name__ regex is the point of the change: a regex matcher has
-    // to be tested against every metric name in the TSDB, which is what made
-    // the old OID-derived queries slow.
-    metricQuery(metric, deviceName, matchers) {
-        const parts = [`device="${this.escapeLabelValue(deviceName)}"`];
-
-        for (const [label, value] of Object.entries(matchers || {})) {
-            if (!label || value === undefined || value === null || value === '') continue;
-            parts.push(`${label}="${this.escapeLabelValue(value)}"`);
-        }
-
-        return `${metric}{${parts.join(',')}}`;
-    }
-
-    // queryMetricName reads the metric name back out of a query. Queries come
-    // in two shapes: a plain name with matchers, and the __name__ matcher still
-    // used for a raw OID no loaded MIB describes. Both have to be recognised or
-    // the subscription dedup silently stops matching anything.
-    queryMetricName(query) {
-        const byNameMatcher = query.match(/__name__=~?"([^"]+)"/);
-        if (byNameMatcher) return byNameMatcher[1];
-
-        // Start of string or just inside a function call, e.g. rate(snmp_x{…}).
-        const bareName = query.match(/(?:^|[\s(])([a-zA-Z_:][\w:]*)\s*\{/);
-        return bareName ? bareName[1] : null;
-    }
-
-    // specMetric reads the metric name the server resolved for a widget. A
-    // widget without one means the spec and the exporter have drifted or a
-    // stale spec was cached. Either way it is reported rather than guessed at:
-    // falling back to an OID-derived name client side would hide exactly the
-    // drift the server-side contract test exists to catch.
-    specMetric(spec, context) {
-        const metric = spec && spec.metric;
-        if (typeof metric === 'string' && metric !== '') return metric;
-
-        if (!this.reportedMissingMetrics.has(context)) {
-            this.reportedMissingMetrics.add(context);
-            console.error(
-                `Dashboard spec has no metric name for ${context}. The server resolves ` +
-                `metric names and the frontend will not guess one; reload to discard a ` +
-                `cached spec.`, spec);
-        }
-        return null;
-    }
-
-    // Text shown in a card or status field whose widget could not be named.
-    static get MISSING_METRIC_DETAIL() {
-        return 'Dashboard spec has no metric name for this object.';
-    }
-
-    // instanceMatchers pins a query to the row the instance selector chose.
-    // The selector offers one column's value, so that column's label is what
-    // can be matched on; index_labels tells us whether that identifies a row
-    // exactly or only as far as that column is unique within the table.
-    instanceMatchers(instanceSelector, selectedInstance) {
-        const labelName = instanceSelector && instanceSelector.label_name;
-        if (!labelName || !selectedInstance) return {};
-        return { [labelName]: selectedInstance };
-    }
-
-    isSystemInfoOID(oid) {
-        // Normalize OID by adding .0 suffix if not present
-        const normalizedOid = oid.endsWith(".0") ? oid : oid + ".0";
-        
-        const systemInfoOIDs = [
-            "1.3.6.1.2.1.1.1.0",  // sysDescr
-            "1.3.6.1.2.1.1.2.0",  // sysObjectID
-            "1.3.6.1.2.1.1.4.0",  // sysContact
-            "1.3.6.1.2.1.1.5.0",  // sysName
-            "1.3.6.1.2.1.1.6.0",  // sysLocation
-        ];
-        return systemInfoOIDs.includes(normalizedOid);
-    }
-
-    // ========================================
-    // Fetch system info from the API
-    // ========================================
-    async fetchSystemInfo(deviceName) {
-        try {
-            const response = await fetch('/api/metrics/system-info', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ device: deviceName })
-            });
-
-            if (!response.ok) {
-                console.error('Failed to fetch system info');
-                return null;
-            }
-
-            const data = await response.json();
-            return data.values || {};
-        } catch (error) {
-            console.error('Error fetching system info:', error);
-            return null;
-        }
-    }
-
-    oidToSystemInfoLabel(oid) {
-        // Normalize OID by adding .0 suffix if not present
-        const normalizedOid = oid.endsWith(".0") ? oid : oid + ".0";
-        
-        const mapping = {
-            "1.3.6.1.2.1.1.1.0": "sys_descr",
-            "1.3.6.1.2.1.1.2.0": "sys_object_id",
-            "1.3.6.1.2.1.1.4.0": "sys_contact",
-            "1.3.6.1.2.1.1.5.0": "sys_name",
-            "1.3.6.1.2.1.1.6.0": "sys_location",
-        };
-        return mapping[normalizedOid] || null;
-    }
-
-    // ========================================
-    // Fetch and display system info for widgets
-    // ========================================
-    async fetchAndDisplaySystemInfo(deviceId, mibName, deviceName, systemInfoWidgets) {
-        console.log(`Fetching system info for device ${deviceName}`);
-        
-        const systemInfo = await this.fetchSystemInfo(deviceName);
-        
-        if (!systemInfo) {
-            console.error('Failed to fetch system info');
-            // Mark all system info widgets as "No Data"
-            for (const widget of systemInfoWidgets) {
-                const statusId = `status-${deviceId}-${mibName}-${widget.name}`;
-                const statusElement = document.getElementById(statusId);
-                if (statusElement) {
-                    statusElement.textContent = 'No Data';
-                    statusElement.style.color = '#64748b';
-                }
-            }
-            return;
-        }
-
-        console.log('System info received:', systemInfo);
-
-        // Populate status fields with system info values
-        for (const widget of systemInfoWidgets) {
-            const statusId = `status-${deviceId}-${mibName}-${widget.name}`;
-            const statusElement = document.getElementById(statusId);
-            
-            if (statusElement) {
-                const labelName = this.oidToSystemInfoLabel(widget.oid);
-                const value = systemInfo[labelName];
-                
-                if (value) {
-                    statusElement.textContent = value;
-                    statusElement.style.color = ''; // Reset to default color
-                    console.log(`Set ${statusId} = ${value}`);
-                } else {
-                    statusElement.textContent = 'N/A';
-                    statusElement.style.color = '#64748b';
-                }
-            }
-        }
-    }
+    // The frontend composes no PromQL at all. A panel arrives carrying the
+    // query to run, because building it needs facts only the server has: the
+    // metric catalog says whether a family is a counter to wrap in rate(), and
+    // the device record says how wide that rate window has to be for this
+    // device's poll interval to fill it. internal/webui/api/dashboard_gen.go
+    // builds them; internal/promname/contract_test.go pins the naming to what
+    // the exporter actually emits. The frontend's job is to use what it is
+    // given.
 
 
     // ========================================
@@ -5786,148 +5733,54 @@ class MonitoringApp {
         return false;
     }
 
-    formatStatusValue(value, type) {
-        if (!type) return value.toString();
-
-        if (type.includes('TimeTicks')) {
-            // Convert timeticks to human readable
-            const totalSeconds = Math.floor(value / 100);
-            const days = Math.floor(totalSeconds / 86400);
-            const hours = Math.floor((totalSeconds % 86400) / 3600);
-            const minutes = Math.floor((totalSeconds % 3600) / 60);
-            return `${days}d ${hours}h ${minutes}m`;
-        }
-
-        if (type.includes('PhysAddress') || type.includes('IpAddress')) {
-            // These might need special formatting depending on backend representation
-            return value.toString();
-        }
-
-        return value.toString();
-    }
-
-    // ========================================
-    // Helper: Format metric values for tooltips
-    // ========================================
-    // rateWindow is the lookback rate() needs for a device's poll interval.
+    // formatAxisValue keeps an axis tick short enough to read.
     //
-    // rate() needs at least two samples inside its window, so a fixed [1m] is
-    // empty for anything polled less often than every 30 seconds -- and an empty
-    // result is delivered as an update carrying no metrics, so the card sits on
-    // "Waiting for data…" while the counter underneath it is being collected
-    // normally. lab-node-1-bmc polls every 60 seconds and had 94 cards in that
-    // state; core-01 at 30 seconds had none, which is what made it look like
-    // a device problem rather than a query one.
-    //
-    // Four intervals is the usual guidance: it tolerates a missed poll and the
-    // jitter between the poll and the scrape without widening so far that a
-    // real change is smoothed away.
-    rateWindow(device) {
-        const seconds = Number(device?.effective_poll_interval || device?.poll_interval) || 30;
-        const window = Math.max(60, seconds * 4);
-        return window % 60 === 0 ? `${window / 60}m` : `${window}s`;
-    }
+    // Which scale to use comes from the unit the CATALOG declared, not from a
+    // match on the metric name. The version this replaced tested the name for
+    // "octets" or "bytes", which got IF-MIB right and said nothing about
+    // anything else -- optical power is published as snmp_entity_sensor_dbm and
+    // matched none of it.
+    formatAxisValue(value, unit) {
+        const number = parseFloat(value);
+        if (isNaN(number)) return String(value ?? '');
 
-    formatMetricValue(value, name, useRate = false) {
-        if (value === null || value === undefined) return 'N/A';
+        // A byte count scales by 1024; everything else by 1000.
+        const binary = unit === 'octets' || unit === 'bytes';
+        const step = binary ? 1024 : 1000;
+        const suffixes = binary ? ['K', 'M', 'G', 'T'] : ['K', 'M', 'G', 'T'];
 
-        const numValue = parseFloat(value);
-        if (isNaN(numValue)) return value.toString();
-
-        const nameLower = name ? name.toLowerCase() : '';
-        const rateSuffix = useRate ? '/s' : '';
-
-        // Only format bytes/octets as KB/MB/GB
-        if (nameLower.includes('octets') || nameLower.includes('bytes')) {
-            if (numValue >= 1073741824) {
-                return (numValue / 1073741824).toFixed(2) + ' GB' + rateSuffix;
-            } else if (numValue >= 1048576) {
-                return (numValue / 1048576).toFixed(2) + ' MB' + rateSuffix;
-            } else if (numValue >= 1024) {
-                return (numValue / 1024).toFixed(2) + ' KB' + rateSuffix;
+        const magnitude = Math.abs(number);
+        for (let i = suffixes.length - 1; i >= 0; i--) {
+            const scale = Math.pow(step, i + 1);
+            if (magnitude >= scale) {
+                return (number / scale).toFixed(1) + suffixes[i];
             }
-            return numValue.toFixed(0) + ' B' + rateSuffix;
-        }
-
-        // For all other metrics, show plain numbers with thousand separators
-        if (numValue >= 1000) {
-            return numValue.toLocaleString('en-US', { maximumFractionDigits: 0 }) + (useRate ? '/s' : '');
-        }
-
-        return numValue.toFixed(2) + (useRate ? '/s' : '');
-    }
-
-    // ========================================
-    // Helper: Format axis values (compact format)
-    // ========================================
-    // Ticks carry magnitude only. The unit is stated once, by the axis name,
-    // rather than repeated on every label.
-    formatAxisValue(value, name) {
-        if (value === null || value === undefined) return '';
-
-        const numValue = parseFloat(value);
-        if (isNaN(numValue)) return value.toString();
-
-        const nameLower = name ? name.toLowerCase() : '';
-
-        // Only format bytes/octets as K/M/G
-        if (nameLower.includes('octets') || nameLower.includes('bytes')) {
-            if (numValue >= 1073741824) {
-                return (numValue / 1073741824).toFixed(1) + 'G';
-            } else if (numValue >= 1048576) {
-                return (numValue / 1048576).toFixed(1) + 'M';
-            } else if (numValue >= 1024) {
-                return (numValue / 1024).toFixed(1) + 'K';
-            }
-            return netmonCharts.formatTick(numValue);
-        }
-
-        // For other metrics, use compact notation
-        if (numValue >= 1000000) {
-            return (numValue / 1000000).toFixed(1) + 'M';
-        } else if (numValue >= 1000) {
-            return (numValue / 1000).toFixed(1) + 'K';
         }
 
         // Below the compact thresholds the tick has to carry enough precision
         // that neighbouring ticks cannot round to the same string.
-        return netmonCharts.formatTick(numValue);
+        return netmonCharts.formatTick(number);
     }
-
-    // ========================================
-    // Helper: Get metric unit label for Y-axis
-    // ========================================
-    getMetricUnit(name, useRate = false) {
-        if (!name) return '';
-
-        const nameLower = name.toLowerCase();
-        const rateSuffix = useRate ? '/s' : '';
-
-        // Detect bytes/octets metrics
-        if (nameLower.includes('octets') || nameLower.includes('bytes')) {
-            return useRate ? 'Bytes/s' : 'Bytes';
-        }
-
-        // Detect packet metrics
-        if (nameLower.includes('pkts') || nameLower.includes('packets')) {
-            return useRate ? 'Packets/s' : 'Packets';
-        }
-
-        // Detect speed/bandwidth metrics
-        if (nameLower.includes('speed') || nameLower.includes('bandwidth')) {
-            return 'bps';
-        }
-
-        return useRate ? '/s' : '';
-    }
-
     // ========================================
     // MIB Browser (existing functionality)
     // ========================================
 
-    async loadDevices() {
+    // loadDevices refills the device list and both selectors.
+    //
+    // restore: false leaves the selection alone. restoreState replays the
+    // device chosen at STARTUP, which is right on a page load and wrong
+    // afterwards -- the config import does its own transition and had this one
+    // racing it, loading the startup device and subscribing to it while the
+    // import was deciding where the reader should end up.
+    //
+    // strict: true reports a failed read instead of swallowing it. The import
+    // uses the rebuilt selector to decide whether the open device survived, so
+    // a read that quietly failed would have it judging that question against
+    // the configuration that was just replaced.
+    async loadDevices({ restore = true, strict = false } = {}) {
         try {
             const response = await fetch('/api/devices');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
 
             // Keep the fleet, not just the dropdown built from it.
@@ -5971,9 +5824,10 @@ class MonitoringApp {
             }
 
             // Restore state after devices are loaded
-            this.restoreState();
+            if (restore) this.restoreState();
         } catch (error) {
             console.error('Error loading devices:', error);
+            if (strict) throw error;
         }
     }
 
@@ -6664,10 +6518,53 @@ class MonitoringApp {
             // Everything on screen was built from the configuration that has
             // just been replaced, so it is reloaded rather than left showing
             // the previous instance's devices.
-            await this.loadDevices();
-            await this.loadProfiles();
-            await this.loadStoredMIBs();
-            this.showFleetOverview();
+            //
+            // The dashboard is torn down FIRST and put back explicitly, rather
+            // than left to loadDevices' own restore. That restore replays the
+            // device selected at STARTUP, which is not necessarily the one the
+            // reader is on, and it does nothing at all when the imported
+            // configuration no longer has that device -- leaving
+            // currentDashboardDevice naming a device the rebuilt selector does
+            // not offer, subscriptions alive for modules the import removed,
+            // and fleetVisible() answering no to the refresh tick while the
+            // fleet is what is on screen.
+            const wasShowing = this.currentDashboardDevice;
+            if (wasShowing) this.unsubscribeFromAllDashboards(wasShowing);
+            this.dashboardLoad++;
+            this.currentDashboardDevice = null;
+            this.hideDeviceStatusBanner();
+
+            const select = document.getElementById('dashboardDeviceSelect');
+            try {
+                await this.loadDevices({ restore: false, strict: true });
+                await this.loadProfiles({ strict: true });
+                await this.loadStoredMIBs({ strict: true });
+            } catch (error) {
+                // The server applied the import; this page could not be
+                // rebuilt from it. Saying "import failed" here would be false
+                // and would send someone looking for a rollback they do not
+                // need -- but the page cannot be trusted either, least of all
+                // the selector the branch below asks about the open device.
+                this.configTransferStatus(
+                    `Imported ${file.name}, but this page could not be refreshed ` +
+                    `(${error.message}). Reload to see the new configuration.`, 'error');
+                if (select) select.value = '';
+                this.currentDashboardDevice = null;
+                this.showFleetOverview();
+                this.saveState();
+                return;
+            }
+
+            const survived = wasShowing && select &&
+                select.querySelector(`option[value="${wasShowing}"]`);
+            if (survived) {
+                this.openFleetDevice(wasShowing);
+            } else {
+                if (select) select.value = '';
+                this.currentDashboardDevice = null;
+                this.showFleetOverview();
+            }
+            this.saveState();
         } catch (error) {
             this.configTransferStatus(`Import failed: ${error.message}`, 'error');
             this.showNotification('Configuration import failed', 'error');
@@ -6728,11 +6625,16 @@ class MonitoringApp {
     // Dashboard Navigation & Subscription Management
     // ========================================
 
-    async fetchAndDisplayDeviceStatus(deviceId) {
+    async fetchAndDisplayDeviceStatus(deviceId, load = this.dashboardLoad) {
         const banner = document.getElementById('deviceStatusBanner');
 
         try {
             const response = await fetch(`/api/devices/${deviceId}/status`);
+            // The banner is shared by every device, and this function paints it
+            // before returning, so the caller's own check comes too late to
+            // stop a departed device's "Polling Error" appearing over the one
+            // the reader opened.
+            if (load !== this.dashboardLoad) return;
 
             if (!response.ok) {
                 // Handle different error cases
@@ -6755,6 +6657,7 @@ class MonitoringApp {
             }
 
             const status = await response.json();
+            if (load !== this.dashboardLoad) return;
 
             // Check for errors in the status
             if (status.last_error && status.last_error !== '') {
@@ -6785,6 +6688,10 @@ class MonitoringApp {
             }
         } catch (error) {
             console.error('Error fetching device status:', error);
+            // A rejection is a completion path like any other. Hiding the
+            // banner unconditionally let a departed device's failed request
+            // clear the error banner belonging to the device on screen.
+            if (load !== this.dashboardLoad) return;
             // Don't show an error banner for fetch failures - just log it
             banner.style.display = 'none';
         }
@@ -6842,33 +6749,24 @@ class MonitoringApp {
         banner.style.display = 'none';
     }
 
+    // One request per device, not one per module.
+    //
+    // Every panel this device has comes back together, grouped here by the
+    // module each belongs to. Asking per tab meant asking per tab for the
+    // METRIC CATALOG as well -- four Prometheus reads apiece, ten times over
+    // for core-01 -- and the tabs were loaded one after another, so the last
+    // one did not even subscribe until twelve seconds in. It is also what keeps
+    // the rail honest: the modules listed and the panels drawn are now derived
+    // from the same answer and cannot disagree.
     async loadDeviceDashboards(deviceId) {
+        const load = ++this.dashboardLoad;
         try {
-            // First, fetch device status to check for any errors
-            await this.fetchAndDisplayDeviceStatus(deviceId);
+            await this.fetchAndDisplayDeviceStatus(deviceId, load);
+            if (load !== this.dashboardLoad) return;
 
-            // Fetch device MIBs (includes both direct and profile MIBs)
-            const response = await fetch(`/api/devices/${deviceId}/mibs`);
-            const data = await response.json();
-
-            // Use all_mibs which includes both direct and profile MIBs
-            let mibs = data.all_mibs || [];
-
-            // Filter to the MIBs producing data *for this device*. Without the
-            // device the answer is every module holding data for anything on
-            // the fleet, which offers tabs a device never fills.
-            const deviceName = this.deviceNameFor(deviceId);
-            const availableUrl = deviceName
-                ? `/api/mibs?filter=available&device=${encodeURIComponent(deviceName)}`
-                : '/api/mibs?filter=available';
-            const filteredResponse = await fetch(availableUrl);
-            const filteredData = await filteredResponse.json();
-            const availableMibNames = new Set((filteredData.mibs || []).map(m => m.name));
-
-            // Only show MIBs that have available data
-            mibs = mibs.filter(mib => availableMibNames.has(mib.name));
-
-            if (!mibs || mibs.length === 0) {
+            const response = await fetch(`/api/devices/${deviceId}/dashboard`);
+            if (load !== this.dashboardLoad) return;
+            if (!response.ok) {
                 document.getElementById('dashboardContent').innerHTML = `
                     <div class="empty-state">
                         <h3>No MIBs Assigned</h3>
@@ -6879,43 +6777,119 @@ class MonitoringApp {
                 return;
             }
 
-            // Store device MIBs
+            const dashboard = await response.json();
+            if (load !== this.dashboardLoad) return;
+
+            const byModule = this.groupPanelsByModule(dashboard);
+
+            // The rail lists the modules that contributed something. A module
+            // reporting nothing still has a coverage row explaining why, but a
+            // tab with no panels in it is a tab nobody wants to click.
+            const names = [...byModule.keys()].sort((a, b) => {
+                // The device's own metrics first: they describe the box rather
+                // than one of its MIBs.
+                if (a === UNATTRIBUTED_MODULE) return -1;
+                if (b === UNATTRIBUTED_MODULE) return 1;
+                return a.localeCompare(b);
+            });
+
+            if (names.length === 0) {
+                document.getElementById('dashboardContent').innerHTML = `
+                    <div class="empty-state">
+                        <h3>Nothing reported yet</h3>
+                        <p>${this.escapeHtml(dashboard.warnings?.[0] ||
+                            'This device is not reporting any metrics.')}</p>
+                    </div>
+                `;
+                document.getElementById('mibTabsContainer').style.display = 'none';
+                return;
+            }
+
             this.deviceDashboards[deviceId] = {
-                mibs: mibs,
-                dashboards: {}
+                mibs: names.map(name => ({ name })),
+                dashboards: byModule
             };
 
-            // Hide empty state, show tabs container
             document.getElementById('dashboardContent').style.display = 'none';
             document.getElementById('mibTabsContainer').style.display = 'block';
 
-            // Create tabs for each MIB
-            this.createMibTabs(deviceId, mibs);
+            // The tab the reader left on, when this device still has it. The
+            // state has always been saved and never read back, so a reload
+            // dropped you on the first module whatever you had been looking at.
+            // Chosen before the rail is built, because the rail is what marks
+            // it active.
+            this.activeMibTab = names.includes(this.restoredMibTab)
+                ? this.restoredMibTab : names[0];
+            this.restoredMibTab = null;
 
-            // Load ALL MIB dashboards sequentially to avoid race conditions
-            if (mibs.length > 0) {
-                this.activeMibTab = mibs[0].name;
-                // Load MIBs sequentially to prevent tab content from getting mixed up
-                this.loadMibChartsSequentially(deviceId, mibs, 0);
-            }
+            this.createMibTabs(deviceId, this.deviceDashboards[deviceId].mibs);
+            this.loadMibChartsSequentially(deviceId, this.deviceDashboards[deviceId].mibs, 0, load);
         } catch (error) {
             console.error('Error loading device dashboards:', error);
+            // The reader is looking at something else; a failure notice about
+            // the device they left reads as a failure of the one they opened.
+            if (load !== this.dashboardLoad) return;
             this.showNotification('Failed to load device dashboards', 'error');
         }
     }
 
-    async loadMibChartsSequentially(deviceId, mibs, index) {
+    // groupPanelsByModule splits one device's answer into a dashboard per tab.
+    //
+    // A panel with no module belongs to the DEVICE -- optical power published
+    // under a name derived from its unit, the system group, an OID no loaded
+    // MIB describes -- and gets a rail entry of its own rather than being
+    // repeated under every module.
+    //
+    // With the catalog unreadable, nothing has a module: not because no MIB
+    // claims these metrics but because nothing could be asked. Grouping that
+    // answer would file all 363 of core-01's metrics under "(no module)",
+    // so it is kept whole and the read failure is what the reader is told.
+    groupPanelsByModule(dashboard) {
+        const byModule = new Map();
+        const noteFor = name => (dashboard.mibs || [])
+            .filter(c => c.mib === name).map(c => c.note).filter(Boolean);
+
+        const put = (name, panel) => {
+            let held = byModule.get(name);
+            if (!held) {
+                held = { mib: name, panels: [], warnings: noteFor(name) };
+                byModule.set(name, held);
+            }
+            held.panels.push(panel);
+        };
+
+        for (const panel of dashboard.panels || []) {
+            put(dashboard.catalog_unavailable
+                ? UNREADABLE_MODULE
+                : (panel.module || UNATTRIBUTED_MODULE), panel);
+        }
+
+        // A read failure explains every tab, so it goes on the one tab there is.
+        if (dashboard.catalog_unavailable && byModule.has(UNREADABLE_MODULE)) {
+            byModule.get(UNREADABLE_MODULE).warnings = dashboard.warnings || [];
+        }
+        return byModule;
+    }
+
+    async loadMibChartsSequentially(deviceId, mibs, index, load) {
         // Base case: all MIBs loaded
         if (index >= mibs.length) {
             return;
         }
 
+        // A device with two hundred modules spends a long time in this loop,
+        // which is the whole window in which the reader can move on. Renders
+        // and subscribes for a device nobody is looking at any more stop here.
+        if (load !== this.dashboardLoad) {
+            return;
+        }
+
         // Load current MIB
         const mib = mibs[index];
-        await this.loadMibCharts(deviceId, mib.name);
+        await this.loadMibCharts(deviceId, mib.name, load);
 
         // Load next MIB
-        await this.loadMibChartsSequentially(deviceId, mibs, index + 1);
+        await this.loadMibChartsSequentially(deviceId, mibs, index + 1, load);
     }
 
     // createMibTabs builds the module rail and one pane per module.
@@ -6939,10 +6913,12 @@ class MonitoringApp {
         tabContent.innerHTML = '';
 
         mibs.forEach((mib, index) => {
-            tabList.appendChild(this.mibTabButton(deviceId, mib.name, index === 0));
+            const active = mib.name === this.activeMibTab ||
+                (!this.activeMibTab && index === 0);
+            tabList.appendChild(this.mibTabButton(deviceId, mib.name, active));
 
             const tabPane = document.createElement('div');
-            tabPane.className = 'tab-pane' + (index === 0 ? ' active' : '');
+            tabPane.className = 'tab-pane' + (active ? ' active' : '');
             tabPane.id = `mib-tab-${mib.name}`;
             tabPane.setAttribute('role', 'tabpanel');
             tabPane.setAttribute('aria-labelledby', this.mibTabButtonId(mib.name));
@@ -7112,12 +7088,6 @@ class MonitoringApp {
         this.activeMibTab = mibName;
         this.saveState();
 
-        // Load charts if not already loaded (lazy loading)
-        const deviceDashboard = this.deviceDashboards[deviceId];
-        if (!deviceDashboard.dashboards[mibName]) {
-            this.loadMibCharts(deviceId, mibName);
-        }
-
         // CRITICAL FIX: Resize all charts in the newly visible tab
         // ECharts needs to be resized when its container becomes visible
         // Use multiple resize attempts with increasing delays to handle layout timing
@@ -7130,7 +7100,11 @@ class MonitoringApp {
 
         const doResize = () => {
             console.log(`Resizing charts for MIB tab: ${mibName}`);
-            const chartElements = activeTabPane.querySelectorAll('[id^="chart-"]');
+            // Selected by class, not by an id prefix. The prefix was "chart-",
+            // which the panel renderer does not use, so every plot in a tab
+            // that had just become visible kept the provisional size it was
+            // built with while collapsed.
+            const chartElements = activeTabPane.querySelectorAll('.chart-canvas');
             console.log(`Found ${chartElements.length} chart elements to resize`);
 
             chartElements.forEach(chartElement => {
@@ -7164,215 +7138,165 @@ class MonitoringApp {
     // Old functions removed: fetchTableMetadata(), isTableColumn()
     // ========================================
 
-    async loadMibCharts(deviceId, mibName) {
-        try {
-            console.log(`Loading MIB charts for ${mibName} on device ${deviceId}`);
+    // Render one module's tab from the answer the device fetch already holds.
+    //
+    // There is nothing to fetch here any more. Every panel arrived with the
+    // device, so switching tabs is a render rather than four more Prometheus
+    // reads, and a tab cannot come back describing a different module than the
+    // one the reader clicked.
+    async loadMibCharts(deviceId, mibName, load = this.dashboardLoad) {
+        const tabPane = document.getElementById(`mib-tab-${mibName}`);
+        if (!tabPane) return;
 
-            const tabPane = document.getElementById(`mib-tab-${mibName}`);
-            if (!tabPane) return;
-
-            // Show loading state
-            tabPane.innerHTML = '<div class="charts-loading">Loading dashboard...</div>';
-
-            // Get the MIB from cached device dashboards
-            const deviceDash = this.deviceDashboards[deviceId];
-            if (!deviceDash || !deviceDash.mibs) {
-                tabPane.innerHTML = '<div class="empty-state"><p>Device data not loaded</p></div>';
-                return;
-            }
-
-            // Find the MIB in the cached list
-            const mib = deviceDash.mibs.find(m => m.name === mibName);
-            if (!mib) {
-                tabPane.innerHTML = '<div class="empty-state"><p>MIB not found</p></div>';
-                return;
-            }
-
-            // Fetch dashboard specification from backend
-            console.log(`Fetching dashboard spec for ${mibName} (ID: ${mib.id})`);
-            // Scoped to the device: the specification describes what this kind
-            // of device could report, and a card for an object this one does
-            // not implement waits for data that never comes.
-            const deviceName = this.deviceNameFor(deviceId);
-            const specUrl = deviceName
-                ? `/api/mibs/${mib.id}/dashboard?device=${encodeURIComponent(deviceName)}`
-                : `/api/mibs/${mib.id}/dashboard`;
-            const dashboardResponse = await fetch(specUrl);
-            if (!dashboardResponse.ok) {
-                tabPane.innerHTML = '<div class="empty-state"><p>Failed to load dashboard specification</p></div>';
-                return;
-            }
-
-            const dashboardSpec = await dashboardResponse.json();
-            console.log(`Loaded dashboard spec for ${mibName}:`, dashboardSpec);
-
-            if ((!dashboardSpec.scalar_widgets || dashboardSpec.scalar_widgets.length === 0) &&
-                (!dashboardSpec.table_widgets || dashboardSpec.table_widgets.length === 0)) {
-                tabPane.innerHTML = '<div class="empty-state"><p>No displayable objects found in this MIB</p></div>';
-                return;
-            }
-
-            // Get device info for queries
-            const deviceResponse = await fetch(`/api/devices/${deviceId}`);
-            const device = await deviceResponse.json();
-
-            // Render dashboard from spec
-            await this.renderDashboardFromSpec(deviceId, mibName, mib.id, device, dashboardSpec);
-
-            // Store that this dashboard has been loaded
-            if (!this.deviceDashboards[deviceId].dashboards[mibName]) {
-                this.deviceDashboards[deviceId].dashboards[mibName] = {
-                    spec: dashboardSpec
-                };
-            }
-        } catch (error) {
-            console.error('Error loading MIB charts:', error);
-            const tabPane = document.getElementById(`mib-tab-${mibName}`);
-            if (tabPane) {
-                tabPane.innerHTML = '<div class="empty-state"><p>Error loading charts</p></div>';
-            }
+        const deviceDash = this.deviceDashboards[deviceId];
+        const held = deviceDash && deviceDash.dashboards.get(mibName);
+        if (!held) {
+            tabPane.innerHTML = '<div class="empty-state"><p>Nothing here for this device.</p></div>';
+            return;
         }
+
+        await this.renderPanels(deviceId, mibName, held, load);
     }
 
     // One metric card. The chart is the card: the object name labels it and the
     // MIB DESCRIPTION is reference text, kept to a single line with the full
     // wording on hover so it can never push the plot down the card.
-    chartCardMarkup(chartId, name, description) {
-        // The single line stays: it is what makes every plot in a row start at
-        // the same height. What changes is that the line is now a control, so
-        // the wording it cannot fit is readable in the description sheet
-        // instead of only in a tooltip.
-        const caption = this.descriptionTriggerHtml(description, {
-            title: name,
-            eyebrow: 'Metric',
-            className: 'chart-description'
-        });
+    // The head every panel shares: where it came from, what it is, and what it
+    // is measured in.
+    //
+    // Four kinds of information on four INDEPENDENT axes -- size, weight,
+    // colour and letterform -- so no two are told apart by a single signal.
+    // They were all one size, one weight and one colour, which is why a card
+    // read as a paragraph and a wall of cards read as one block of text:
+    //
+    //   provenance  xs / 600 / muted     / uppercase, tracked
+    //   name        md / 620 / text      / plain
+    //   unit        xs / 550 / secondary / tabular, on its own surface
+    //   description sm / 400 / secondary / plain
+    //
+    // Size alone would not do it -- two things at 11.5px are still told apart
+    // here, by weight, by colour and by case.
+    panelHeadMarkup(panel) {
+        const provenance = panel.module
+            || (panel.kind === 'string' && !panel.object ? 'Reading' : '')
+            || 'Unattributed';
+
+        // The name is the MIB object where there is one. Where there is not,
+        // the published name is the honest answer -- but stripped of the
+        // affixes the exporter added, which are contract rather than content:
+        // "snmp_racname_info" is the same thing as "racname" with the prefix
+        // that says it is ours and the suffix that says it is text. Both are
+        // read off the naming contract, not guessed.
+        //
+        // It is set in mono, because a published name with no MIB object
+        // behind it is an identifier rather than a word, and reads as one.
+        const named = Boolean(panel.object);
+        const name = panel.object || this.publishedName(panel.metric);
+
+        const unit = this.panelUnit(panel);
 
         return `
-            <div class="chart-container is-empty">
-                <h4 title="${this.escapeAttr(name)}">${this.escapeHtml(name)}</h4>
-                ${caption}
+            <header class="panel-head">
+                <p class="panel-eyebrow">${this.escapeHtml(provenance)}</p>
+                <div class="panel-headline">
+                    <h4 class="panel-title${named ? '' : ' is-identifier'}"
+                        title="${this.escapeAttr(name)}">${this.escapeHtml(name)}</h4>
+                    ${unit ? `<span class="panel-unit">${this.escapeHtml(unit)}</span>` : ''}
+                </div>
+                ${this.descriptionTriggerHtml(panel.description, {
+                    title: name,
+                    eyebrow: panel.module || 'Metric',
+                    className: 'panel-note',
+                    meta: [['Metric', panel.metric], ['OID', panel.oid]]
+                })}
+            </header>
+        `;
+    }
+
+    // One metric card. The plot is the card; the head above says what it is.
+    chartCardMarkup(chartId, panel) {
+        return `
+            <article class="panel chart-container is-empty">
+                ${this.panelHeadMarkup(panel)}
                 <div id="${chartId}" class="chart-canvas"></div>
                 <div class="chart-empty">
                     <span class="chart-empty-title">Waiting for data…</span>
                     <span class="chart-empty-detail">Listening for the first sample.</span>
                 </div>
-            </div>
+            </article>
         `;
     }
 
-    async renderDashboardFromSpec(deviceId, mibName, mibId, device, dashboardSpec) {
+    // A tile is the same head over a reading that is words rather than a plot.
+    tileCardMarkup(elementId, panel) {
+        return `
+            <article class="panel status-item">
+                ${this.panelHeadMarkup(panel)}
+                <div id="${elementId}" class="status-value" data-waiting="1">Waiting for data…</div>
+            </article>
+        `;
+    }
+
+    async renderPanels(deviceId, mibName, dashboard, load = this.dashboardLoad) {
         const tabPane = document.getElementById(`mib-tab-${mibName}`);
         if (!tabPane) return;
 
+        const panels = dashboard.panels || [];
+
+        // What the dashboard could not explain about itself, said once at the
+        // top rather than left for the reader to infer from missing cards.
+        // This runs before the empty case, because an empty tab is exactly when
+        // the reason for it matters most.
         let html = '';
-
-        // Render scalar widgets
-        if (dashboardSpec.scalar_widgets && dashboardSpec.scalar_widgets.length > 0) {
-            // Separate widgets by type
-            const statusWidgets = dashboardSpec.scalar_widgets.filter(w => w.type === 'status');
-            const chartWidgets = dashboardSpec.scalar_widgets.filter(w => w.type === 'chart');
-
-            // Render status widgets
-            if (statusWidgets.length > 0) {
-                html += '<div class="status-info-section">';
-                html += '<h4>Status & Information</h4>';
-                html += '<div class="status-grid">';
-
-                for (const widget of statusWidgets) {
-                    const statusId = `status-${deviceId}-${mibName}-${widget.name}`;
-                    const enumData = JSON.stringify(widget.enum_values || {}).replace(/'/g, '&apos;');
-                    const initTime = Date.now();
-                    html += `
-                        <div class="status-item">
-                            <label>${widget.name}:</label>
-                            <span id="${statusId}" class="status-value" data-enum='${enumData}' data-init-time='${initTime}'>Loading...</span>
-                            ${this.descriptionTriggerHtml(widget.description, {
-                                title: widget.name,
-                                eyebrow: 'Status object',
-                                className: 'status-description'
-                            })}
-                        </div>
-                    `;
-                    // Same window the chart cards use, so a silent object
-                    // settles at the same moment whichever shape it is in.
-                    setTimeout(() => {
-                        this.checkStatusDataTimeout(statusId);
-                    }, FIRST_SAMPLE_TIMEOUT);
-                }
-
-                html += '</div></div>';
-            }
-
-            // Render scalar chart widgets
-            if (chartWidgets.length > 0) {
-                html += '<div class="charts-grid">';
-
-                for (const widget of chartWidgets) {
-                    const chartId = `chart-${deviceId}-${mibName}-${widget.name}`;
-                    html += this.chartCardMarkup(chartId, widget.name, widget.description);
-                }
-
-                html += '</div>';
-            }
+        for (const warning of dashboard.warnings || []) {
+            html += `<div class="dashboard-warning">${this.escapeHtml(warning)}</div>`;
         }
 
+        if (panels.length === 0) {
+            tabPane.innerHTML = html + `
+                <div class="empty-state">
+                    <p>${this.escapeHtml(mibName)} is not reporting anything on this device.</p>
+                </div>
+            `;
+            return;
+        }
 
-        // Render table widgets
-        for (const tableWidget of dashboardSpec.table_widgets || []) {
-            const tableName = tableWidget.table_name;
-            const masterSelectorId = `master-instance-selector-${deviceId}-${mibName}-${tableName}`;
+        // Readings that are words, and states that are names, are tiles rather
+        // than plots: a line through a constant 1 says nothing.
+        const tiles = panels.filter(p => p.type === 'state' || p.type === 'text');
+        const plots = panels.filter(p => p.type !== 'state' && p.type !== 'text');
 
-            html += `<div class="table-widget-section">`;
-            html += `<h4>${tableName}</h4>`;
-
-            // Add instance selector
-            if (tableWidget.instance_selector) {
-                html += `
-                    <div class="master-instance-selector-container">
-                        <label for="${masterSelectorId}">Instance:</label>
-                        <select id="${masterSelectorId}" class="master-instance-selector"
-                                data-device-id="${deviceId}"
-                                data-mib-name="${mibName}"
-                                data-table-name="${tableName}">
-                            <option value="">Loading instances...</option>
-                        </select>
-                    </div>
-                `;
+        // Two sections, each announced. A heading with a rule under it is what
+        // tells the eye where one ends and the next begins; without them the
+        // page is an undifferentiated field of cards.
+        if (tiles.length > 0) {
+            html += this.sectionHeadMarkup('States and readings', tiles.length,
+                'Values that are words rather than numbers, so they are listed rather than plotted.');
+            html += '<div class="status-grid">';
+            for (const panel of tiles) {
+                html += this.tileCardMarkup(
+                    this.panelElementId(deviceId, mibName, panel), panel);
             }
+            html += '</div>';
+        }
 
-            // Add status fields
-            if (tableWidget.status_fields && tableWidget.status_fields.length > 0) {
-                html += '<div class="status-grid">';
-                for (const field of tableWidget.status_fields) {
-                    const statusId = `status-${deviceId}-${mibName}-${tableName}-${field.name}`;
-                    const enumData = JSON.stringify(field.enum_values || {}).replace(/'/g, '&apos;');
-                    html += `
-                        <div class="status-item">
-                            <label>${field.name}:</label>
-                            <span id="${statusId}" class="status-value" data-enum='${enumData}'>Select an instance above</span>
-                            ${this.descriptionTriggerHtml(field.description, {
-                                title: field.name,
-                                eyebrow: 'Status field',
-                                className: 'status-description'
-                            })}
-                        </div>
-                    `;
-                }
-                html += '</div>';
+        if (plots.length > 0) {
+            html += this.sectionHeadMarkup('Measurements', plots.length,
+                'Numbers over time. A counter is drawn as its rate.');
+            html += '<div class="charts-grid">';
+            for (const panel of plots) {
+                html += this.chartCardMarkup(
+                    this.panelElementId(deviceId, mibName, panel), panel);
             }
+            html += '</div>';
+        }
 
-            // Add metric charts
-            if (tableWidget.metric_charts && tableWidget.metric_charts.length > 0) {
-                html += '<div class="charts-grid">';
-                for (const chart of tableWidget.metric_charts) {
-                    const chartId = `chart-${deviceId}-${mibName}-${tableName}-${chart.name}`;
-                    html += this.chartCardMarkup(chartId, chart.name, chart.description);
-                }
-                html += '</div>';
-            }
-
-            html += '</div>'; // end table-widget-section
+        // A tab is re-rendered whenever it is reloaded, and replacing its
+        // markup detaches every canvas in it. The ECharts instances bound to
+        // those nodes survive the detach and go on holding their data and their
+        // resize listeners, so they are discarded first.
+        for (const canvas of tabPane.querySelectorAll('.chart-canvas')) {
+            this.discardChart(canvas.id);
         }
 
         tabPane.innerHTML = html;
@@ -7381,29 +7305,473 @@ class MonitoringApp {
         // front, so forcing an inline display here stacked all of them on the
         // page at once; charts in a hidden pane are sized by resizeChartsInTab
         // when that pane becomes the active one.
-
-        // Force immediate reflow
         void tabPane.offsetHeight;
-
-        // Wait for DOM to update
         await new Promise(resolve => setTimeout(resolve, 100));
 
-        // Subscribe to scalar widgets
-        this.subscribeToScalarWidgets(deviceId, mibName, device, dashboardSpec.scalar_widgets || []);
+        // The reader can leave during that pause, and everything below this
+        // line is a side effect that outlives the render: two timers and a
+        // subscription. The outer loop's check comes only after this function
+        // returns, by which time the subscription for the departed device is
+        // already installed -- and a subscription is exactly what makes its
+        // frames look legitimate to the guard in applySnapshot.
+        if (load !== this.dashboardLoad) return;
 
-        // Setup instance selectors for table widgets
-        for (const tableWidget of dashboardSpec.table_widgets || []) {
-            await this.setupTableInstanceSelector(deviceId, mibName, device, tableWidget);
+        // A tile that never receives a sample has to say so on the same
+        // deadline a chart card uses, or it sits on "Waiting for data" for the
+        // rest of the session and reads as slow rather than as silent.
+        for (const panel of tiles) {
+            const elementId = this.panelElementId(deviceId, mibName, panel);
+            setTimeout(() => this.checkPanelTileTimeout(elementId), FIRST_SAMPLE_TIMEOUT);
         }
 
-        // Force resize all charts in this tab after setup completes
-        // This handles cases where charts were initialized before container had proper dimensions
+        this.subscribeToPanels(deviceId, mibName, panels);
         this.resizeChartsInTab(mibName);
 
-        // Schedule a check to hide empty MIB tabs after data loading timeout
         setTimeout(() => {
             this.checkAndHideEmptyMibTab(deviceId, mibName);
-        }, 35000); // Check after all widget timeouts (30s) + buffer
+        }, 35000);
+    }
+
+    // panelUnit is what this panel's numbers are measured in.
+    //
+    // A counter is drawn as its rate, so its unit is per second whatever the
+    // MIB declared the counter itself in. The card head and the chart axis both
+    // read it from here rather than composing it separately -- a card whose
+    // pill says "octets/s" over an axis that says "octets" disagrees with
+    // itself, and the axis is the one a reader believes.
+    panelUnit(panel) {
+        if (panel.type !== 'rate') return panel.unit || '';
+        return panel.unit ? `${panel.unit}/s` : 'per second';
+    }
+
+    // publishedName strips the affixes the exporter adds to a metric name.
+    //
+    // "snmp_" says the family is ours and "_info" says the value is text; both
+    // are the same contract promname.InfoMetricName writes and IdentityLabel
+    // reads back. Neither is part of what the metric IS, and leaving them on
+    // makes every unnamed card start with the same five characters.
+    publishedName(metric) {
+        let name = String(metric || '');
+        if (name.startsWith('snmp_')) name = name.slice(5);
+        if (name.endsWith('_info')) name = name.slice(0, -5);
+        return name || String(metric || '');
+    }
+
+    // sectionHeadMarkup announces a group of panels.
+    //
+    // The count is not decoration: a tab with 190 measurements and 30 states
+    // reads differently from one with 2 and 28, and the number is the fastest
+    // way to know which you are looking at before you start scrolling.
+    sectionHeadMarkup(title, count, note) {
+        return `
+            <div class="panel-section">
+                <h3 class="panel-section-title">${this.escapeHtml(title)}</h3>
+                <span class="panel-section-count">${count}</span>
+                <p class="panel-section-note">${this.escapeHtml(note)}</p>
+            </div>
+        `;
+    }
+
+    // panelElementId is the DOM id of a panel's tile or chart.
+    //
+    // The panel id is used rather than its title, because two modules can name
+    // an object the same thing and a collision here would make one panel write
+    // into the other's card.
+    panelElementId(deviceId, mibName, panel) {
+        return `panel-${deviceId}-${mibName}-${this.slug(panel.id)}`;
+    }
+
+    // slug reduces a panel id to something usable as a DOM id.
+    slug(value) {
+        return String(value).replace(/[^A-Za-z0-9_-]/g, '_');
+    }
+
+    // subscribeToPanels streams every panel of one module's tab.
+    //
+    // The server built each query, so there is nothing to assemble here: a
+    // counter already arrives wrapped in rate() over a window this device's
+    // poll interval can fill, and a table column already carries the join that
+    // puts a name on each row.
+    subscribeToPanels(deviceId, mibName, panels) {
+        // Whatever this tab was subscribed to before, it is not subscribed to
+        // now: its markup has just been replaced. Adding to the previous sets
+        // instead kept every query a re-render removed -- a MIB unassigned, a
+        // catalog row gone -- streaming forever into targets whose DOM nodes no
+        // longer exist, and re-sent the union of both sets on every reload.
+        this.unsubscribeFromDashboard(deviceId, mibName);
+
+        const key = `${deviceId}-${mibName}`;
+        const subscription = {
+            metricQueries: new Set(),
+            statusQueries: new Set(),
+            objects: new Map()
+        };
+        this.activeSubscriptions.set(key, subscription);
+
+        for (const panel of panels) {
+            const elementId = this.panelElementId(deviceId, mibName, panel);
+            const target = { panel, elementId };
+
+            if (panel.type === 'state' || panel.type === 'text') {
+                subscription.statusQueries.add(panel.query);
+            } else {
+                subscription.metricQueries.add(panel.query);
+                this.initializeEmptyChart(elementId, panel.object || panel.metric);
+            }
+            subscription.objects.set(panel.query, target);
+        }
+
+        const queries = [...subscription.statusQueries, ...subscription.metricQueries];
+        if (queries.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'subscribe', queries }));
+        }
+    }
+
+    // seriesName is what one line of a panel is called.
+    //
+    // Which label carries the name is not guessed here: the server worked out
+    // the candidates from the catalog and put them in order, best first, so the
+    // first one this series actually carries is the answer. A row whose name
+    // was never collected falls through to its index labels, which identify it
+    // exactly -- less friendly, never wrong, and better than forty lines all
+    // called the same thing.
+    seriesName(panel, labels) {
+        return this.seriesIdentity(panel, labels).name;
+    }
+
+    // seriesIdentity is seriesName plus whether it found a NAME or fell back to
+    // the row's index.
+    //
+    // The difference matters for a text panel. An index is a fine way to tell
+    // two lines on a chart apart, but as the label on a reading it is noise:
+    // ifDescr rendered as "369098752  port-channel1" puts a number nobody can
+    // use in front of the only thing on the row worth reading, and does it
+    // forty times. Where there is no name, the reading is its own identity.
+    seriesIdentity(panel, labels) {
+        for (const label of panel.series_labels || []) {
+            const value = labels[label];
+            if (value !== undefined && value !== '') return { name: value, named: true };
+        }
+        return { name: this.seriesKey(panel, labels) || panel.title, named: false };
+    }
+
+    // seriesKey identifies the ROW a sample belongs to.
+    //
+    // This is what a chart keys its lines on, and it is deliberately not the
+    // display name. A friendly name is not unique: ifAlias is whatever an
+    // operator typed and is routinely the same on several ports, and a sensor
+    // name repeats across identical modules. Two rows sharing a name would then
+    // append to one series -- two readings at the same timestamp, interleaved
+    // into a line that is the truth about neither, and one row missing from the
+    // legend with nothing to say it is gone.
+    //
+    // The index is what the MIB guarantees to be unique, so it is the key. The
+    // name is decoration on top of it.
+    seriesKey(panel, labels) {
+        return (panel.index_labels || [])
+            .map(label => labels[label])
+            .filter(value => value !== undefined && value !== '')
+            .join('/');
+    }
+
+    // updatePanel routes one query's result to the widget that asked for it.
+    updatePanel(target, metrics, time) {
+        // A reading with no series in it is an answer, not the absence of one:
+        // the last interface went away, the query stopped matching, the device
+        // stopped reporting it. Returning early here is how a panel came to go
+        // on showing its last value indefinitely, advancing at every heartbeat,
+        // with nothing on screen saying the numbers were no longer true.
+        if (metrics.length === 0) {
+            this.clearPanel(target);
+            return;
+        }
+
+        if (target.panel.type === 'state' || target.panel.type === 'text') {
+            this.updatePanelTile(target, metrics);
+            return;
+        }
+        this.updatePanelChart(target, metrics, time);
+    }
+
+    // clearPanel says a panel has no current reading.
+    //
+    // Not the same as "waiting for data", which is what a panel says before its
+    // first sample: this one HAD readings and no longer does, so it says so
+    // rather than keeping the last ones on screen.
+    clearPanel(target) {
+        const element = document.getElementById(target.elementId);
+        if (!element) return;
+
+        if (target.panel.type === 'state' || target.panel.type === 'text') {
+            delete element.dataset.waiting;
+            element.textContent = NO_DATA_TITLE;
+            element.title = NO_DATA_DETAIL;
+            const tile = element.closest('.status-item');
+            if (tile) tile.classList.add('is-nodata');
+            return;
+        }
+
+        const chart = this.charts[target.elementId];
+        if (chart && chart._panelSeries) {
+            chart._panelSeries.clear();
+            chart._hasData = false;
+            chart.clear();
+        }
+        this.markChartNoData(target.elementId);
+    }
+
+    // updatePanelTile renders the rows of a state or text panel.
+    //
+    // Both are info metrics or enumerations: their reading is a word, not a
+    // number, and a device reports one per row. A tile therefore lists its rows
+    // rather than showing a single value -- an interface table has forty
+    // operational states and there is no one of them to show.
+    updatePanelTile(target, metrics) {
+        const element = document.getElementById(target.elementId);
+        if (!element) return;
+
+        const panel = target.panel;
+        const rows = this.distinctNames(panel, (metrics || []).map(metric => {
+            const labels = metric.metric || {};
+            const identity = this.seriesIdentity(panel, labels);
+            const reading = panel.type === 'text'
+                ? this.textReading(panel, labels)
+                : this.decodeState(panel, metric.value);
+
+            // A text reading with no name of its own IS the identity. Putting
+            // the row's index in front of it -- "369098752  port-channel1" --
+            // adds a number nobody can use to the only thing worth reading.
+            const anonymous = panel.type === 'text' && !identity.named;
+
+            return {
+                key: this.seriesKey(panel, labels) || panel.title,
+                name: anonymous ? '' : identity.name,
+                reading
+            };
+        })).filter(row => row.reading !== undefined && row.reading !== '');
+
+        if (rows.length === 0) {
+            return;
+        }
+
+        delete element.dataset.waiting;
+        this.clearStatusNoData(element);
+
+        // One row needs no name in front of it: the card's own title says what
+        // it is, and repeating it reads as a table with one useless column.
+        if (rows.length === 1) {
+            element.textContent = rows[0].reading;
+            return;
+        }
+
+        // A whole number of rows, or none of the last one.
+        //
+        // The list used to be a fixed height with the overflow scrolled, which
+        // cut the final row through the middle of its letters: the first thing
+        // the eye lands on is a half-rendered line, and a card that clips its
+        // own content reads as broken rather than as abbreviated. Show a whole
+        // number and say how many are not shown.
+        const expanded = element.dataset.expanded === '1';
+        const shown = expanded ? rows : rows.slice(0, PANEL_ROWS_VISIBLE);
+        const hidden = rows.length - shown.length;
+
+        element.innerHTML =
+            '<span class="panel-rows">' + shown.map(row =>
+                `<span class="panel-row${row.name ? '' : ' is-unnamed'}">` +
+                (row.name ? `<span class="panel-row-name">${this.escapeHtml(row.name)}</span>` : '') +
+                `<span class="panel-row-value">${this.escapeHtml(row.reading)}</span></span>`
+            ).join('') + '</span>' +
+            (hidden > 0
+                ? `<button type="button" class="panel-rows-more" data-panel-more="1">${hidden} more</button>`
+                : (expanded && rows.length > PANEL_ROWS_VISIBLE
+                    ? '<button type="button" class="panel-rows-more" data-panel-more="1">Show fewer</button>'
+                    : ''));
+    }
+
+    // checkPanelTileTimeout gives up on a tile that never received a sample.
+    checkPanelTileTimeout(elementId) {
+        const element = document.getElementById(elementId);
+        if (!element || !element.dataset.waiting) return;
+
+        this.markStatusNoData(elementId);
+    }
+
+    // textReading pulls the words out of an info metric.
+    //
+    // Its sample is always 1, so everything it has to say is in its labels. The
+    // usual shape is one "value" label holding the reading, and the catalog
+    // says so. Some families carry several instead -- snmp_system_info collapses
+    // the whole system group into sysdescr, syscontact, syslocation and the
+    // rest -- so where the named label is absent, the labels that are not
+    // bookkeeping ARE the reading.
+    textReading(panel, labels) {
+        const named = panel.value_label && labels[panel.value_label];
+        if (named) return named;
+
+        const skip = new Set([
+            '__name__', 'device', 'oid', 'source', 'instance', 'job',
+            ...(panel.index_labels || [])
+        ]);
+        return Object.keys(labels).sort()
+            .filter(name => !skip.has(name) && labels[name] !== '')
+            .map(name => `${name}=${labels[name]}`)
+            .join(', ');
+    }
+
+    // distinctNames qualifies a display name that two rows honestly share.
+    //
+    // A friendly name is not unique: ifAlias is whatever an operator typed and
+    // is routinely the same on several ports, and a sensor name repeats across
+    // identical modules. Two rows reading "up" under the same name is a list
+    // that cannot be acted on. The index that identifies them is added to the
+    // ones that collide, and only to those, so the common case stays clean.
+    distinctNames(panel, rows) {
+        const counts = new Map();
+        for (const row of rows) {
+            if (row.name) counts.set(row.name, (counts.get(row.name) || 0) + 1);
+        }
+        return rows.map(row => row.name && counts.get(row.name) > 1 && row.name !== row.key
+            ? { ...row, name: `${row.name} (${row.key})` }
+            : row);
+    }
+
+    // decodeState turns a state panel's number into the word the MIB gave it.
+    //
+    // The decode comes from the catalog, so a state the poller has never seen
+    // before still reads correctly. A number with no decode is shown as itself
+    // rather than hidden: the reading is real, and only its name is missing.
+    decodeState(panel, value) {
+        const decode = panel.enum || {};
+        const key = String(Math.floor(Number(value)));
+        return decode[key] !== undefined ? decode[key] : String(value);
+    }
+
+    // updatePanelChart plots every row of a panel as its own line.
+    //
+    // A table column is one metric name over many rows, and the old renderer
+    // pushed all of them into a single series -- forty interfaces' octet counts
+    // interleaved on one line, which is why a dropdown had to exist to pick one
+    // row at a time. Keying the series on the row's name draws the table.
+    updatePanelChart(target, metrics, time) {
+        const chart = this.chartFor(target.elementId);
+        if (!chart || !metrics || metrics.length === 0) return;
+
+        const panel = target.panel;
+        if (!chart._panelSeries) chart._panelSeries = new Map();
+
+        for (const metric of metrics) {
+            const labels = metric.metric || {};
+            const key = this.seriesKey(panel, labels) || panel.title;
+            let row = chart._panelSeries.get(key);
+            if (!row) {
+                row = { name: this.seriesName(panel, labels), points: [] };
+                chart._panelSeries.set(key, row);
+            } else {
+                // The name can arrive later than the reading: the exporter
+                // promotes a status column onto the rows it polled it for, so
+                // a row can be nameless on one tick and named on the next.
+                row.name = this.seriesName(panel, labels);
+            }
+            row.points.push([time, metric.value]);
+            // The same window every series has always used. A panel of forty
+            // rows would otherwise hold forty times the history for the same
+            // span of time on screen.
+            if (row.points.length > 200) row.points.shift();
+        }
+
+        if (!chart._hasData) {
+            this.revealChart(target.elementId);
+            chart._hasData = true;
+            chart._timeBand = netmonCharts.timeBand(0);
+            chart._spanMs = 0;
+        }
+
+        // Throttled for the same reason single-series charts are: a tick is
+        // five seconds and a redraw of forty lines is not free.
+        const now = Date.now();
+        if (chart._lastUpdate && now - chart._lastUpdate < 2000) return;
+        chart._lastUpdate = now;
+
+        chart.setOption(this.buildPanelOption(chart, panel), true);
+    }
+
+    // buildPanelOption is the ECharts option for a multi-series panel.
+    buildPanelOption(chart, panel) {
+        const keys = [...chart._panelSeries.keys()].sort();
+
+        // The same rule the tiles use: a name two rows share is qualified with
+        // the index that tells them apart.
+        const labelled = new Map();
+        for (const row of this.distinctNames(null,
+                keys.map(key => ({ key, name: chart._panelSeries.get(key).name })))) {
+            labelled.set(row.key, row.name);
+        }
+
+        const longest = keys.reduce(
+            (span, key) => Math.max(span, this.seriesSpan(chart._panelSeries.get(key).points)), 0);
+
+        return {
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'line' },
+                formatter: (params) => {
+                    if (!params || params.length === 0) return '';
+                    const when = netmonCharts.timestampLabel(params[0].value[0], chart._spanMs || 0);
+                    const lines = params.map(p =>
+                        `${this.escapeHtml(p.seriesName)}: <b>${this.formatPanelValue(panel, p.value[1])}</b>`);
+                    return `${when}<br/>${lines.join('<br/>')}`;
+                }
+            },
+            // A panel of forty rows cannot show forty names without burying the
+            // plot, so the legend scrolls rather than wrapping down the card.
+            legend: keys.length > 1
+                ? { type: 'scroll', top: 0, itemHeight: 8, itemWidth: 14 }
+                : { show: false },
+            grid: { left: 4, right: 14, top: keys.length > 1 ? 30 : 18, bottom: 2, containLabel: true },
+            xAxis: this.timeAxisOption(longest, chart._panelSeries.get(keys[0]).points),
+            yAxis: {
+                type: 'value',
+                // The RATE unit, not the raw one. A chart of octets per second
+                // whose axis reads "octets" is telling the reader the wrong
+                // thing about every number on it -- and the axis is where they
+                // look to find out what the numbers are.
+                name: this.panelUnit(panel),
+                nameLocation: 'end',
+                nameGap: 8,
+                axisLabel: { formatter: value => this.formatAxisValue(value, panel.unit) }
+            },
+            series: keys.map((key, index) => ({
+                name: labelled.get(key),
+                type: 'line',
+                smooth: true,
+                symbol: 'circle',
+                symbolSize: 4,
+                showSymbol: chart._panelSeries.get(key).points.length < 2,
+                data: chart._panelSeries.get(key).points,
+                lineStyle: { width: 1.5 },
+                // An area fill under forty overlapping lines is a smear, so it
+                // is kept for the single-series case where it reads well.
+                areaStyle: keys.length === 1 ? netmonCharts.areaStyle(chart, 0) : undefined,
+                itemStyle: { color: netmonCharts.seriesColor(index) }
+            }))
+        };
+    }
+
+    // formatPanelValue renders a reading with the unit the catalog declared.
+    //
+    // The unit comes from the catalog rather than from a match on the metric
+    // name, so a family the poller derives -- optical power in dBm, named for
+    // its unit and belonging to no MIB object -- is labelled correctly.
+    formatPanelValue(panel, value) {
+        const number = parseFloat(value);
+        if (isNaN(number)) return String(value);
+
+        const rendered = Math.abs(number) >= 1000 || Number.isInteger(number)
+            ? number.toLocaleString(undefined, { maximumFractionDigits: 2 })
+            : number.toFixed(3);
+
+        if (!panel.unit) return panel.type === 'rate' ? `${rendered}/s` : rendered;
+        return panel.type === 'rate' ? `${rendered} ${panel.unit}/s` : `${rendered} ${panel.unit}`;
     }
 
     checkAndHideEmptyMibTab(deviceId, mibName) {
@@ -7412,17 +7780,15 @@ class MonitoringApp {
 
         // Check if tab has any visible content
         const visibleSections = tabPane.querySelectorAll(
-            '.status-info-section:not(.no-data-hidden):not([style*="display: none"]), ' +
-            '.charts-grid:not(.no-data-hidden):not([style*="display: none"]), ' +
-            '.table-widget-section:not(.no-data-hidden):not([style*="display: none"])'
+            '.status-grid:not(.no-data-hidden):not([style*="display: none"]), ' +
+            '.charts-grid:not(.no-data-hidden):not([style*="display: none"])'
         );
 
         // Also check if there are visible items within each section
         let hasVisibleContent = false;
         for (const section of visibleSections) {
             const visibleItems = section.querySelectorAll(
-                '.chart-container:not(.no-data-hidden):not([style*="display: none"]), ' +
-                '.status-item:not(.no-data-hidden):not([style*="display: none"])'
+                '.panel:not(.no-data-hidden):not([style*="display: none"])'
             );
             if (visibleItems.length > 0) {
                 hasVisibleContent = true;
@@ -7459,635 +7825,6 @@ class MonitoringApp {
         }
     }
 
-    subscribeToScalarWidgets(deviceId, mibName, device, scalarWidgets) {
-        const key = `${deviceId}-${mibName}`;
-        let subscriptionData = this.activeSubscriptions.get(key);
-
-        if (!subscriptionData) {
-            subscriptionData = {
-                metricQueries: new Set(),
-                statusQueries: new Set(),
-                objects: new Map()
-            };
-            this.activeSubscriptions.set(key, subscriptionData);
-        }
-
-        // Separate system info widgets from regular widgets
-        const systemInfoWidgets = [];
-        const regularWidgets = [];
-
-        for (const widget of scalarWidgets) {
-            if (this.isSystemInfoOID(widget.oid)) {
-                systemInfoWidgets.push(widget);
-            } else {
-                regularWidgets.push(widget);
-            }
-        }
-
-        // Handle regular widgets with WebSocket subscriptions
-        for (const widget of regularWidgets) {
-            const metric = this.specMetric(widget, `${mibName}.${widget.name}`);
-            if (!metric) {
-                // Nothing can be subscribed to, so say so on the card rather
-                // than leaving it waiting for a sample that cannot arrive.
-                if (widget.type === 'status') {
-                    this.markStatusSpecError(
-                        `status-${deviceId}-${mibName}-${widget.name}`,
-                        MonitoringApp.MISSING_METRIC_DETAIL);
-                } else if (widget.type === 'chart') {
-                    const chartId = `chart-${deviceId}-${mibName}-${widget.name}`;
-                    this.initializeEmptyChart(chartId, widget.name);
-                    this.markChartSpecError(chartId, MonitoringApp.MISSING_METRIC_DETAIL);
-                }
-                continue;
-            }
-
-            const query = this.metricQuery(metric, device.name);
-
-            if (widget.type === 'status') {
-                subscriptionData.statusQueries.add(query);
-                subscriptionData.objects.set(query, {
-                    ...widget,
-                    statusId: `status-${deviceId}-${mibName}-${widget.name}`
-                });
-            } else if (widget.type === 'chart') {
-                subscriptionData.metricQueries.add(query);
-                subscriptionData.objects.set(query, {
-                    ...widget,
-                    chartId: `chart-${deviceId}-${mibName}-${widget.name}`
-                });
-
-                // Initialize chart
-                const chartId = `chart-${deviceId}-${mibName}-${widget.name}`;
-                this.initializeEmptyChart(chartId, widget.name);
-            }
-        }
-
-        // Handle system info widgets with API fetch
-        if (systemInfoWidgets.length > 0) {
-            this.fetchAndDisplaySystemInfo(deviceId, mibName, device.name, systemInfoWidgets);
-        }
-
-        // Send subscribe message for regular widgets only
-        const allQueries = [...subscriptionData.statusQueries, ...subscriptionData.metricQueries];
-        if (allQueries.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
-            console.log(`Subscribing to ${allQueries.length} scalar widget queries`);
-            this.ws.send(JSON.stringify({
-                type: 'subscribe',
-                queries: allQueries
-            }));
-        }
-    }
-
-    async setupTableInstanceSelector(deviceId, mibName, device, tableWidget) {
-        const tableName = tableWidget.table_name;
-        const masterSelectorId = `master-instance-selector-${deviceId}-${mibName}-${tableName}`;
-        const masterSelector = document.getElementById(masterSelectorId);
-
-        if (!masterSelector) {
-            console.warn(`Master instance selector not found: ${masterSelectorId}`);
-            return;
-        }
-
-        if (!tableWidget.instance_selector || !tableWidget.instance_selector.query_template) {
-            console.warn(`No instance selector query template for ${tableName}, hiding section`);
-            const tableWidgetSection = masterSelector.closest('.table-widget-section');
-            if (tableWidgetSection) {
-                tableWidgetSection.style.display = 'none';
-                tableWidgetSection.classList.add('no-data-hidden');
-            }
-            return;
-        }
-
-        // Build query from template
-        const queryTemplate = tableWidget.instance_selector.query_template;
-        const query = queryTemplate.replace(/\{\{device\}\}/g, device.name);
-
-        console.log(`Querying instances for ${tableName}: ${query}`);
-
-        try {
-            const response = await fetch('/api/metrics/instant', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: query })
-            });
-
-            if (!response.ok) {
-                console.error('Failed to query instances, hiding section');
-                const tableWidgetSection = masterSelector.closest('.table-widget-section');
-                if (tableWidgetSection) {
-                    tableWidgetSection.style.display = 'none';
-                    tableWidgetSection.classList.add('no-data-hidden');
-                }
-                return;
-            }
-
-            const data = await response.json();
-            console.log(`Instance query response:`, data);
-
-            // Extract unique instances from the label
-            const labelName = tableWidget.instance_selector.label_name;
-            const friendlyNameLabel = tableWidget.instance_selector.friendly_name_label;
-
-            // Use Map to store instance value -> friendly name mapping
-            const instanceMap = new Map();
-
-            // Handle API response - backend returns {metrics: [...]} not {result: [...]}
-            const metrics = data.metrics || data.result || [];
-            if (Array.isArray(metrics)) {
-                for (const item of metrics) {
-                    const metric = item.metric || item.Metric;
-                    if (metric && metric[labelName]) {
-                        const instanceValue = metric[labelName];
-                        const friendlyName = friendlyNameLabel ? (metric[friendlyNameLabel] || null) : null;
-
-                        // Store or update the mapping
-                        if (!instanceMap.has(instanceValue) || friendlyName) {
-                            instanceMap.set(instanceValue, friendlyName);
-                        }
-                    }
-                }
-            }
-
-            // Convert to array and sort intelligently
-            const instanceArray = Array.from(instanceMap.entries()).sort((a, b) => {
-                const [valueA, friendlyA] = a;
-                const [valueB, friendlyB] = b;
-
-                // If both have friendly names, sort by friendly name
-                if (friendlyA && friendlyB) {
-                    return friendlyA.localeCompare(friendlyB);
-                }
-
-                // If only one has a friendly name, prioritize it
-                if (friendlyA && !friendlyB) return -1;
-                if (!friendlyA && friendlyB) return 1;
-
-                // Neither has friendly name, try numeric sort first
-                const numA = parseInt(valueA, 10);
-                const numB = parseInt(valueB, 10);
-                if (!isNaN(numA) && !isNaN(numB)) {
-                    return numA - numB;
-                }
-
-                // Fall back to string comparison
-                return String(valueA).localeCompare(String(valueB));
-            });
-
-            console.log(`Found ${instanceArray.length} instances for ${tableName}:`, instanceArray);
-
-            // If no instances found, hide the entire table widget section
-            if (instanceArray.length === 0) {
-                console.log(`No instances found for ${tableName}, hiding table widget section`);
-                const tableWidgetSection = masterSelector.closest('.table-widget-section');
-                if (tableWidgetSection) {
-                    tableWidgetSection.style.display = 'none';
-                    tableWidgetSection.classList.add('no-data-hidden');
-                }
-                return;
-            }
-
-            // Populate selector with friendly names if available
-            masterSelector.innerHTML = '<option value="">Select instance...</option>';
-            for (const [instanceValue, friendlyName] of instanceArray) {
-                const displayText = friendlyName
-                    ? `${this.escapeHtml(friendlyName)} (${this.escapeHtml(instanceValue)})`
-                    : this.escapeHtml(instanceValue);
-                masterSelector.innerHTML += `<option value="${this.escapeHtml(instanceValue)}">${displayText}</option>`;
-            }
-
-            // Auto-select first instance automatically
-            if (instanceArray.length >= 1) {
-                const firstInstanceValue = instanceArray[0][0]; // Extract value from [value, friendlyName] tuple
-                masterSelector.value = firstInstanceValue;
-                this.handleTableInstanceChange(deviceId, mibName, device, tableWidget, firstInstanceValue);
-            }
-
-            // Try to restore previously selected instance from state
-            const restoredInstance = this.restoreInstanceSelection(deviceId, mibName, tableName, masterSelector);
-            if (restoredInstance) {
-                this.handleTableInstanceChange(deviceId, mibName, device, tableWidget, restoredInstance);
-            }
-
-            // Add change listener
-            masterSelector.addEventListener('change', (e) => {
-                this.handleTableInstanceChange(deviceId, mibName, device, tableWidget, e.target.value);
-            });
-
-        } catch (error) {
-            console.error('Error querying instances, hiding section:', error);
-            const tableWidgetSection = masterSelector.closest('.table-widget-section');
-            if (tableWidgetSection) {
-                tableWidgetSection.style.display = 'none';
-                tableWidgetSection.classList.add('no-data-hidden');
-            }
-        }
-    }
-
-    handleTableInstanceChange(deviceId, mibName, device, tableWidget, selectedInstance) {
-        const tableName = tableWidget.table_name;
-        // Save instance selection to state
-        if (selectedInstance) {
-            this.saveInstanceSelection(deviceId, mibName, tableName, selectedInstance);
-        }
-        console.log(`Instance changed for ${tableName}: ${selectedInstance}`);
-
-        if (!selectedInstance) {
-            // Clear all fields
-            for (const field of tableWidget.status_fields || []) {
-                const statusId = `status-${deviceId}-${mibName}-${tableName}-${field.name}`;
-                const statusElement = document.getElementById(statusId);
-                if (statusElement) {
-                    statusElement.textContent = 'Select an instance above';
-                }
-            }
-            return;
-        }
-
-        const key = `${deviceId}-${mibName}-${tableName}`;
-        let subscriptionData = this.activeSubscriptions.get(key);
-
-        if (!subscriptionData) {
-            subscriptionData = {
-                metricQueries: new Set(),
-                statusQueries: new Set(),
-                objects: new Map()
-            };
-            this.activeSubscriptions.set(key, subscriptionData);
-        }
-
-        // Unsubscribe from old queries
-        const allOldQueries = [...subscriptionData.statusQueries, ...subscriptionData.metricQueries];
-        if (allOldQueries.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({
-                type: 'unsubscribe',
-                queries: allOldQueries
-            }));
-        }
-
-        subscriptionData.statusQueries.clear();
-        subscriptionData.metricQueries.clear();
-        subscriptionData.objects.clear();
-
-        const instanceSelector = tableWidget.instance_selector;
-        // Every row of a table column shares one metric name, so the row is
-        // picked out by matching the index label the selector names.
-        const matchers = this.instanceMatchers(instanceSelector, selectedInstance);
-
-        // Subscribe to status fields
-        for (const field of tableWidget.status_fields || []) {
-            const statusId = `status-${deviceId}-${mibName}-${tableName}-${field.name}`;
-
-            // field.metric is already the info metric name when the column's
-            // value is a string or an enum, and the column's own metric
-            // otherwise; the distinction is the server's to make.
-            const metric = this.specMetric(field, `${mibName}.${tableName}.${field.name}`);
-            if (!metric) {
-                this.markStatusSpecError(statusId, MonitoringApp.MISSING_METRIC_DETAIL);
-                continue;
-            }
-
-            const query = this.metricQuery(metric, device.name, matchers);
-
-            subscriptionData.statusQueries.add(query);
-            subscriptionData.objects.set(query, {
-                ...field,
-                statusId: statusId,
-                enumValues: field.enum_values,
-                isInfoMetric: field.is_info_metric
-            });
-        }
-
-        // Subscribe to metric charts
-        for (const chart of tableWidget.metric_charts || []) {
-            const chartId = `chart-${deviceId}-${mibName}-${tableName}-${chart.name}`;
-
-            // Reinitialize chart
-            this.discardChart(chartId);
-            this.initializeEmptyChart(chartId, chart.name);
-
-            const metric = this.specMetric(chart, `${mibName}.${tableName}.${chart.name}`);
-            if (!metric) {
-                this.markChartSpecError(chartId, MonitoringApp.MISSING_METRIC_DETAIL);
-                continue;
-            }
-
-            let query = this.metricQuery(metric, device.name, matchers);
-
-            // Wrap counter metrics in rate() to show per-second values (bandwidth)
-            if (chart.use_rate) {
-                query = `rate(${query}[${this.rateWindow(device)}])`;
-            }
-
-            subscriptionData.metricQueries.add(query);
-            subscriptionData.objects.set(query, {
-                ...chart,
-                chartId: chartId,
-                useRate: chart.use_rate
-            });
-        }
-
-        // Send subscribe message
-        const allQueries = [...subscriptionData.statusQueries, ...subscriptionData.metricQueries];
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            console.log(`Subscribing to ${allQueries.length} queries for instance ${selectedInstance}`);
-            this.ws.send(JSON.stringify({
-                type: 'subscribe',
-                queries: allQueries
-            }));
-        }
-        
-        // Force resize all charts after instance change
-        setTimeout(() => {
-            for (const chart of tableWidget.metric_charts || []) {
-                const chartId = `chart-${deviceId}-${mibName}-${tableName}-${chart.name}`;
-                const chartInstance = this.charts[chartId];
-                if (chartInstance && chartInstance.resize) {
-                    chartInstance.resize();
-                }
-            }
-        }, 100);
-    }
-
-    // queryAvailableInstances lists the rows of a table column, one entry per
-    // row of the series named by widget.metric. instanceSelector names the
-    // labels: label_name is the column offered for selection, index_labels are
-    // the table's whole index, and friendly_name_label is the human-readable
-    // column to caption a row with, if the table has one.
-    async queryAvailableInstances(deviceName, widget, instanceSelector) {
-        const metric = this.specMetric(widget, `instances for ${widget && widget.name}`);
-        if (!metric) return [];
-
-        const selector = instanceSelector || {};
-        const labelName = selector.label_name;
-        if (!labelName) {
-            console.error('Instance selector has no label_name; cannot list instances', selector);
-            return [];
-        }
-
-        // Every row of the column carries the same metric name and differs
-        // only in its index labels, so one name plus the device selects them
-        // all -- no name regex, and no scan of every series name in the TSDB.
-        const query = this.metricQuery(metric, deviceName);
-
-        try {
-            const response = await fetch('/api/metrics/instant', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    query: query
-                })
-            });
-
-            if (!response.ok) {
-                console.error('Failed to query Prometheus for instances');
-                return [];
-            }
-
-            const data = await response.json();
-            const instances = [];
-            const seenRows = new Set();
-
-            // The whole index identifies a row exactly; label_name identifies
-            // it only as far as that one column is unique within the table, so
-            // rows are deduplicated on the full index and not on the offered
-            // column alone.
-            const indexLabels = (selector.index_labels && selector.index_labels.length > 0)
-                ? selector.index_labels
-                : [labelName];
-
-            if (data.metrics && Array.isArray(data.metrics)) {
-                for (const series of data.metrics) {
-                    const labels = series.metric || {};
-
-                    // The row index is in labels now, not in the metric name.
-                    const instanceId = labels[labelName];
-                    if (instanceId === undefined || instanceId === '') continue;
-
-                    // U+001F (unit separator) joins the index values: no index
-                    // label carries one, so two different rows cannot collide on
-                    // the joined key.
-                    const rowKey = indexLabels.map(label => labels[label] ?? '').join('\u001f');
-                    if (seenRows.has(rowKey)) continue;
-                    seenRows.add(rowKey);
-
-                    const friendlyName = selector.friendly_name_label
-                        ? labels[selector.friendly_name_label]
-                        : null;
-
-                    // Every index label of this row, for a caller that has to
-                    // pin a row whose offered column is not unique.
-                    const rowIndex = {};
-                    for (const label of indexLabels) {
-                        if (labels[label] !== undefined) rowIndex[label] = labels[label];
-                    }
-
-                    instances.push({
-                        instance: instanceId,
-                        label: friendlyName || instanceId,
-                        index: instanceId,
-                        indexLabels: rowIndex,
-                        labels: labels
-                    });
-                }
-            }
-
-            return instances;
-        } catch (error) {
-            console.error('Error querying available instances:', error);
-            return [];
-        }
-    }
-
-    // instanceSelector is the table's selector from the dashboard spec: which
-    // label the chosen value lives in is a property of the table, not
-    // something to be guessed from the shape of the value, so BGP peers and
-    // CPU cores select the same way interfaces do.
-    handleInstanceChange(chartId, deviceId, mibName, deviceName, obj, instanceSelector, selectedInstance) {
-        console.log(`Instance changed for ${chartId}: ${selectedInstance}`);
-
-        // Store selection
-        this.instanceSelections[chartId] = selectedInstance;
-
-        // Clear chart and reinitialize
-        this.discardChart(chartId);
-        this.initializeEmptyChart(chartId, obj.name);
-
-        const metric = this.specMetric(obj, `${mibName}.${obj.name}`);
-        if (!metric) {
-            this.markChartSpecError(chartId, MonitoringApp.MISSING_METRIC_DETAIL);
-            return;
-        }
-
-        // Unsubscribe from old query and subscribe to new one
-        const key = `${deviceId}-${mibName}`;
-        const subscriptionData = this.activeSubscriptions.get(key);
-
-        if (subscriptionData) {
-            const oldQuery = this.metricQuery(metric, deviceName);
-
-            // Build new query based on selection
-            let newQuery;
-            if (selectedInstance === '__all__') {
-                newQuery = oldQuery; // Keep broad query for all instances
-            } else if (selectedInstance) {
-                newQuery = this.metricQuery(metric, deviceName,
-                    this.instanceMatchers(instanceSelector, selectedInstance));
-            } else {
-                // No selection, don't subscribe
-                return;
-            }
-
-            // Remove old query from subscription
-            if (subscriptionData.metricQueries.has(oldQuery)) {
-                subscriptionData.metricQueries.delete(oldQuery);
-                subscriptionData.objects.delete(oldQuery);
-
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({
-                        type: 'unsubscribe',
-                        queries: [oldQuery]
-                    }));
-                }
-            }
-
-            // Add new query to subscription
-            subscriptionData.metricQueries.add(newQuery);
-            subscriptionData.objects.set(newQuery, obj);
-
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(JSON.stringify({
-                    type: 'subscribe',
-                    queries: [newQuery]
-                }));
-            }
-
-            console.log(`Switched subscription from ${oldQuery} to ${newQuery}`);
-        }
-    }
-
-    handleStatusInstanceChange(statusId, deviceId, mibName, deviceName, obj, instanceSelector, selectedInstance) {
-        console.log(`Status instance changed for ${statusId}: ${selectedInstance}`);
-
-        if (!selectedInstance) {
-            // No selection, clear status
-            const statusElement = document.getElementById(statusId);
-            if (statusElement) {
-                statusElement.textContent = 'Select an instance';
-            }
-            return;
-        }
-
-        const metric = this.specMetric(obj, `${mibName}.${obj.name}`);
-        if (!metric) {
-            this.markStatusSpecError(statusId, MonitoringApp.MISSING_METRIC_DETAIL);
-            return;
-        }
-
-        // Subscribe to instance-specific query for this status field
-        const key = `${deviceId}-${mibName}`;
-        const subscriptionData = this.activeSubscriptions.get(key);
-
-        if (subscriptionData) {
-            const query = this.metricQuery(metric, deviceName,
-                this.instanceMatchers(instanceSelector, selectedInstance));
-
-            // Add query to status subscriptions
-            subscriptionData.statusQueries.add(query);
-            subscriptionData.objects.set(query, obj);
-
-            // Send subscribe message
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(JSON.stringify({
-                    type: 'subscribe',
-                    queries: [query]
-                }));
-            }
-
-            // The tile is now waiting on a different instance, so it goes back
-            // to waiting and gets the same window every other widget gets.
-            // Leaving the previous instance's value on screen would be worse
-            // than saying nothing at all.
-            const statusElement = document.getElementById(statusId);
-            if (statusElement) {
-                this.clearStatusNoData(statusElement);
-                statusElement.textContent = 'Loading...';
-            }
-            setTimeout(() => this.checkStatusDataTimeout(statusId), FIRST_SAMPLE_TIMEOUT);
-
-            console.log(`Subscribed to status field query: ${query}`);
-        }
-    }
-
-    subscribeToDashboard(deviceId, mibName, device, statusObjects, metricObjects) {
-        console.log(`Subscribing to dashboard: ${deviceId}-${mibName}`);
-        console.log(`  Status objects: ${statusObjects.length}, Metric objects: ${metricObjects.length}`);
-
-        const key = `${deviceId}-${mibName}`;
-        const metricQueries = new Set();
-        const statusQueries = new Set();
-        const objects = new Map(); // Map query -> object info
-
-        // Process status objects
-        for (const obj of statusObjects) {
-            console.log(`Processing status object: ${obj.name}, OID: ${obj.oid}, Type: ${obj.type}`);
-            // The server names the metric: one name per MIB object, with any
-            // row index in labels, so a single name covers every row.
-            const metric = this.specMetric(obj, `${mibName}.${obj.name}`);
-            if (!metric) {
-                this.markStatusSpecError(
-                    `status-${deviceId}-${mibName}-${obj.name}`,
-                    MonitoringApp.MISSING_METRIC_DETAIL);
-                continue;
-            }
-
-            const query = this.metricQuery(metric, device.name);
-            console.log(`Generated status query: ${query}`);
-            statusQueries.add(query);
-            objects.set(query, obj);
-        }
-
-        // Process metric objects
-        for (const obj of metricObjects) {
-            // Initialize chart with empty data (waiting for WebSocket stream)
-            const chartId = `chart-${deviceId}-${mibName}-${obj.name}`;
-            this.initializeEmptyChart(chartId, obj.name);
-
-            // The server names the metric: one name per MIB object, with any
-            // row index in labels, so a single name covers every row.
-            const metric = this.specMetric(obj, `${mibName}.${obj.name}`);
-            if (!metric) {
-                this.markChartSpecError(chartId, MonitoringApp.MISSING_METRIC_DETAIL);
-                continue;
-            }
-
-            const query = this.metricQuery(metric, device.name);
-            metricQueries.add(query);
-            objects.set(query, obj);
-        }
-
-        // Send subscribe message to WebSocket for all queries
-        const allQueries = [...statusQueries, ...metricQueries];
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            console.log(`Sending WebSocket subscribe for ${allQueries.length} queries:`);
-            allQueries.forEach((q, i) => console.log(`  [${i}] ${q}`));
-            this.ws.send(JSON.stringify({
-                type: 'subscribe',
-                queries: allQueries
-            }));
-        } else {
-            console.warn('WebSocket not ready, subscription will be sent on reconnect');
-        }
-
-        // Track subscriptions
-        this.activeSubscriptions.set(key, {
-            metricQueries,
-            statusQueries,
-            objects
-        });
-        console.log(`Active subscriptions now:`, Array.from(this.activeSubscriptions.keys()));
-    }
-
     unsubscribeFromDashboard(deviceId, mibName) {
         const key = `${deviceId}-${mibName}`;
         const subscriptionData = this.activeSubscriptions.get(key);
@@ -8105,6 +7842,7 @@ class MonitoringApp {
         // accumulate one per query per device visited.
         for (const query of allQueries) {
             this.lastReadings.delete(query);
+            this.pendingResync.delete(query);
         }
 
         console.log(`Unsubscribing from dashboard: ${key} with ${allQueries.length} queries`);
@@ -8271,17 +8009,6 @@ class MonitoringApp {
         this.markChartNoData(chartId);
     }
 
-    // The tile keeps its place, exactly as the chart cards do: an object the
-    // device does not populate should read as "nothing here", not vanish and
-    // leave the operator wondering which objects they were promised.
-    checkStatusDataTimeout(statusId) {
-        const statusElement = document.getElementById(statusId);
-        if (!statusElement || statusElement.textContent !== 'Loading...') return;
-
-        console.log(`Status ${statusId} timed out waiting for data`);
-        this.markStatusNoData(statusId);
-    }
-
     resubscribeActiveDashboards() {
         console.log('Re-subscribing to active dashboards after WebSocket reconnection');
 
@@ -8289,6 +8016,15 @@ class MonitoringApp {
             console.warn('WebSocket not ready for re-subscription');
             return;
         }
+
+        // A sequence number belongs to a connection. The server sends this
+        // browser the whole reading anyway -- it is a client it has never seen
+        // -- but holding a sequence from before the drop means depending on
+        // the server for that, and the rule that a delta is only applied to
+        // the reading it was computed against is one this side can keep on its
+        // own.
+        this.lastReadings.clear();
+        this.pendingResync.clear();
 
         // Re-subscribe to all active dashboards
         this.activeSubscriptions.forEach((subscriptionData, key) => {
@@ -8318,7 +8054,6 @@ class MonitoringApp {
                 // Store selected device ID for restoration after devices load
                 this.restoredDeviceId = state.selectedDeviceId;
                 this.restoredMibTab = state.activeMibTab;
-                this.restoredInstanceSelections = state.instanceSelections || {};
             }
         } catch (error) {
             console.error('Error loading state:', error);
@@ -8333,7 +8068,6 @@ class MonitoringApp {
                 currentTimeRange: this.currentTimeRange,
                 selectedDeviceId: deviceSelect ? deviceSelect.value : null,
                 activeMibTab: this.activeMibTab,
-                instanceSelections: this.instanceSelections || {},
             };
             localStorage.setItem('go-netmon-state', JSON.stringify(state));
         } catch (error) {
@@ -8356,30 +8090,6 @@ class MonitoringApp {
                 this.loadDeviceDashboards(this.restoredDeviceId);
             }
         }
-    }
-
-    saveInstanceSelection(deviceId, mibName, widgetId, instance) {
-        const key = `${deviceId}-${mibName}-${widgetId}`;
-        this.instanceSelections[key] = instance;
-        this.saveState();
-    }
-
-    getInstanceSelection(deviceId, mibName, widgetId) {
-        const key = `${deviceId}-${mibName}-${widgetId}`;
-        return this.instanceSelections[key] || null;
-    }
-
-    restoreInstanceSelection(deviceId, mibName, widgetId, selector) {
-        const savedInstance = this.getInstanceSelection(deviceId, mibName, widgetId);
-        if (savedInstance && selector) {
-            // Check if the option exists
-            const option = selector.querySelector(`option[value="${savedInstance}"]`);
-            if (option) {
-                selector.value = savedInstance;
-                return savedInstance;
-            }
-        }
-        return null;
     }
 
     // ========================================

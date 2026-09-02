@@ -72,6 +72,49 @@ func IndexLabel(columnName string) string {
 	return strings.ToLower(columnName)
 }
 
+// IsInfoMetric reports whether a published name is an info metric: a constant 1
+// whose reading is text carried in a label.
+//
+// This reads the exporter's naming CONTRACT rather than guessing from a name.
+// InfoMetricName is the only thing that produces this shape, and it produces it
+// for exactly one reason -- the value is text and cannot be a sample -- so the
+// suffix is a fact about how the family is published, not a hint.
+//
+// It is what lets a consumer draw an UNDESCRIBED info metric correctly. A
+// metric with no catalog row has no declared kind, and the honest default for
+// an unknown kind is a line; but a line through a family that is always 1 is a
+// flat line that says nothing, and the reading is sitting in a label beside it.
+// Measured on ci-node-1: thirteen of them, including the device's own name and
+// firmware version, drawn as flat lines.
+func IsInfoMetric(metric string) bool {
+	return strings.HasPrefix(metric, Prefix) && strings.HasSuffix(metric, "_info")
+}
+
+// IdentityLabel returns the label an info metric's value ALSO appears in, on
+// the readings of the table it belongs to.
+//
+// The exporter promotes a table's status columns onto its readings as
+// friendly-name labels, so snmp_ifInOctets arrives already carrying
+// ifdescr="GigabitEthernet0/0/0" alongside its ifindex. The same value is
+// published separately as snmp_ifdescr_info, and the catalog names that family
+// as where a row's identity lives -- true, but not the cheapest place to get it
+// from, because a consumer holding the reading already has the label.
+//
+// The two names differ only by the prefix and the suffix, since both are the
+// column name lowercased: see InfoMetricName and IndexLabel. That is what makes
+// this derivation exact rather than a guess, and
+// TestIdentityLabelRoundTripsWithTheExporter pins it.
+func IdentityLabel(infoMetric string) string {
+	// Both ends have to be there. Trimming whichever one is present would turn
+	// snmp_ifInOctets -- a reading, not an info metric -- into "ifInOctets",
+	// and hand a renderer a label no series carries while looking like an
+	// answer.
+	if !strings.HasPrefix(infoMetric, Prefix) || !strings.HasSuffix(infoMetric, "_info") {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(infoMetric, Prefix), "_info")
+}
+
 // RawOIDMetricName returns the name the exporter falls back to for an instance
 // OID that no loaded MIB describes. It is the only case in which a metric name
 // still carries an OID, and the only case in which one metric name means one

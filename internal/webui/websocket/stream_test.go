@@ -86,8 +86,13 @@ func TestStreamMetricsSendsToSubscribers(t *testing.T) {
 	hub.streamMetrics(context.Background())
 
 	msg := waitForMessage(t, client)
-	if msg.Type != MessageTypeMetricUpdate {
-		t.Errorf("Type = %q, want %q", msg.Type, MessageTypeMetricUpdate)
+	// The first frame for a query is always the whole reading: there is
+	// nothing to express it as a change to.
+	if msg.Type != MessageTypeMetricSnapshot {
+		t.Errorf("Type = %q, want %q", msg.Type, MessageTypeMetricSnapshot)
+	}
+	if msg.Seq == 0 {
+		t.Error("the frame carries no sequence, so a later delta could not name it")
 	}
 	if msg.Query != "snmp_if_in" {
 		t.Errorf("Query = %q, want snmp_if_in", msg.Query)
@@ -384,8 +389,8 @@ func TestClientPumpsCarryTheSubscribeProtocol(t *testing.T) {
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("read streamed message: %v", err)
 	}
-	if msg.Type != MessageTypeMetricUpdate || len(msg.Metrics) != 2 {
-		t.Errorf("message = %+v, want a metric update with 2 metrics", msg)
+	if msg.Type != MessageTypeMetricSnapshot || len(msg.Metrics) != 2 {
+		t.Errorf("message = %+v, want a snapshot with 2 metrics", msg)
 	}
 
 	if err := conn.WriteJSON(ClientMessage{Type: MessageTypeUnsubscribe, Queries: []string{"snmp_if_in"}}); err != nil {

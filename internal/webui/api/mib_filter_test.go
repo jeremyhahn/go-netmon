@@ -3,9 +3,9 @@ package api
 import (
 	"testing"
 
+	netmetrics "github.com/jeremyhahn/go-netmon/internal/metrics"
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 	"github.com/jeremyhahn/go-netmon/internal/promname"
-	"github.com/jeremyhahn/go-netmon/internal/webui/dashboard"
 )
 
 // TestModuleHasData covers the two independent kinds of evidence that a module
@@ -25,8 +25,8 @@ func TestModuleHasData(t *testing.T) {
 		IsScalar: true, Pollable: false,
 	}
 
-	learned := dashboard.LearnedTablesMap{
-		"1.3.6.1.2.1.2.2.1": &dashboard.LearnedTable{EntryOID: "1.3.6.1.2.1.2.2.1"},
+	learned := map[string]*netmetrics.LearnedTableInfo{
+		"1.3.6.1.2.1.2.2.1": {EntryOID: "1.3.6.1.2.1.2.2.1"},
 	}
 	metrics := map[string]bool{
 		promname.MetricName(sysUpTime.Name): true,
@@ -35,7 +35,7 @@ func TestModuleHasData(t *testing.T) {
 	tests := []struct {
 		name    string
 		oids    []*mib.OIDMetadata
-		learned dashboard.LearnedTablesMap
+		learned map[string]*netmetrics.LearnedTableInfo
 		metrics map[string]bool
 		want    bool
 	}{
@@ -49,7 +49,7 @@ func TestModuleHasData(t *testing.T) {
 		},
 		{
 			name: "table entry with nothing learned",
-			oids: []*mib.OIDMetadata{ifEntry}, learned: dashboard.LearnedTablesMap{}, want: false,
+			oids: []*mib.OIDMetadata{ifEntry}, learned: map[string]*netmetrics.LearnedTableInfo{}, want: false,
 		},
 		{
 			name: "scalar absent from Prometheus",
@@ -93,8 +93,8 @@ func TestModuleHasDataUsesEntryOIDFallback(t *testing.T) {
 		OID: "1.3.6.1.2.1.2.2.1", Name: "ifEntry", Module: "IF-MIB",
 		IsTableEntry: true, // EntryOID deliberately left empty
 	}
-	learned := dashboard.LearnedTablesMap{
-		"1.3.6.1.2.1.2.2.1": &dashboard.LearnedTable{EntryOID: "1.3.6.1.2.1.2.2.1"},
+	learned := map[string]*netmetrics.LearnedTableInfo{
+		"1.3.6.1.2.1.2.2.1": {EntryOID: "1.3.6.1.2.1.2.2.1"},
 	}
 
 	if !moduleHasData([]*mib.OIDMetadata{row}, learned, nil) {

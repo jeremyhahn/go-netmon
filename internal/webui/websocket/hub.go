@@ -56,6 +56,11 @@ type Hub struct {
 	// Subscriptions map: OID -> list of clients
 	subscriptions map[string][]*Client
 
+	// states holds the last reading of every subscribed query, and the
+	// sequence number that names it. It is what makes the diff a
+	// once-per-round job rather than a once-per-client one.
+	states *queryStates
+
 	// steady tracks how long each query has read the same thing, which is what
 	// lets a demonstrably static one be asked about less often.
 	steady *steadyQueryRounds
@@ -90,9 +95,20 @@ type MetricValue struct {
 
 // Message types
 const (
-	MessageTypeSubscribe    = "subscribe"
-	MessageTypeUnsubscribe  = "unsubscribe"
-	MessageTypeMetricUpdate = "metric_update"
+	MessageTypeSubscribe   = "subscribe"
+	MessageTypeUnsubscribe = "unsubscribe"
+	// MessageTypeMetricSnapshot carries a query's WHOLE reading, with the
+	// sequence number that names it. It is what a client gets when it is new
+	// to a query, when it has fallen behind, and periodically regardless, so
+	// that nothing can drift indefinitely.
+	MessageTypeMetricSnapshot = "metric_snapshot"
+
+	// MessageTypeMetricDelta carries only what changed, and names the sequence
+	// it must be applied to. A client at any other sequence must discard it
+	// and ask for a snapshot: applying a delta to something other than what it
+	// was computed against is the one way a stale value could render as a
+	// current one.
+	MessageTypeMetricDelta = "metric_delta"
 
 	// MessageTypeMetricsUnchanged names the queries that were re-read this
 	// round and found to be exactly as the client already has them.
@@ -103,6 +119,15 @@ const (
 	// "still 37" is what this replaces -- the browser has the reading, so one
 	// frame naming the queries lets it carry every one of them forward.
 	MessageTypeMetricsUnchanged = "metrics_unchanged"
+
+	// MessageTypeResync is a client saying it has lost its place -- a delta
+	// whose base sequence it does not hold. The server forgets what it
+	// believed that client had, and the next round sends the whole reading.
+	//
+	// The server already resends on a frame it could not queue; this is the
+	// half it cannot see, where the frame was queued, the socket accepted it
+	// and the browser never applied it.
+	MessageTypeResync = "resync"
 
 	MessageTypeError = "error"
 )
@@ -118,6 +143,16 @@ type ServerMessage struct {
 	Type    string        `json:"type"`
 	Query   string        `json:"query,omitempty"`
 	Metrics []MetricValue `json:"metrics,omitempty"`
+
+	// Seq names the reading this frame leaves the client holding.
+	Seq uint64 `json:"seq,omitempty"`
+
+	// BaseSeq is the reading a delta applies to. A client holding anything
+	// else must not apply it.
+	BaseSeq uint64 `json:"base_seq,omitempty"`
+
+	// Delta is what changed, on a delta frame.
+	Delta *Delta `json:"delta,omitempty"`
 
 	// Queries carries the subjects of a metrics_unchanged frame: the queries
 	// whose readings this client already holds.
@@ -139,6 +174,7 @@ func NewHub(queryFunc QueryFunc, logger *slog.Logger) *Hub {
 		unregister:    make(chan *Client),
 		queryFunc:     queryFunc,
 		subscriptions: make(map[string][]*Client),
+		states:        newQueryStates(),
 		steady:        newSteadyQueryRounds(),
 		logger:        logging.OrDiscard(logger),
 	}
@@ -241,6 +277,30 @@ func (h *Hub) streamMetrics(ctx context.Context) {
 
 	wg.Wait()
 	h.sendSteady(ctx, steady)
+	h.forgetUnsubscribed()
+}
+
+// forgetUnsubscribed drops the state of queries nobody watches any more.
+//
+// Unsubscribing already does this, but it can happen WHILE the round is
+// running: detach deletes the state, the query that was already in flight
+// returns, and advance puts it back. Nothing would ever take it out again,
+// because the removal only happens on the transition to zero subscribers and
+// that has already been and gone. Sweeping after the round is what makes the
+// bound hold whenever the last reader leaves mid-round.
+func (h *Hub) forgetUnsubscribed() {
+	h.mu.RLock()
+	watched := make(map[string]bool, len(h.subscriptions))
+	for query := range h.subscriptions {
+		watched[query] = true
+	}
+	h.mu.RUnlock()
+
+	for _, query := range h.states.queries() {
+		if !watched[query] {
+			h.states.forget(query)
+		}
+	}
 }
 
 // steadyQueries collects, per client, the queries a round found unchanged.
@@ -291,9 +351,13 @@ func (h *Hub) sendSteady(ctx context.Context, steady *steadyQueries) {
 	}
 }
 
-// streamQuery runs one subscribed query and delivers the result to the clients
-// that do not already have it. Clients that already have it are recorded in
-// steady, to be told so once for the whole round.
+// streamQuery runs one subscribed query and delivers what changed.
+//
+// The diff happens HERE, once, and the frames it produces are shared by every
+// client that can take them. Diffing per client would be the same work
+// multiplied by the number of people looking, and the readings are identical
+// for all of them: it is only what each has already seen that differs, and that
+// is a sequence number rather than a comparison.
 func (h *Hub) streamQuery(ctx context.Context, query string, clients []*Client, steady *steadyQueries) {
 	metrics, err := h.queryFunc(ctx, query)
 	if err != nil {
@@ -302,54 +366,134 @@ func (h *Hub) streamQuery(ctx context.Context, query string, clients []*Client, 
 	}
 
 	h.traceResult(ctx, query, metrics, len(clients))
+	h.steady.observe(query, fingerprint(metrics))
 
-	// Who has not already been sent exactly this reading? Asking before
-	// marshaling means an unchanged query costs nothing at all: no
-	// serialization, no frame, no work in the browser.
-	reading := fingerprint(metrics)
-	h.steady.observe(query, reading)
-	recipients := clients[:0:0]
-	for _, client := range clients {
-		if client.needs(query, reading) {
-			recipients = append(recipients, client)
-			continue
+	// One diff for everyone.
+	next := h.states.advance(query, metrics)
+
+	if !next.Changed {
+		// Nothing moved, so nobody needs a frame -- but every chart still has
+		// to reach this tick, or its line stops at the last change and reads
+		// as data having stopped. The clients that are up to date are told the
+		// query is steady; any that are not still get the reading.
+		for _, client := range clients {
+			if client.at(query).seq == next.Seq {
+				steady.add(client, query)
+				continue
+			}
+			h.sendSnapshot(ctx, client, query, next)
 		}
-		// It already has this reading, but its charts still have to advance to
-		// this tick, so it is told the query is steady rather than left silent.
-		steady.add(client, query)
-	}
-	if len(recipients) == 0 {
 		return
 	}
 
-	data, err := json.Marshal(ServerMessage{
-		Type:      MessageTypeMetricUpdate,
+	// The two frames this round can send, marshaled at most once each however
+	// many clients take them.
+	var snapshot, delta []byte
+
+	for _, client := range clients {
+		at := client.at(query)
+
+		if at.seq == next.Seq {
+			// Already has this reading: a client that subscribed twice, or one
+			// whose frame this round is a repeat.
+			steady.add(client, query)
+			continue
+		}
+
+		// A delta is only ever applied to the reading it was computed
+		// against. Every other client -- new, behind, or one frame short of an
+		// answer that never arrived -- gets the whole thing, which is what
+		// makes it impossible for a dropped frame to leave a stale value
+		// rendering as a current one.
+		if at.seq == next.BaseSeq && !next.Snapshot {
+			if delta == nil {
+				delta = h.encode(ctx, ServerMessage{
+					Type:      MessageTypeMetricDelta,
+					Query:     query,
+					Seq:       next.Seq,
+					BaseSeq:   next.BaseSeq,
+					Delta:     &next.Delta,
+					Timestamp: time.Now().Unix(),
+				})
+				if delta == nil {
+					return
+				}
+			}
+			h.deliver(ctx, client, query, held{seq: next.Seq, epoch: at.epoch}, delta, "delta")
+			continue
+		}
+
+		if snapshot == nil {
+			snapshot = h.encode(ctx, ServerMessage{
+				Type:      MessageTypeMetricSnapshot,
+				Query:     query,
+				Seq:       next.Seq,
+				Metrics:   metrics,
+				Timestamp: time.Now().Unix(),
+			})
+			if snapshot == nil {
+				return
+			}
+		}
+		h.deliver(ctx, client, query, held{seq: next.Seq, epoch: at.epoch}, snapshot, "snapshot")
+	}
+}
+
+// sendSnapshot hands one client the whole current reading of a query.
+//
+// Used on the unchanged path, where there is no shared frame to reuse because
+// almost nobody needs one: a client that is behind on a query that has not
+// moved is either newly subscribed or recovering from a dropped frame.
+func (h *Hub) sendSnapshot(ctx context.Context, client *Client, query string, next update) {
+	at := client.at(query)
+	reading := h.states.reading(query)
+	if reading == nil {
+		return
+	}
+	frame := h.encode(ctx, ServerMessage{
+		Type:      MessageTypeMetricSnapshot,
 		Query:     query,
-		Metrics:   metrics,
+		Seq:       next.Seq,
+		Metrics:   reading,
 		Timestamp: time.Now().Unix(),
 	})
+	if frame == nil {
+		return
+	}
+	h.deliver(ctx, client, query, held{seq: next.Seq, epoch: at.epoch}, frame, "snapshot")
+}
+
+// encode marshals a frame, or reports the failure and returns nil.
+func (h *Hub) encode(ctx context.Context, message ServerMessage) []byte {
+	data, err := json.Marshal(message)
 	if err != nil {
-		log.Printf("Error marshaling message: %v", err)
+		h.logger.ErrorContext(ctx, "could not marshal a metric frame",
+			"type", message.Type, "query", message.Query, "error", err)
+		return nil
+	}
+	return data
+}
+
+// deliver sends one frame and records what the client now holds.
+//
+// This runs outside the hub lock, so a client may disconnect at any point
+// during the loop; trySend handles that rather than panicking.
+func (h *Hub) deliver(ctx context.Context, client *Client, query string, at held, frame []byte, kind string) {
+	if client.trySend(frame) {
+		client.mark(query, at)
 		return
 	}
 
-	// This runs outside the hub lock, so a client may disconnect at any point
-	// during the loop; trySend handles that rather than panicking.
-	for _, client := range recipients {
-		if client.trySend(data) {
-			continue
-		}
+	// The browser never received this, so the record of what it holds must not
+	// claim otherwise. Forgetting it means the next round sends the whole
+	// reading rather than a delta against something that never arrived.
+	client.forget(query)
 
-		// A dropped frame means the browser never received this reading, so
-		// the record of what it has must not claim otherwise -- the next
-		// round has to try again.
-		client.forget(query)
-
-		// One line per slow client per query per tick is itself a load at
-		// fleet scale, and stdlib logging serializes on a global lock, so
-		// this is gated like the rest of the round.
-		h.logger.DebugContext(ctx, "dropped metric update: client is slow or gone", "query", query)
-	}
+	// One line per slow client per query per tick is itself a load at fleet
+	// scale, and stdlib logging serializes on a global lock, so this is gated
+	// like the rest of the round.
+	h.logger.DebugContext(ctx, "dropped a metric frame: client is slow or gone",
+		"query", query, "frame", kind)
 }
 
 // traceResult records what a query returned, when debug logging is on. Every
@@ -389,6 +533,9 @@ func (h *Hub) Subscribe(client *Client, query string) bool {
 	if len(client.subs) >= MaxSubscriptionsPerClient {
 		return false
 	}
+	// New to this query whatever it held before -- including a record a
+	// delivery in flight during the last unsubscribe may have left behind.
+	client.discard(query)
 	client.subs[query] = struct{}{}
 	h.subscriptions[query] = append(h.subscriptions[query], client)
 	return true
@@ -403,7 +550,7 @@ func (h *Hub) Unsubscribe(client *Client, query string) {
 	delete(client.subs, query)
 	// The card this query fed is gone, so nothing in the browser holds the
 	// value any more: coming back to this device has to deliver it again.
-	client.forget(query)
+	client.discard(query)
 }
 
 // removeClient drops a client and everything it was subscribed to, returning
@@ -447,6 +594,11 @@ func (h *Hub) detach(client *Client, query string) {
 		if len(clients) == 0 {
 			delete(h.subscriptions, query)
 			h.steady.forget(query)
+			// The sequence goes with the last subscriber. A query subscribed
+			// again starts from one and every client is new to it, so nobody
+			// can hold a sequence from before the gap and be told it is still
+			// current.
+			h.states.forget(query)
 			return
 		}
 		h.subscriptions[query] = clients
@@ -471,12 +623,13 @@ type Client struct {
 	// hub's lock, not the one above, because the hub is what mutates it.
 	subs map[string]struct{}
 
-	// seen records the fingerprint of the last result delivered for each query,
-	// which is how an unchanged result is recognized and skipped. Streaming
-	// rounds touch it from several goroutines at once, so it has a lock of its
-	// own rather than sharing the one that guards closing.
+	// seen records the sequence of the last reading delivered for each query,
+	// which is what decides whether this client can take a delta or needs the
+	// whole thing. Streaming rounds touch it from several goroutines at once
+	// and the client's own read loop clears it, so it has a lock of its own
+	// rather than sharing the one that guards closing.
 	seenMu sync.Mutex
-	seen   map[string]uint64
+	seen   map[string]held
 }
 
 // NewClient creates a new client
@@ -568,6 +721,13 @@ func (c *Client) ReadPump() {
 		case MessageTypeUnsubscribe:
 			for _, query := range msg.Queries {
 				c.hub.Unsubscribe(c, query)
+			}
+		case MessageTypeResync:
+			// The client says it cannot apply what it was sent. Forgetting
+			// what it was believed to hold is the whole of the answer: the
+			// next round finds it behind and sends the reading whole.
+			for _, query := range msg.Queries {
+				c.forget(query)
 			}
 		}
 	}

@@ -102,16 +102,48 @@ function syntheticMibs() {
   return mibs.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const SYNTHETIC_SPEC = {
-  scalar_widgets: [{
-    name: 'deviceUptime', type: 'status', oid: '1.3.6.1.2.1.1.3.9',
-    metric: 'snmp_synthetic_deviceUptime',
+// One panel per synthetic module, injected into the answer the rail is built
+// from.
+//
+// This used to stub /api/devices/*/mibs and /api/mibs?filter=available, which
+// is where the rail came from when it was assembled per module. The dashboard
+// is fetched in ONE request now and the modules are grouped out of its panels,
+// so those routes are no longer on the path and stubbing them did nothing:
+// the rail showed the device's real modules and the test asserted against 200
+// that were never injected.
+function syntheticPanels(mibs: { name: string }[]) {
+  return mibs.map(m => ({
+    id: `${m.name}_snmp_syntheticUptime`,
+    title: `${m.name} - deviceUptime`,
+    type: 'line',
+    metric: 'snmp_syntheticUptime',
+    query: `snmp_syntheticUptime{module="${m.name}"}`,
+    module: m.name,
+    object: 'deviceUptime',
+    kind: 'gauge',
     description: 'How long the managed entity has been running since it was last re-initialised.',
-  }],
-  table_widgets: [],
-};
+  }));
+}
 
 async function serveManyModules(page: Page, mibs: ReturnType<typeof syntheticMibs>) {
+  const panels = syntheticPanels(mibs);
+
+  await page.route(/\/api\/devices\/\d+\/dashboard/, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      body: JSON.stringify({
+        ...body,
+        panels: [...(body.panels || []), ...panels],
+        mibs: [...(body.mibs || []), ...mibs.map(m => ({ mib: m.name, reporting: 1, charts: 1 }))],
+      }),
+    });
+  });
+
+  // The library endpoints still answer for the pages that read them; the rail
+  // no longer does.
   await page.route('**/api/devices/*/mibs', async route => {
     if (route.request().method() !== 'GET') return route.continue();
     const response = await route.fetch();
@@ -119,17 +151,6 @@ async function serveManyModules(page: Page, mibs: ReturnType<typeof syntheticMib
     const merged = [...(body.all_mibs || []), ...mibs].sort((a, b) => a.name.localeCompare(b.name));
     await route.fulfill({ response, body: JSON.stringify({ ...body, all_mibs: merged }) });
   });
-  // The availability check carries the device it is asking about
-  // (?filter=available&device=NAME), so the pattern has to admit a query
-  // string rather than pin the one it had when this was written.
-  await page.route(/\/api\/mibs\?filter=available/, async route => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({ response, body: JSON.stringify({ mibs: [...(body.mibs || []), ...mibs] }) });
-  });
-  await page.route(/\/api\/mibs\/9\d{5}\/dashboard/, route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify(SYNTHETIC_SPEC),
-  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -746,7 +767,10 @@ test.describe('descriptions', () => {
     async ({ page }) => {
       await openDashboard(page);
 
-      const caption = page.locator('.tab-pane.active .chart-description').first();
+      // The caption class is .panel-note now: a panel head separates provenance,
+      // name, unit and description, and the description is the one that holds a
+      // single line so every plot in a row starts at the same height.
+      const caption = page.locator('.tab-pane.active .panel-note').first();
       await expect(caption).toBeVisible({ timeout: 45000 });
 
       // The single line is load-bearing: it is what makes every plot in a row

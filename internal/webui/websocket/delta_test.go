@@ -26,11 +26,22 @@ import (
 // The browser holds the reading already, so the heartbeat carries names, not
 // numbers.
 
-// readings keeps only the frames that carry data.
+// readings keeps only the frames that carry data, of either kind.
 func readings(frames []ServerMessage) []ServerMessage {
 	var out []ServerMessage
 	for _, f := range frames {
-		if f.Type == MessageTypeMetricUpdate {
+		if f.Type == MessageTypeMetricSnapshot || f.Type == MessageTypeMetricDelta {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// snapshots keeps the whole readings, for the tests that care which kind.
+func snapshots(frames []ServerMessage) []ServerMessage {
+	var out []ServerMessage
+	for _, f := range frames {
+		if f.Type == MessageTypeMetricSnapshot {
 			out = append(out, f)
 		}
 	}
@@ -154,9 +165,9 @@ func TestALaterEvaluationOfTheSameValueIsNotAChange(t *testing.T) {
 	}
 }
 
-// TestChangedResultIsSent is the other half: a moving value must still arrive
-// promptly, or the dashboard silently stops updating.
-func TestChangedResultIsSent(t *testing.T) {
+// TestChangedResultIsSentAsADelta is the other half: a moving value must still
+// arrive, and now it arrives as what moved rather than as everything.
+func TestChangedResultIsSentAsADelta(t *testing.T) {
 	value := 42.0
 	at := int64(1700000000)
 	h := NewHub(func(context.Context, string) ([]MetricValue, error) {
@@ -167,7 +178,11 @@ func TestChangedResultIsSent(t *testing.T) {
 	h.Subscribe(client, `snmp_ifInOctets{device="core-01"}`)
 
 	h.streamMetrics(context.Background())
-	collectFrames(t, client)
+	first := readings(collectFrames(t, client))
+	if len(first) != 1 || first[0].Type != MessageTypeMetricSnapshot {
+		t.Fatalf("the first frame was %+v, want a snapshot", first)
+	}
+	base := first[0].Seq
 
 	value, at = 43, 1700000060
 	h.streamMetrics(context.Background())
@@ -176,11 +191,28 @@ func TestChangedResultIsSent(t *testing.T) {
 	if len(frames) != 1 {
 		t.Fatalf("a changed value produced %d readings, want 1", len(frames))
 	}
-	if len(frames[0].Metrics) != 1 || frames[0].Metrics[0].Value != 43 {
-		t.Errorf("frame carried %+v, want the new value", frames[0].Metrics)
+	if frames[0].Type != MessageTypeMetricDelta {
+		t.Fatalf("type = %q, want a delta: the client holds the previous reading",
+			frames[0].Type)
 	}
-	if frames[0].Metrics[0].Timestamp != 1700000060 {
-		t.Errorf("sample timestamp = %d, want the moment it was collected", frames[0].Metrics[0].Timestamp)
+	if frames[0].BaseSeq != base {
+		t.Errorf("base_seq = %d, want %d: a delta has to name what it applies to",
+			frames[0].BaseSeq, base)
+	}
+	if frames[0].Seq != base+1 {
+		t.Errorf("seq = %d, want %d", frames[0].Seq, base+1)
+	}
+	if frames[0].Delta == nil || len(frames[0].Delta.Changed) != 1 ||
+		frames[0].Delta.Changed[0].Value != 43 {
+		t.Fatalf("delta carried %+v, want the new value", frames[0].Delta)
+	}
+	if frames[0].Delta.Changed[0].Timestamp != 1700000060 {
+		t.Errorf("sample timestamp = %d, want the moment it was collected",
+			frames[0].Delta.Changed[0].Timestamp)
+	}
+	// And nothing the client already has.
+	if len(frames[0].Metrics) != 0 {
+		t.Errorf("the delta carried the whole reading as well: %+v", frames[0].Metrics)
 	}
 }
 

@@ -36,6 +36,15 @@ Group=go-netmon
 Environment=CONFIG_PATH=/etc/go-netmon/config.yaml
 Environment=GOMAXPROCS=4
 
+# No WorkingDirectory, deliberately. The UI's static assets are compiled into
+# the binary (internal/webui/assets.go), so this unit serves the same pages
+# wherever systemd starts it from. It used to need a working directory
+# containing a source checkout, which is why a clean install answered 404 on
+# every page while /api/* answered normally -- the shape that passes a
+# post-deploy smoke test and fails for the operator.
+#
+# If you find yourself adding WorkingDirectory to fix a blank UI, the assets
+# have stopped being embedded. Fix that instead.
 ExecStart=/usr/local/bin/go-netmon-webui \
     -listen=:8080 \
     -prometheus=http://127.0.0.1:9090 \
@@ -43,6 +52,13 @@ ExecStart=/usr/local/bin/go-netmon-webui \
     -db=/var/lib/go-netmon/webui/webui.db \
     -mib-storage=/var/lib/go-netmon/poller \
     -mib-catalog=/var/lib/go-netmon/webui/mib.db
+
+# systemctl reload re-reads the configuration without a restart. Only the alarm
+# rules are re-applied -- everything else here is bound at startup -- but that
+# is what an operator edits between restarts, and restarting this service costs
+# minutes of MIB parsing, which is long enough that tuning a threshold by
+# restart is not something anyone would do twice.
+ExecReload=/bin/kill -HUP $MAINPID
 
 Restart=always
 RestartSec=5s

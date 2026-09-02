@@ -479,20 +479,40 @@ func TestCatalogIndexEntryForDegenerateCases(t *testing.T) {
 	}
 }
 
-// TestIdentityInfoMetricFallsBackToTheFirstColumn checks the case where no
-// status column matches the naming convention: some table must still be
-// identifiable, and the choice has to be identical on every collector.
-func TestIdentityInfoMetricFallsBackToTheFirstColumn(t *testing.T) {
+// TestATableWithNoNamingColumnHasNoIdentity is the case that used to fall back
+// to the first status column in sorted order.
+//
+// That fallback was a guess presented as an answer, and on the real fleet it
+// was wrong: cbgpPeer2Table has no Name, Descr or Alias column, so it elected
+// cbgpPeer2LastError and named all eight of core-01's BGP peers "04:00" --
+// the hex rendering of an error code, identical on every row. A renderer given
+// no identity uses the row's index instead, which for that table is the peer's
+// address.
+//
+// What the fallback was defending is still true and still guarded below: the
+// answer must not depend on the order the columns arrive in.
+func TestATableWithNoNamingColumnHasNoIdentity(t *testing.T) {
 	columns := []statusColumnInfo{{Name: "zzzState"}, {Name: "aaaLabel"}}
 
-	got := identityInfoMetric(columns)
-	if got != infoMetricName("aaaLabel") {
-		t.Errorf("identityInfoMetric() = %q, want the first column in sorted order", got)
+	if got := identityInfoMetric(columns); got != "" {
+		t.Errorf("identityInfoMetric() = %q, want none: neither column declares "+
+			"itself a name, and an arbitrary one is worse than the index", got)
 	}
-	// Order of the input must not change the answer.
-	reversed := []statusColumnInfo{{Name: "aaaLabel"}, {Name: "zzzState"}}
-	if again := identityInfoMetric(reversed); again != got {
-		t.Errorf("identityInfoMetric() = %q then %q; the choice must not depend on input order", got, again)
+}
+
+// TestIdentityElectionDoesNotDependOnColumnOrder keeps the choice identical on
+// every collector given the same MIBs.
+func TestIdentityElectionDoesNotDependOnColumnOrder(t *testing.T) {
+	forwards := []statusColumnInfo{{Name: "ifAlias"}, {Name: "ifDescr"}, {Name: "ifName"}}
+	backwards := []statusColumnInfo{{Name: "ifName"}, {Name: "ifDescr"}, {Name: "ifAlias"}}
+
+	got, again := identityInfoMetric(forwards), identityInfoMetric(backwards)
+	if got != infoMetricName("ifName") {
+		t.Errorf("identityInfoMetric() = %q, want ifName's info metric", got)
+	}
+	if again != got {
+		t.Errorf("identityInfoMetric() = %q then %q; the choice must not depend on "+
+			"input order", got, again)
 	}
 }
 

@@ -47,7 +47,7 @@ drift from the exporter's.
 
 | Package | What it names |
 | --- | --- |
-| `internal/webui/dashboard` | `metric` on every widget of a dashboard spec, and `label_name` / `index_labels` on its instance selector |
+| `internal/webui/api` (dashboard panels) | `metric` and `query` on every panel, `series_labels` for the label that names each line, and `index_labels` for the row behind it |
 | `internal/webui/api` | which objects have data in Prometheus; the charts it generates |
 | `internal/grafana/builder` | every PromQL expression in a generated Grafana dashboard |
 | `internal/cli` | resolving a series back to `ifInOctets[10]` |

@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,18 +17,40 @@ import (
 // string it was asked for, so a test can check what the client sent as well as
 // what it made of the answer.
 type promStub struct {
-	body       string
-	status     int
+	body   string
+	status int
+	// mu guards the recordings: the generator issues several queries and the
+	// race detector sees the handler goroutines, not the sequence.
+	mu         sync.Mutex
 	lastPath   string
 	lastParams string
+	// allParams records EVERY query. lastParams alone cannot express "the
+	// device-scoped question named the device" once more than one query is
+	// issued -- it silently becomes an assertion about whichever ran last.
+	allParams []string
+}
+
+// asked reports whether any query contained want.
+func (p *promStub) asked(want string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, q := range p.allParams {
+		if strings.Contains(q, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *promStub) start(t *testing.T) *PrometheusClient {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.mu.Lock()
 		p.lastPath = r.URL.Path
 		p.lastParams = r.URL.RawQuery
+		p.allParams = append(p.allParams, r.URL.RawQuery)
+		p.mu.Unlock()
 		if p.status != 0 {
 			w.WriteHeader(p.status)
 		}
@@ -344,5 +368,44 @@ func TestGetSNMPTypeName(t *testing.T) {
 	// An unmapped type still names itself rather than reporting nothing.
 	if got := getSNMPTypeName(gosnmp.Boolean); !strings.HasPrefix(got, "Type(") {
 		t.Errorf("getSNMPTypeName(Boolean) = %q, want a Type(n) fallback", got)
+	}
+}
+
+// TestANonFiniteValueNeverReachesTheEncoder is a bug the wire found rather than
+// a test.
+//
+// Prometheus encodes an undefined result as the string "NaN", and returns one
+// for ordinary expressions -- a division, a counter reset. strconv.ParseFloat
+// accepts it, and then encoding/json refuses to marshal the float: "json:
+// unsupported value: NaN".
+//
+// The failure lands nowhere useful. A metric frame that cannot be marshaled is
+// never sent while its sequence has already advanced, so the panel stops
+// updating for as long as the NaN persists, with nothing on screen saying why.
+// One NaN in an alarm's value would take the entire bell response with it.
+func TestANonFiniteValueNeverReachesTheEncoder(t *testing.T) {
+	stub := &promStub{body: `{"status":"success","data":{"resultType":"vector","result":[
+		{"metric":{"device":"core-01","ifindex":"1"},"value":[1788324945.253,"NaN"]},
+		{"metric":{"device":"core-01","ifindex":"2"},"value":[1788324945.253,"+Inf"]},
+		{"metric":{"device":"core-01","ifindex":"3"},"value":[1788324945.253,"-Inf"]},
+		{"metric":{"device":"core-01","ifindex":"4"},"value":[1788324945.253,"42.5"]}
+	]}}`}
+	client := stub.start(t)
+
+	metrics, err := client.Query(context.Background(), "anything")
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+
+	if len(metrics) != 1 {
+		t.Fatalf("got %d samples, want only the finite one: %+v", len(metrics), metrics)
+	}
+	if metrics[0].Value != 42.5 {
+		t.Errorf("value = %v, want 42.5", metrics[0].Value)
+	}
+
+	// The whole point: what came back can be encoded.
+	if _, err := json.Marshal(metrics); err != nil {
+		t.Errorf("the result cannot be marshaled, which is how a panel freezes: %v", err)
 	}
 }

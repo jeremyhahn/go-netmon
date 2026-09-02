@@ -594,13 +594,17 @@ func TestWebSocketUpgrade(t *testing.T) {
 
 	var msg struct {
 		Type    string           `json:"type"`
+		Seq     uint64           `json:"seq"`
 		Metrics []ws.MetricValue `json:"metrics"`
 	}
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("read streamed message: %v", err)
 	}
-	if msg.Type != "metric_update" || len(msg.Metrics) != 1 {
-		t.Errorf("message = %+v, want a metric update", msg)
+	// The first frame for a query is the whole reading: there is nothing to
+	// express it as a change to, and it carries the sequence a later delta
+	// names.
+	if msg.Type != "metric_snapshot" || len(msg.Metrics) != 1 || msg.Seq == 0 {
+		t.Errorf("message = %+v, want a sequenced snapshot", msg)
 	}
 }
 

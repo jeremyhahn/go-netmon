@@ -10,6 +10,19 @@ import * as path from 'path';
 // as the integer on the wire rather than the name the MIB gives it.
 
 const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+
+// openFleetDevice sets the device selector's value and fires its change event.
+// The selector is populated by a separate load from the one that reveals the
+// fleet overview, so asking for a device before its option exists sets a value
+// the select does not have, fires a change nothing matches, and leaves the page
+// on no device at all -- which reads downstream as "nothing was subscribed".
+async function openDeviceById(page: Page, deviceId: number) {
+  await expect(
+    page.locator(`#dashboardDeviceSelect option[value="${deviceId}"]`),
+    `device ${deviceId} never appeared in the selector`,
+  ).toHaveCount(1, { timeout: 30000 });
+  await page.evaluate(id => (window as any).app.openFleetDevice(id), deviceId);
+}
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
 
 test.use({
@@ -48,12 +61,33 @@ async function openDevice(page: Page, deviceId: number, mib: string) {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#fleetOverview')).toBeVisible({ timeout: 30000 });
 
-  await page.evaluate(id => (window as any).app.openFleetDevice(id), deviceId);
-  await page.waitForTimeout(6000);
-  await page.locator('#mibTabsContainer').getByText(mib, { exact: false }).first().click().catch(() => {});
-  await page.waitForTimeout(5000);
+  await openDeviceById(page, deviceId);
+
+  // Wait for the tab to EXIST rather than for a fixed number of seconds. The
+  // rail is built from one request now, so it appears quickly -- but the
+  // panels behind it fill on the streaming tick, and a fixed 15s was short
+  // enough that these read "Waiting for data" and reported a product failure
+  // that was a fixture impatience.
+  const tab = page.locator('#mibTabList .tab-button', { hasText: mib }).first();
+  await expect(tab, `no ${mib} tab for device ${deviceId}`).toBeVisible({ timeout: 60000 });
+  await tab.click();
+
+  // And wait for the pane to actually fill: nothing below can distinguish an
+  // empty panel from a wrong one.
+  await expect.poll(async () => page.evaluate(() => {
+    const pane = document.querySelector('#mibTabContent .tab-pane.active');
+    if (!pane) return -1;
+    const total = pane.querySelectorAll('.panel').length;
+    const waiting = pane.querySelectorAll('.chart-container.is-empty').length +
+      [...pane.querySelectorAll('.status-value')]
+        .filter(el => (el as HTMLElement).dataset.waiting).length;
+    return total === 0 ? -1 : waiting;
+  }), {
+    timeout: 90000,
+    message: `${mib} on device ${deviceId} never filled, so nothing below can be judged`,
+  }).toBe(0);
+
   for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 1200); await page.waitForTimeout(400); }
-  await page.waitForTimeout(4000);
 }
 
 test('a text reading is shown as text, not plotted as a number', async ({ page }) => {
@@ -62,8 +96,12 @@ test('a text reading is shown as text, not plotted as a number', async ({ page }
   // 1 would hide the only thing the object says.
   await openDevice(page, 4, 'KNGeneric-MIB');
 
+  // The tab that was opened, not the whole document. Every module's pane is
+  // built up front but filled in turn, so scanning all of them measures
+  // whichever ones happened to have arrived -- which is why this read one tile
+  // on one run and fifty-five on the next.
   const shown = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('.status-value, [id^="status-"]'))
+    Array.from(document.querySelectorAll('#mibTabContent .tab-pane.active .status-value'))
       .map(el => (el.textContent || '').trim())
       .filter(Boolean));
 
@@ -98,13 +136,20 @@ test('a counter is charted as a rate, with per-second units', async ({ page }) =
 test('an enumerated value is shown by name, not by its number', async ({ page }) => {
   await openDevice(page, 1, 'IF-MIB');
 
+  // The readings themselves, not the tile's textContent.
+  //
+  // A tile is a list of rows and textContent runs them together with no
+  // separator -- "Port-channel1.1000upGigabitEthernet0up" -- so a word-boundary
+  // match for "up" finds nothing however correct the decode is. Reading the
+  // value cells is both more precise and what the assertion is actually about.
   const statuses = await page.evaluate(() => {
-    const out: string[] = [];
-    for (const el of Array.from(document.querySelectorAll('.status-value, [id^="status-"]'))) {
-      const text = (el.textContent || '').trim();
-      if (text && text !== 'Loading...' && !/^select an instance/i.test(text)) out.push(text);
-    }
-    return out;
+    const pane = document.querySelector('#mibTabContent .tab-pane.active');
+    const rows = Array.from(pane?.querySelectorAll('.panel-row-value') || [])
+      .map(el => (el.textContent || '').trim());
+    const singles = Array.from(pane?.querySelectorAll('.status-value') || [])
+      .filter(el => !el.querySelector('.panel-rows'))
+      .map(el => (el.textContent || '').trim());
+    return [...rows, ...singles].filter(t => t && !/waiting for data/i.test(t));
   });
 
   expect(statuses.length, 'no status tiles rendered at all').toBeGreaterThan(0);

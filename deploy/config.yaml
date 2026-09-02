@@ -84,3 +84,90 @@ logging:
   output: "stdout"
 
 devices: []
+
+# What the bell reports.
+#
+# Read by the web UI, which evaluates them against Prometheus and shows what is
+# firing; the poller ignores them. `systemctl reload go-netmon-webui` re-reads
+# this file without a restart, which matters here more than anywhere else in it:
+# restarting the web UI costs minutes of MIB parsing, and tuning a threshold by
+# restart is not something anyone would do twice.
+#
+# A rule is PromQL and fires once per series its expression returns, so a rule
+# about interfaces fires once per interface. That is deliberate -- two ports
+# being down is two things to fix -- but it is also the thing to think about
+# when writing one: an expression that matches broadly will fill the bell.
+alarms:
+  # The monitoring system reporting on itself. These are the ones that are
+  # silent on a healthy fleet and are never noise when they are not.
+  - name: DeviceUnreachable
+    expr: gonetmon_device_unreachable == 1
+    severity: critical
+    for: 2m
+    summary: A device has stopped answering SNMP
+    description: >-
+      The poller has not had an answer from this device. Everything on its
+      dashboard is the last thing it said, however recent the timestamps look:
+      a chart carries its last reading forward at every tick.
+
+  - name: MetricsNotReachingPrometheus
+    expr: gonetmon_export_stalled == 1
+    severity: critical
+    summary: The collector cannot write to Prometheus
+    description: >-
+      Samples are being buffered and not delivered. The devices are being
+      polled and nothing is being recorded, so this is invisible on a
+      dashboard until the buffer is full and readings start disappearing.
+
+  # AGGREGATE, do not evaluate per collector: gonetmon_catalog_series sits at
+  # zero on every collector that is not the designated emitter, which is the
+  # correct state for all but one of them.
+  - name: MetricCatalogNotPublished
+    expr: max(gonetmon_catalog_series) == 0
+    severity: critical
+    for: 10m
+    summary: Nothing is publishing the metric catalog
+    description: >-
+      No collector in the fleet is publishing the catalog, so every dashboard
+      loses its units, descriptions and decoded states once the existing series
+      age out of the query window. The metrics themselves keep arriving and
+      look perfectly healthy, which is what makes this hard to see.
+
+  - name: BGPPeerNotEstablished
+    expr: snmp_cbgpPeer2State != 6
+    severity: critical
+    for: 5m
+    summary: A BGP peer is not established
+    description: >-
+      The session is in some state other than established. Five minutes is long
+      enough to let an ordinary reconvergence pass without reporting it.
+
+  - name: MetricNamesNotResolving
+    expr: increase(gonetmon_metric_name_unresolved_samples_total[15m]) > 0
+    severity: warning
+    summary: Samples are arriving that no MIB can name
+    description: >-
+      The collector is publishing samples under raw-OID names because no loaded
+      module describes the OID. They are charted, unlabeled. A jump here usually
+      means a module stopped resolving rather than a device changing.
+
+  # Fires once per interface, by design. Measured on this fleet: 36 interfaces
+  # are labeled, administratively up and operationally down, nearly all of them
+  # unused ports on access-02. That is an accurate reading rather than noise,
+  # but it IS what a bell with three dozen entries looks like -- narrow the
+  # expression to the devices or the interfaces you care about rather than
+  # raising the threshold.
+  #
+  # The alias filter is the scoping already applied: an interface somebody
+  # bothered to label is an interface somebody cares about.
+  - name: InterfaceDown
+    expr: >-
+      snmp_ifOperStatus == 2
+      and on(device,ifindex) snmp_ifAdminStatus == 1
+      and on(device,ifindex) snmp_ifalias_info{value!=""}
+    severity: warning
+    for: 10m
+    summary: A labeled interface is administratively up and operationally down
+    description: >-
+      The interface is configured to be up and is not. Ten minutes is long
+      enough that a reload or a link flap has settled.

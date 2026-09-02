@@ -83,3 +83,38 @@ devices:
     enabled: true
     tags:
       location: "branch-office"
+
+# What the bell reports.
+#
+# Read by the web UI, which evaluates them against Prometheus and shows what is
+# firing; the poller ignores them. Send the web UI SIGHUP -- `systemctl reload
+# go-netmon-webui` on a systemd deployment -- to re-read this file without a
+# restart. A file that will not parse or will not validate leaves the running
+# rules exactly as they were, so a typo cannot empty the bell.
+#
+# A rule is PromQL and fires once per series its expression returns, so a rule
+# about interfaces fires once per interface. Two ports being down is two things
+# to fix -- but it is also what to think about when writing one, because an
+# expression that matches broadly will fill the bell.
+#
+# severity is critical, warning or info, and orders the list.
+# for is how long the expression must keep returning a series before the alarm
+# is raised. It is what separates a condition from a blip; omit it to raise on
+# the first evaluation.
+alarms:
+  - name: DeviceUnreachable
+    expr: gonetmon_device_unreachable == 1
+    severity: critical
+    for: 2m
+    summary: A device has stopped answering SNMP
+    description: >-
+      The poller has not had an answer from this device. Everything on its
+      dashboard is the last thing it said, however recent the timestamps look.
+
+  - name: MetricsNotReachingPrometheus
+    expr: gonetmon_export_stalled == 1
+    severity: critical
+    summary: The collector cannot write to Prometheus
+    description: >-
+      Samples are being buffered and not delivered. The devices are being
+      polled and nothing is being recorded.

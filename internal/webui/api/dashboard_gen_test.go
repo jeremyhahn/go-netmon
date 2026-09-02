@@ -177,7 +177,20 @@ func TestTheGeneratorAsksAboutThisDeviceOnly(t *testing.T) {
 
 	// The device has to be in what was asked of Prometheus. Without it the
 	// answer describes the fleet, and the panels describe no device at all.
-	if !strings.Contains(stub.lastParams, "core-01") {
-		t.Errorf("Prometheus was asked %q, which does not name the device", stub.lastParams)
+	//
+	// Checked across ALL queries, not the last one: the generator now also
+	// reads the metric catalog, and that query is deliberately fleet-wide.
+	if !stub.asked("core-01") {
+		t.Errorf("no query named the device; asked %q", stub.allParams)
+	}
+
+	// And the converse, which is the property that keeps the catalog cheap:
+	// it carries no device dimension, so it must NOT be asked per device. A
+	// device-scoped catalog query would be O(devices) at the one layer this
+	// design spent three review rounds keeping flat.
+	for _, q := range stub.allParams {
+		if strings.Contains(q, catalogMetric) && strings.Contains(q, "core-01") {
+			t.Errorf("the catalog was queried per device: %q", q)
+		}
 	}
 }

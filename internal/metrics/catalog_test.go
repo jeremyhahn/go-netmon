@@ -439,3 +439,71 @@ func TestCatalogCarriesNoDeviceLabel(t *testing.T) {
 		}
 	}
 }
+
+// TestAStateColumnIsNeverATableIdentity is a live-fleet finding.
+//
+// The identity election prefers a column whose name ends in Name, Descr or
+// Alias and otherwise takes the first status column in sorted order.
+// cbgpPeer2Table has none of those, so it elected cbgpPeer2AdminStatus -- an
+// enumeration of two values. On core-01 every row of every panel in that
+// table was then labeled "start": eight BGP peers, eight lines, one name
+// between them.
+//
+// An enumeration cannot tell rows apart, by construction. Where no candidate
+// survives the answer has to be no identity, so a renderer falls back to the
+// row's index, which for this table is the peer's address.
+func TestAStateColumnIsNeverATableIdentity(t *testing.T) {
+	enum := func(name string) statusColumnInfo {
+		return statusColumnInfo{Name: name, LabelName: strings.ToLower(name),
+			Meta: &mib.OIDMetadata{Name: name, EnumValues: map[int64]string{1: "stop", 2: "start"}}}
+	}
+	text := func(name string) statusColumnInfo {
+		return statusColumnInfo{Name: name, LabelName: strings.ToLower(name),
+			Meta: &mib.OIDMetadata{Name: name, Type: "DisplayString"}}
+	}
+
+	tests := []struct {
+		name    string
+		columns []statusColumnInfo
+		want    string
+	}{
+		{
+			name:    "every candidate is a state",
+			columns: []statusColumnInfo{enum("cbgpPeer2AdminStatus"), enum("cbgpPeer2State")},
+			want:    "",
+		},
+		{
+			// Neither declares itself a name, so neither is one. The fallback
+			// that used to take the first in sorted order elected
+			// cbgpPeer2LastError on the real table, and named all eight of
+			// core-01's BGP peers "04:00" -- the hex rendering of an error
+			// code, identical on every row.
+			name:    "no candidate declares itself a name",
+			columns: []statusColumnInfo{enum("cbgpPeer2AdminStatus"), text("cbgpPeer2LastError")},
+			want:    "",
+		},
+		{
+			name:    "a text column that does declare itself is elected",
+			columns: []statusColumnInfo{enum("cbgpPeer2AdminStatus"), text("cbgpPeer2RemoteName")},
+			want:    infoMetricName("cbgpPeer2RemoteName"),
+		},
+		{
+			name:    "the naming preference still applies among text columns",
+			columns: []statusColumnInfo{text("ifAlias"), text("ifDescr"), text("ifName")},
+			want:    infoMetricName("ifName"),
+		},
+		{
+			name:    "no columns at all",
+			columns: nil,
+			want:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := identityInfoMetric(tt.columns); got != tt.want {
+				t.Errorf("identityInfoMetric = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

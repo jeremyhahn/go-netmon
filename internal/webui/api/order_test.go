@@ -242,7 +242,7 @@ func TestConvertToTimeSeriesIsDeterministic(t *testing.T) {
 		})
 	}
 
-	first := seriesLabels(t, convertToTimeSeries(metrics, nil))
+	first := seriesNamesOf(t, convertToTimeSeries(metrics, nil))
 	if len(first) != 4 {
 		t.Fatalf("grouped %d series from four distinct label sets", len(first))
 	}
@@ -251,7 +251,7 @@ func TestConvertToTimeSeriesIsDeterministic(t *testing.T) {
 	}
 
 	for call := 2; call <= 12; call++ {
-		if got := seriesLabels(t, convertToTimeSeries(metrics, nil)); !slices.Equal(got, first) {
+		if got := seriesNamesOf(t, convertToTimeSeries(metrics, nil)); !slices.Equal(got, first) {
 			t.Fatalf("call %d returned %v, call 1 returned %v", call, got, first)
 		}
 	}
@@ -270,7 +270,7 @@ func TestConvertToTimeSeriesWithNothingToConvert(t *testing.T) {
 
 // seriesLabels renders each series as the interface it belongs to, which is
 // what the legend shows.
-func seriesLabels(t *testing.T, series []TimeSeriesData) []string {
+func seriesNamesOf(t *testing.T, series []TimeSeriesData) []string {
 	t.Helper()
 
 	names := make([]string, len(series))

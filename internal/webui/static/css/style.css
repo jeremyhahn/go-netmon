@@ -22,23 +22,50 @@
     --border-strong:   rgba(13, 18, 28, 0.18);
     --border-focus:    #2a78d6;
 
-    --text:            #0f1419;
-    --text-secondary:  #4a5261;
-    --text-muted:      #79818f;
+    --text:            #0f1419;   /* 18.5:1 on surface */
+    --text-secondary:  #4a5261;   /*  7.9:1 */
+    --text-muted:      #676f7c;   /*  4.56:1 on the INSET, which is the tighter
+                                     of the two surfaces it sits on — and the
+                                     one a banded table row lands on. It was
+                                     #79818f, 3.53:1 there, and it carries
+                                     every secondary label on the dashboard.
+                                     Solved to 4.55 rather than 4.5 so rounding
+                                     to hex cannot land it under the bar. */
     --text-inverse:    #ffffff;
 
-    --accent:          #2a78d6;
+    --accent:          #2a78d6;   /* 4.42:1 — graphic and large text */
+    --accent-text:     #266dc4;   /* 4.57:1 on accent-soft, 5.16:1 on white.
+                                     The accent as a WORD: the selected module
+                                     in the rail is accent-on-accent-soft, which
+                                     measured 3.88:1 with the graphic value. */
     --accent-hover:    #2569bb;
     --accent-soft:     rgba(42, 120, 214, 0.10);
     --accent-ring:     rgba(42, 120, 214, 0.35);
 
-    /* ---- status (fixed, never themed) ---- */
-    --good:            #0ca30c;
-    --warning:         #fab219;
-    --serious:         #ec835a;
-    --critical:        #d03b3b;
+    /* ---- status ----------------------------------------------------------
+       Two sets, because a colour that reads as a stroke does not read as text.
+       WCAG asks 3:1 of a graphic and 4.5:1 of body text, and one value cannot
+       be the nearest answer to both: amber at 1.83:1 on white was legible as a
+       dot and unreadable as a word — and was being used for both.
+
+       The -text variants are the same hue darkened until they clear 4.5:1 on
+       BOTH the surface and the inset. Measured, not chosen.
+       ---------------------------------------------------------------------- */
+    --good:            #0ca30c;   /* 3.02:1 — graphic only */
+    --warning:         #bc8104;   /* 3.01:1 — was #fab219 at 1.65:1 */
+    --serious:         #e76431;   /* 3.01:1 — was #ec835a at 2.37:1 */
+    --critical:        #d03b3b;   /* 4.32:1 */
+
+    --good-text:       #0a7d0a;   /* 5.32 surface / 4.78 inset / 4.63 good-soft.
+                                     Solved on the SOFT fill too: it is worn as
+                                     a word on its own tint, where #0a820a was
+                                     4.34:1. */
+    --warning-text:    #956603;   /* 4.52:1 */
+    --serious-text:    #c24716;   /* 4.49:1 */
+    --critical-text:   #c52f2f;   /* 5.49 surface / 4.94 inset / 4.61 critical-soft */
+
     --good-soft:       rgba(12, 163, 12, 0.12);
-    --warning-soft:    rgba(250, 178, 25, 0.14);
+    --warning-soft:    rgba(250, 178, 25, 0.16);
     --critical-soft:   rgba(208, 59, 59, 0.12);
 
     /* ---- categorical series (validated: light surface #ffffff) ---- */
@@ -102,15 +129,28 @@
         --border-strong:   rgba(255, 255, 255, 0.16);
         --border-focus:    #3987e5;
 
-        --text:            #e9ecf1;
-        --text-secondary:  #a4adbb;
-        --text-muted:      #6d7684;
+        --text:            #e9ecf1;   /* 15.5:1 */
+        --text-secondary:  #a4adbb;   /*  8.1:1 */
+        --text-muted:      #757f8d;   /*  4.5:1 — was #6d7684 at 3.99:1 */
         --text-inverse:    #0b0d11;
 
-        --accent:          #3987e5;
+        --accent:          #3987e5;   /* 5.03:1 */
+        --accent-text:     #428de6;   /* 5.39 surface / 4.57 accent-soft */
         --accent-hover:    #4d95ea;
         --accent-soft:     rgba(57, 135, 229, 0.14);
         --accent-ring:     rgba(57, 135, 229, 0.40);
+
+        /* Dark reverses which of these need help: amber and orange are
+           bright against #12151a and read fine as text, while red does not. */
+        --warning:         #fab219;   /* 9.97:1 */
+        --serious:         #ec835a;   /* 6.94:1 */
+
+        --good-text:       #0ca60c;   /* 5.64 surface / 4.63 good-soft */
+        --warning-text:    #fab219;   /* 9.97:1 */
+        --serious-text:    #ec835a;   /* 6.94:1 */
+        --critical-text:   #da6868;   /* 5.37 surface / 4.62 critical-soft. #d55252
+                                         was 4.49 on the surface, and #d03b3b,
+                                         the graphic value, 3.81. */
 
         --good-soft:       rgba(12, 163, 12, 0.16);
         --warning-soft:    rgba(250, 178, 25, 0.16);
@@ -148,15 +188,28 @@
     --border-strong:   rgba(255, 255, 255, 0.16);
     --border-focus:    #3987e5;
 
-    --text:            #e9ecf1;
-    --text-secondary:  #a4adbb;
-    --text-muted:      #6d7684;
+    --text:            #e9ecf1;   /* 15.5:1 */
+    --text-secondary:  #a4adbb;   /*  8.1:1 */
+    --text-muted:      #757f8d;   /*  4.5:1 — was #6d7684 at 3.99:1 */
     --text-inverse:    #0b0d11;
 
-    --accent:          #3987e5;
+    --accent:          #3987e5;   /* 5.03:1 */
+    --accent-text:     #428de6;   /* 5.39 surface / 4.57 accent-soft */
     --accent-hover:    #4d95ea;
     --accent-soft:     rgba(57, 135, 229, 0.14);
     --accent-ring:     rgba(57, 135, 229, 0.40);
+
+    /* Dark reverses which of these need help: amber and orange are bright
+       against #12151a and read fine as text, while red does not. */
+    --warning:         #fab219;   /* 9.97:1 */
+    --serious:         #ec835a;   /* 6.94:1 */
+
+    --good-text:       #0ca60c;   /* 5.64 surface / 4.63 good-soft */
+    --warning-text:    #fab219;   /* 9.97:1 */
+    --serious-text:    #ec835a;   /* 6.94:1 */
+    --critical-text:   #da6868;   /* 5.37 surface / 4.62 critical-soft. #d55252
+                                         was 4.49 on the surface, and #d03b3b,
+                                         the graphic value, 3.81. */
 
     --good-soft:       rgba(12, 163, 12, 0.16);
     --warning-soft:    rgba(250, 178, 25, 0.16);
@@ -432,7 +485,7 @@ a:hover { text-decoration: underline; }
 
 .danger-btn {
     background: transparent;
-    color: var(--critical);
+    color: var(--critical-text);
     border-color: color-mix(in srgb, var(--critical) 42%, transparent);
 }
 .danger-btn:hover { background: var(--critical-soft); }
@@ -721,7 +774,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; accent-color: var(--a
 .field-error {
     display: none;
     font-size: var(--t-xs);
-    color: var(--critical);
+    color: var(--critical-text);
 }
 .field-error.visible { display: block; }
 input.input-error, textarea.input-error {
@@ -895,7 +948,7 @@ input.input-error, textarea.input-error {
 .obj-state.is-on {
     border-color: color-mix(in srgb, var(--good) 55%, transparent);
     background: var(--good-soft);
-    color: var(--good);
+    color: var(--good-text);
 }
 .obj-state.is-stopping {
     border-color: color-mix(in srgb, var(--warning) 55%, transparent);
@@ -937,7 +990,7 @@ input.input-error, textarea.input-error {
     padding: 0;
     font: inherit;
     font-size: var(--t-xs);
-    color: var(--accent);
+    color: var(--accent-text);
     text-decoration: underline;
     cursor: pointer;
 }
@@ -1090,7 +1143,7 @@ tbody td.num, tbody td:has(+ td.num) { font-variant-numeric: tabular-nums; }
     border-radius: var(--r-pill);
     white-space: nowrap;
     background: var(--accent-soft);
-    color: var(--accent);
+    color: var(--accent-text);
     border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
@@ -1398,7 +1451,7 @@ input.mib-nav-search { width: 100%; min-width: 0; }
 .tab-button:hover { color: var(--text); background: var(--surface-hover); }
 .tab-button:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
 .tab-button.active {
-    color: var(--accent);
+    color: var(--accent-text);
     background: var(--accent-soft);
     border-left-color: var(--accent);
     font-weight: 650;
@@ -1417,6 +1470,7 @@ input.mib-nav-search { width: 100%; min-width: 0; }
 
 .charts-grid {
     display: grid;
+    align-items: start;
     /* min() keeps the track from outgrowing a narrow container, which is what
        turns a grid into a horizontal page scrollbar. */
     grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
@@ -1434,27 +1488,159 @@ input.mib-nav-search { width: 100%; min-width: 0; }
 }
 .chart-container:hover { border-color: var(--border-strong); }
 
-.chart-container > h4, .chart-title {
-    font-size: var(--t-md);
+/* ==========================================================================
+   Panels
+
+   A panel says four things — where the metric came from, what it is, what it
+   is measured in, and what it means — and they must not look alike. Each is
+   separated from the others on FOUR independent axes: size, weight, colour and
+   letterform. One signal is not enough; two things at 11.5px are still told
+   apart here by weight, colour and case.
+
+     provenance   xs / 600 / muted     / uppercase, tracked
+     name         md / 620 / text      / plain (mono when it is an identifier)
+     unit         xs / 550 / secondary / tabular, on its own surface
+     description  sm / 400 / secondary / plain
+
+   They were all one size, one weight and one colour, which is why a card read
+   as a paragraph and a screen of cards read as one wall of text.
+   ========================================================================== */
+
+.panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: var(--s-4);
+    min-width: 0;
+    transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
+}
+.panel:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-sm);
+}
+
+.panel-head {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: var(--s-3);
+    /* The head is separated from the reading below it by a rule, not by
+       whitespace alone: at four cards across, whitespace between the label and
+       the plot looks the same as whitespace between cards. */
+    padding-bottom: var(--s-3);
+    border-bottom: 1px solid var(--border);
+}
+
+.panel-eyebrow {
+    margin: 0;
+    font-size: var(--t-xs);
     font-weight: 600;
-    color: var(--text);
-    margin-bottom: 2px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-/* The DESCRIPTION is reference text. It holds one line so every card in a row
-   starts its plot at the same height; the wording that does not fit is read in
-   the description sheet, which is what the line opens. */
-.chart-description {
-    font-size: var(--t-xs);
-    color: var(--text-muted);
-    line-height: 1.5;
-    margin-bottom: var(--s-3);
+.panel-headline {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s-2);
+    min-width: 0;
+}
+
+.panel-title {
+    margin: 0;
+    font-size: var(--t-md);
+    font-weight: 620;
+    line-height: 1.3;
+    color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    min-width: 0;
+}
+
+/* A published name with no MIB object behind it is an identifier, not a word.
+   Setting it in mono says so, and stops it being read as a mangled English
+   phrase — which is what snmp__1_3_6_1_4_1_674_10892_5_1_1_2_0_info looks like
+   in a proportional face. */
+.panel-title.is-identifier {
+    font-family: var(--mono);
+    font-size: var(--t-sm);
+    font-weight: 550;
+    letter-spacing: -0.01em;
+}
+
+.panel-unit {
+    flex-shrink: 0;
+    padding: 1px var(--s-2);
+    border-radius: var(--r-pill);
+    background: var(--surface-inset);
+    font-size: var(--t-xs);
+    font-weight: 550;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* The description is reference text. One line, so every plot in a row starts at
+   the same height; the wording that does not fit is read in the description
+   sheet, which is what the line opens. */
+.panel-note {
+    font-size: var(--t-sm);
+    font-weight: 400;
+    color: var(--text-secondary);
+    line-height: 1.45;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ---- section heads ------------------------------------------------------
+   The boundary between one group of panels and the next. A heading with a rule
+   carries it; whitespace alone does not, because at this density there is
+   whitespace everywhere.
+   ------------------------------------------------------------------------ */
+.panel-section {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    align-items: baseline;
+    gap: var(--s-2) var(--s-3);
+    margin: var(--s-6) 0 var(--s-4);
+    padding-bottom: var(--s-2);
+    border-bottom: 1px solid var(--border-strong);
+}
+.panel-section:first-child { margin-top: 0; }
+
+.panel-section-title {
+    margin: 0;
+    font-size: var(--t-lg);
+    font-weight: 640;
+    letter-spacing: -0.01em;
+    color: var(--text);
+}
+.panel-section-count {
+    padding: 1px var(--s-2);
+    border-radius: var(--r-pill);
+    background: var(--surface-inset);
+    font-size: var(--t-xs);
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+.panel-section-note {
+    margin: 0;
+    justify-self: end;
+    font-size: var(--t-xs);
+    color: var(--text-muted);
+    text-align: right;
+}
+@media (max-width: 720px) {
+    .panel-section { grid-template-columns: auto auto; }
+    .panel-section-note { display: none; }
 }
 
 /* A chart initialised while its tab was hidden carries a provisional canvas
@@ -1504,7 +1690,7 @@ input.mib-nav-search { width: 100%; min-width: 0; }
 /* Waiting is transient and should read as activity; no data is terminal and
    should read as a settled fact. */
 .chart-container.is-empty:not(.is-nodata) .chart-empty-title {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 .chart-container.is-nodata {
     background: var(--surface-inset);
@@ -1531,26 +1717,89 @@ input.mib-nav-search { width: 100%; min-width: 0; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.table-widget-section { margin-top: var(--s-5); }
-
-.master-instance-selector-container {
+/* A panel that reads as words rather than numbers lists its rows: an interface
+   table has forty operational states and there is no single one of them to
+   show. One row keeps the plain single-value shape above, because repeating the
+   card's own title in front of it reads as a table with a useless column. */
+.panel-rows {
     display: flex;
-    align-items: center;
-    gap: var(--s-3);
-    flex-wrap: wrap;
+    flex-direction: column;
+    font-size: var(--t-sm);
+}
+
+/* Name and value are two more axes of the same rule: the row is identified in
+   muted weight-500, the reading is stated in full-contrast weight-600. Which
+   is the label and which is the answer is legible without reading either. */
+.panel-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s-4);
+    padding: 3px var(--s-2);
+    border-radius: var(--r-sm);
+}
+/* A whisper of banding, so the eye can track a name across the gap to its
+   value in a list of eight. Any stronger and it becomes a table. */
+.panel-row:nth-child(even) { background: var(--surface-inset); }
+
+/* A reading that is its own identity gets the whole row, left aligned, because
+   there is no label to sit opposite. */
+.panel-row.is-unnamed { justify-content: flex-start; }
+.panel-row.is-unnamed .panel-row-value {
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.panel-row-name {
+    color: var(--text-muted);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.panel-row-value {
+    color: var(--text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+
+/* What is not shown, and the way to see it. */
+.panel-rows-more {
+    align-self: flex-start;
+    margin-top: var(--s-2);
+    padding: 2px var(--s-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    background: transparent;
+    font-size: var(--t-xs);
+    font-weight: 550;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+    transition: background 140ms var(--ease), border-color 140ms var(--ease);
+}
+.panel-rows-more:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+    color: var(--text);
+}
+
+/* What the dashboard could not explain about itself, said once at the top
+   rather than left for the reader to infer from cards that are not there. */
+.dashboard-warning {
     padding: var(--s-3) var(--s-4);
     margin-bottom: var(--s-4);
     background: var(--surface-inset);
     border: 1px solid var(--border);
+    border-left: 3px solid var(--warning, #d08a3c);
     border-radius: var(--r-md);
-}
-.master-instance-selector-container label {
     font-size: var(--t-sm);
-    font-weight: 550;
     color: var(--text-secondary);
-    margin: 0;
 }
-.master-instance-selector { min-width: 240px; max-width: 420px; }
 
 .system-info { display: flex; flex-direction: column; gap: 1px; }
 
@@ -1602,7 +1851,7 @@ input.mib-nav-search { width: 100%; min-width: 0; }
 .status-title { font-weight: 600; font-size: var(--t-md); margin-bottom: 2px; }
 .status-message, .status-description { font-size: var(--t-md); color: var(--text-secondary); }
 
-.status-grid, .status-details {
+.status-details {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
     gap: var(--s-3);
@@ -1610,10 +1859,22 @@ input.mib-nav-search { width: 100%; min-width: 0; }
     align-items: start;
 }
 
+/* Tiles carry a head and a list of rows now, so the track is wider than the
+   old single-value tile needed. min() keeps it from outgrowing a narrow
+   container, which is what turns a grid into a horizontal page scrollbar. */
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+    gap: var(--s-4);
+    align-items: start;
+}
+
 /* Stat tile: the value is the point of the tile, so it leads. The object's
    name labels it and the MIB DESCRIPTION is reference text — useful, but it
    must never out-weigh the number it describes. */
-.status-item, .status-detail-item {
+/* .status-item is a .panel now and takes its surface, border and padding from
+   there. What stays here is the detail variant, which is not a panel. */
+.status-detail-item {
     display: flex;
     flex-direction: column;
     gap: 3px;
@@ -1624,7 +1885,7 @@ input.mib-nav-search { width: 100%; min-width: 0; }
     min-width: 0;
 }
 
-.status-item > label, .status-detail-label {
+.status-detail-label {
     order: -1;
     font-size: var(--t-xs);
     font-weight: 600;
@@ -1635,6 +1896,17 @@ input.mib-nav-search { width: 100%; min-width: 0; }
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* The reading itself: the largest and heaviest thing on a tile, because it is
+   what the tile exists to show. Tabular figures so a column of them does not
+   jitter as the values change. */
+/* The reading itself: the largest and heaviest thing on a tile, because it is
+   what the tile exists to show. Tabular figures so a column of them does not
+   jitter as the values change.
+
+   A tile holding a LIST steps back down to the row scale — eight readings at
+   15px is a wall, and the rows carry their own hierarchy. */
+.status-value:has(.panel-rows) { font-size: var(--t-sm); font-weight: 500; }
 
 .status-value, .status-detail-value {
     font-size: var(--t-lg);
@@ -2062,7 +2334,7 @@ input.paged-list-search { width: 100%; max-width: 400px; min-width: 0; }
     width: 0.75em;
     font-size: 0.75em;
     line-height: 1;
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 /* Only the sorted column's arrow is painted, but an unsorted header still
@@ -2169,7 +2441,7 @@ input.paged-list-search { width: 100%; max-width: 400px; min-width: 0; }
 .pager-page.is-current {
     background: var(--accent-soft);
     border-color: var(--accent);
-    color: var(--accent);
+    color: var(--accent-text);
     font-weight: 700;
 }
 
@@ -2500,4 +2772,112 @@ input[readonly] {
     background: var(--surface-inset);
     color: var(--text-muted);
     cursor: not-allowed;
+}
+
+/* ==========================================================================
+   The alarm bell
+
+   The count is the whole point of the badge: a reader glancing at the header
+   should learn whether to open it without opening it, so the bell takes the
+   colour of the worst thing behind it.
+   ========================================================================== */
+
+.alarm-bell { position: relative; display: inline-flex; }
+
+#alarmBellBtn.is-critical { color: var(--critical); border-color: var(--critical); }
+#alarmBellBtn.is-warning  { color: var(--warning);  border-color: var(--warning); }
+#alarmBellBtn.is-info     { color: var(--accent);   border-color: var(--accent); }
+
+/* Rules that could not be asked. Not an all-clear and not a fault of the
+   fleet, so it is marked apart from both rather than borrowing a severity. */
+#alarmBellBtn.is-degraded { border-style: dashed; border-color: var(--serious); color: var(--serious); }
+
+.alarm-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--critical);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+#alarmBellBtn.is-warning .alarm-badge { background: var(--warning); color: #1a1a1a; }
+#alarmBellBtn.is-info    .alarm-badge { background: var(--accent); }
+
+.alarm-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 60;
+    width: min(30rem, calc(100vw - 2rem));
+    max-height: min(32rem, calc(100vh - 6rem));
+    overflow-y: auto;
+    padding: var(--s-3);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+
+.alarm-panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s-3);
+    margin-bottom: var(--s-3);
+}
+.alarm-panel-head h3 { margin: 0; font-size: var(--t-md); }
+.alarm-watching { font-size: var(--t-xs); color: var(--text-muted); }
+
+.alarm-empty { margin: 0; font-size: var(--t-sm); color: var(--text-muted); }
+
+.alarm-list { display: flex; flex-direction: column; gap: var(--s-2); }
+
+.alarm-row {
+    padding: var(--s-3);
+    background: var(--surface-inset);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border-strong);
+    border-radius: var(--r-md);
+}
+.alarm-row.is-critical { border-left-color: var(--critical); }
+.alarm-row.is-warning  { border-left-color: var(--warning); }
+.alarm-row.is-info     { border-left-color: var(--accent); }
+
+.alarm-row-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s-3);
+    margin-bottom: 2px;
+}
+.alarm-severity {
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.alarm-since { font-size: var(--t-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+.alarm-summary { margin: 0; font-size: var(--t-sm); font-weight: 600; color: var(--text); }
+.alarm-device { margin: 2px 0 0; font-size: var(--t-sm); color: var(--text-secondary); }
+.alarm-about {
+    margin: 2px 0 0;
+    font-size: var(--t-xs);
+    color: var(--text-muted);
+    word-break: break-word;
+}
+.alarm-description {
+    margin: var(--s-2) 0 0;
+    font-size: var(--t-xs);
+    line-height: 1.45;
+    color: var(--text-secondary);
 }

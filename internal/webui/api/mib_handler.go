@@ -10,10 +10,10 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/jeremyhahn/go-netmon/internal/metrics"
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 	mibstorage "github.com/jeremyhahn/go-netmon/internal/mib/storage"
 	"github.com/jeremyhahn/go-netmon/internal/promname"
-	"github.com/jeremyhahn/go-netmon/internal/webui/dashboard"
 	webuistorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
@@ -317,7 +317,15 @@ func joinOID(parts []string) string {
 	return result
 }
 
-// handleGetMIBDashboard generates a dashboard specification for a MIB
+// handleGetMIBDashboard generates a dashboard for one MIB on one device.
+//
+// It is the same builder the whole-device endpoint uses, asked about a single
+// module. It used to be a different one: this endpoint parsed the MIB store to
+// enumerate a module's objects, while the device endpoint read the catalog, and
+// only this one drew anything a person saw. Two builders meant the catalog work
+// landed where nobody was looking -- the panels on screen were still
+// MIB-shaped, and every fix to the catalog path changed nothing the owner could
+// see.
 func (s *Server) handleGetMIBDashboard(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -326,97 +334,33 @@ func (s *Server) handleGetMIBDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get MIB from database to retrieve the name
 	record, err := s.storage.GetMIB(r.Context(), id)
 	if err != nil {
 		http.Error(w, "MIB not found", http.StatusNotFound)
 		return
 	}
 
-	log.Printf("INFO: Generating dashboard for MIB ID=%d, Name=%s", id, record.Name)
-
-	// Get MIB storage from loader
-	if s.mibLoader == nil {
-		log.Printf("ERROR: MIB loader not available for dashboard generation")
-		http.Error(w, "MIB loader not available", http.StatusInternalServerError)
+	// A dashboard is always about a device. The panels are the metrics a
+	// device REPORTS, so without one there is no question to answer: the
+	// module alone can only say what some device of that kind might send, and
+	// rendering that put 507 cards across five devices on "Waiting for data"
+	// forever.
+	name := r.URL.Query().Get("device")
+	if name == "" {
+		http.Error(w, "device is required", http.StatusBadRequest)
 		return
 	}
 
-	storageInterface := s.mibLoader.GetStorage()
-	if storageInterface == nil {
-		log.Printf("ERROR: MIB storage not available for dashboard generation")
-		http.Error(w, "MIB storage not available", http.StatusInternalServerError)
-		return
-	}
-
-	loaderStorage, ok := storageInterface.(*mibstorage.Storage)
-	if !ok {
-		log.Printf("ERROR: Invalid storage type for dashboard generation")
-		http.Error(w, "invalid storage type", http.StatusInternalServerError)
-		return
-	}
-
-	// Fetch learned tables from go-netmon service
-	learnedTables := s.fetchLearnedTables(r.Context())
-	if learnedTables != nil {
-		log.Printf("INFO: Using %d learned tables for dashboard generation", len(learnedTables))
-	} else {
-		log.Printf("INFO: No learned tables available, using MIB data only")
-	}
-
-	// Generate dashboard specification with learned tables
-	spec, err := dashboard.GenerateDashboardWithLearnedTables(loaderStorage, record.Name, learnedTables)
+	device, err := s.storage.GetDeviceByName(r.Context(), name)
 	if err != nil {
-		log.Printf("ERROR: Failed to generate dashboard for MIB %s (ID=%d): %v", record.Name, id, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "device not found", http.StatusNotFound)
 		return
 	}
 
-	// Narrow it to one device when the caller names one.
-	//
-	// The specification describes what a device of this kind could report. The
-	// web UI renders it directly, so without this every object the module
-	// defines became a card, and a card for an object this device does not
-	// implement waits for data that never comes.
-	if device := r.URL.Query().Get("device"); device != "" {
-		reported := s.prometheusMetricNames(r.Context(),
-			map[string]string{promname.DeviceLabel: device})
-		before := len(spec.ScalarWidgets) + len(spec.TableWidgets)
-		spec = scopeSpecToDevice(spec, reported)
-		log.Printf("INFO: %s on %s: %d widgets of %d are reported by the device",
-			record.Name, device, len(spec.ScalarWidgets)+len(spec.TableWidgets), before)
-	}
+	dash := s.generateDashboard(r.Context(), device, []string{record.Name}, record.Name, scopeModule)
+	log.Printf("INFO: dashboard for %s on %s: %d panels", record.Name, name, len(dash.Panels))
 
-	// Log dashboard statistics for debugging
-	log.Printf("INFO: Generated dashboard for %s (ID=%d): %d scalar widgets, %d table widgets",
-		record.Name, id, len(spec.ScalarWidgets), len(spec.TableWidgets))
-
-	// Verify the dashboard is for the correct MIB
-	if spec.MIBName != record.Name {
-		log.Printf("ERROR: Dashboard MIB name mismatch! Requested: %s, Generated: %s", record.Name, spec.MIBName)
-		http.Error(w, "dashboard generation produced wrong MIB", http.StatusInternalServerError)
-		return
-	}
-
-	respondJSON(w, http.StatusOK, spec)
-}
-
-// fetchLearnedTables presents the poller's learned tables in the shape the
-// dashboard generator wants: the entry OID and its index names.
-func (s *Server) fetchLearnedTables(ctx context.Context) dashboard.LearnedTablesMap {
-	tables := s.learnedTables(ctx)
-	if tables == nil {
-		return nil
-	}
-
-	result := make(dashboard.LearnedTablesMap, len(tables))
-	for oid, table := range tables {
-		result[oid] = &dashboard.LearnedTable{
-			EntryOID:   table.EntryOID,
-			IndexNames: table.IndexNames,
-		}
-	}
-	return result
+	respondJSON(w, http.StatusOK, dash)
 }
 
 // filterMIBsWithData narrows a MIB list to the modules that actually have data
@@ -455,10 +399,10 @@ func (s *Server) filterMIBsWithData(
 	// the process-wide learned tables are not evidence about it.
 	var (
 		matchers      map[string]string
-		learnedTables dashboard.LearnedTablesMap
+		learnedTables map[string]*metrics.LearnedTableInfo
 	)
 	if device == "" {
-		learnedTables = s.fetchLearnedTables(ctx)
+		learnedTables = s.learnedTables(ctx)
 	} else {
 		matchers = map[string]string{promname.DeviceLabel: device}
 	}
@@ -485,12 +429,19 @@ func (s *Server) filterMIBsWithData(
 // promising data that could never come. last_over_time states the window
 // exactly, and on this fleet it costs about 30ms against 13,000 series.
 func (s *Server) prometheusMetricNames(ctx context.Context, matchers map[string]string) map[string]bool {
-	selector := "{" + joinStrings(matcherParts(matchers), ",") + "}"
-	if len(matchers) == 0 {
-		// A selector has to match something; every metric this project writes
-		// carries the name prefix.
-		selector = `{__name__=~"` + promname.Prefix + `.*"}`
-	}
+	// Always constrained to the SNMP families, whatever else was asked.
+	//
+	// The poller's own instrumentation carries a device label too --
+	// gonetmon_polls_total, gonetmon_poll_duration_seconds_bucket,
+	// gonetmon_device_unreachable -- so a device-scoped question without this
+	// answers with them, and every one became a panel. Six of them appeared on
+	// EVERY module tab of core-01, described by no catalog row and filed
+	// under "(uncataloged)", which then reported six metrics the MIBs had
+	// stopped resolving. They are the monitor watching itself, not readings
+	// from the device.
+	parts := append(matcherParts(matchers),
+		promname.NameLabel+`=~"`+promname.Prefix+`.*"`)
+	selector := "{" + joinStrings(parts, ",") + "}"
 
 	values, err := s.promClient.Query(ctx, fmt.Sprintf(
 		"count by (%s) (last_over_time(%s[%s]))",
@@ -566,7 +517,7 @@ func (s *Server) prometheusLabelValues(ctx context.Context, label string, matche
 // device that has 2.
 func moduleHasData(
 	oids []*mib.OIDMetadata,
-	learnedTables dashboard.LearnedTablesMap,
+	learnedTables map[string]*metrics.LearnedTableInfo,
 	metricNames map[string]bool,
 ) bool {
 	if len(metricNames) > 0 {

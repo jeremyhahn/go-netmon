@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 
 // Does an open dashboard stay put?
 //
@@ -12,6 +12,19 @@ import { test, expect } from '@playwright/test';
 // working tree would have missed a stale image entirely.
 
 const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+
+// openFleetDevice sets the device selector's value and fires its change event.
+// The selector is populated by a separate load from the one that reveals the
+// fleet overview, so asking for a device before its option exists sets a value
+// the select does not have, fires a change nothing matches, and leaves the page
+// on no device at all -- which reads downstream as "nothing was subscribed".
+async function openDeviceById(page: Page, deviceId: number) {
+  await expect(
+    page.locator(`#dashboardDeviceSelect option[value="${deviceId}"]`),
+    `device ${deviceId} never appeared in the selector`,
+  ).toHaveCount(1, { timeout: 30000 });
+  await page.evaluate(id => (window as any).app.openFleetDevice(id), deviceId);
+}
 
 test('an open dashboard is not redrawn while it sits there', async ({ page }) => {
   test.setTimeout(300_000);
@@ -69,7 +82,7 @@ test('an open dashboard is not redrawn while it sits there', async ({ page }) =>
     .toBe(fleet.stamped);
 
   // core-01: the heaviest dashboard, so the most to lose to a redraw.
-  await page.evaluate(() => (window as any).app.openFleetDevice(1));
+  await openDeviceById(page, 1);
   await page.waitForTimeout(15000);
 
   // Count the rebuild paths and stamp the DOM, then leave it alone.
@@ -86,7 +99,12 @@ test('an open dashboard is not redrawn while it sits there', async ({ page }) =>
     }
 
     let stamped = 0;
-    for (const el of Array.from(document.querySelectorAll('[id^="chart-"], [id^="status-"]'))) {
+    // Every panel on the page, by class rather than by an id prefix. The
+    // prefixes were "chart-" and "status-", which the panel renderer does not
+    // use, so this stamped nothing and the test reported "nothing was rendered
+    // to watch" -- a fixture that had stopped looking, not a page that had
+    // stopped drawing.
+    for (const el of Array.from(document.querySelectorAll('.panel'))) {
       (el as HTMLElement).dataset.stableProbe = 'original';
       stamped++;
     }

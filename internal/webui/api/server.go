@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"log/slog"
 	"maps"
@@ -22,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/logging"
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 	"github.com/jeremyhahn/go-netmon/internal/promname"
+	"github.com/jeremyhahn/go-netmon/internal/webui/alarm"
 	"github.com/jeremyhahn/go-netmon/internal/webui/client"
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 	ws "github.com/jeremyhahn/go-netmon/internal/webui/websocket"
@@ -63,6 +65,18 @@ type Server struct {
 	// once per metric returned, so it must cost nothing unless debug logging
 	// is on.
 	logger *slog.Logger
+
+	// alarms evaluates the operator's rules and holds what is firing. Nil on
+	// a server built without any, which the bell endpoint reports as such
+	// rather than as an all-clear.
+	alarms *alarm.Evaluator
+
+	// assets is the embedded static tree this server serves the UI from.
+	assets fs.FS
+
+	// catalog holds the metric catalog between reads, so a dashboard load is
+	// not behind four Prometheus queries and 26,000 rows of JSON.
+	catalog *catalogCache
 }
 
 // MIBLoader provides MIB loading capabilities
@@ -174,6 +188,23 @@ type Config struct {
 
 	// Logger receives the server's diagnostics. A nil Logger discards them.
 	Logger *slog.Logger
+
+	// AlarmRules are the conditions to watch for. An empty set builds an
+	// evaluator that fires nothing, which is different from no evaluator at
+	// all: the first is an operator who has written no rules, the second is a
+	// build with no bell.
+	AlarmRules []alarm.Rule
+
+	// Assets is the static asset tree the UI is served from, rooted so that
+	// the landing page is "index.html".
+	//
+	// It is a dependency rather than something this package reaches for,
+	// because the assets are compiled into the binary (internal/webui) and
+	// the binary is what decides to serve them. A nil Assets serves no UI at
+	// all -- deliberately, since the alternative is a fallback to some path on
+	// disk, and a path on disk is the bug this replaced: the UI used to work
+	// only when the process happened to be running from a source checkout.
+	Assets fs.FS
 }
 
 // NewServer creates a new API server
@@ -202,6 +233,7 @@ func NewServer(cfg Config) (*Server, error) {
 		goNetmonBaseURL: cfg.GoNetmonBaseURL,
 		pollingConfig:   cfg.Polling,
 		logger:          logger,
+		assets:          cfg.Assets,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -211,8 +243,42 @@ func NewServer(cfg Config) (*Server, error) {
 		},
 	}
 
+	// The evaluator needs the server to reach Prometheus, so it is built after
+	// it. A server with no Prometheus client has nothing to evaluate against
+	// and gets no evaluator, which the bell reports as such.
+	if cfg.PromClient != nil {
+		s.alarms = alarm.New(s.alarmSampler, cfg.AlarmRules, logger)
+	}
+	s.catalog = newCatalogCache(s.metricCatalog)
+
 	s.routes()
 	return s, nil
+}
+
+// Alarms is the running alarm evaluator, or nil on a server built without one.
+// The caller runs its evaluation loop; the server only serves what it holds.
+func (s *Server) Alarms() *alarm.Evaluator { return s.alarms }
+
+// RefreshCatalog re-reads the metric catalog.
+//
+// Called when something has changed what it can describe -- a MIB imported,
+// reimported or deleted -- so the next dashboard describes the metrics that
+// module produces instead of waiting out the refresh interval.
+func (s *Server) RefreshCatalog(ctx context.Context) {
+	if s.catalog != nil {
+		s.catalog.Refresh(ctx)
+	}
+}
+
+// RunCatalogRefresh keeps the held metric catalog warm until ctx is done.
+//
+// The caller runs it, as it runs the alarm evaluator, so that what has a
+// lifetime is started by whatever owns that lifetime rather than by the
+// constructor.
+func (s *Server) RunCatalogRefresh(ctx context.Context) {
+	if s.catalog != nil {
+		s.catalog.Run(ctx)
+	}
 }
 
 // discardLogger is the sink a Server built without one logs to, so that the
@@ -304,6 +370,9 @@ func (s *Server) routes() {
 	api.HandleFunc("/profiles/{id:[0-9]+}/mibs/{mibId:[0-9]+}/assignment", s.handleSetProfileMIBAssignment).Methods("PUT")
 	api.HandleFunc("/profiles/{id:[0-9]+}/devices", s.handleGetProfileDevices).Methods("GET")
 
+	// What is wrong right now, for the bell.
+	api.HandleFunc("/alarms", s.handleGetAlarms).Methods("GET")
+
 	// MIB endpoints (IMPORTANT: Specific routes MUST be registered BEFORE general routes!)
 	api.HandleFunc("/mibs/import", s.handleImportMIB).Methods("POST")
 	api.HandleFunc("/mibs", s.handleListStoredMIBs).Methods("GET") // Database-based
@@ -331,8 +400,17 @@ func (s *Server) routes() {
 	api.HandleFunc("/learned-tables", s.handleGetLearnedTables).Methods("GET")
 
 	// Static files with no-cache headers
-	staticFS := http.FileServer(http.Dir("internal/webui/static"))
-	s.router.PathPrefix("/").Handler(noCacheMiddleware(staticFS))
+	// The page and everything on it, served from the assets compiled into the
+	// binary rather than from a path relative to the working directory.
+	//
+	// A server built without assets registers no catch-all at all, so an
+	// unknown path gets the router's 404 rather than a handler that will
+	// answer nothing. That is only reachable in tests; the binaries always
+	// pass the embedded tree.
+	if s.assets != nil {
+		s.router.PathPrefix("/").Handler(
+			noCacheMiddleware(http.FileServer(http.FS(s.assets))))
+	}
 }
 
 // Start starts the server

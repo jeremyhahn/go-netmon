@@ -62,27 +62,41 @@ const DEVICE = {
 };
 
 // The generate endpoint's answer, in the shape the server produces.
+//
+// This fixture used to carry `charts` and a coverage note claiming a module
+// "will never add a panel". Both are gone with the MIB-parsing generator: the
+// payload is `panels`, and the note deliberately does NOT claim permanence,
+// because reading Prometheus can tell "reporting nothing" from "reporting
+// things I cannot describe" but cannot tell "will never report" from "has not
+// reported yet". A fixture asserting the old wording was asserting a claim the
+// server stopped making on purpose.
+const SYS_UPTIME_PANEL = {
+  id: 'SNMPv2-MIB_snmp_sysUpTime',
+  title: 'SNMPv2-MIB - sysUpTime',
+  type: 'line',
+  metric: 'snmp_sysUpTime',
+  query: 'snmp_sysUpTime{device="bastion"}',
+  module: 'SNMPv2-MIB',
+  object: 'sysUpTime',
+  oid: '1.3.6.1.2.1.1.3',
+  kind: 'gauge',
+  description: 'Time since re-initialization.',
+};
+
+const NOT_REPORTING_NOTE =
+  'ATEN-PRODUCTS-MIB is reporting nothing, so it adds no panels. A panel appears '
+  + 'once the device has been polled and answered — wait one poll interval and '
+  + 'generate again. If it stays empty, the device is not answering those OIDs.';
+
 const GENERATED = {
   device: 'bastion',
   title: 'bastion - ATEN-PRODUCTS-MIB, SNMPv2-MIB',
-  charts: [
-    { id: 'SNMPv2-MIB_sysUpTime', title: 'SNMPv2-MIB - sysUpTime', type: 'line',
-      metric: 'snmp_sysUpTime', description: 'Time since re-initialization.', unit: '', oid: '1.3.6.1.2.1.1.3' },
-  ],
+  panels: [SYS_UPTIME_PANEL],
   mibs: [
-    { mib: 'ATEN-PRODUCTS-MIB', pollable: 0, charts: 0,
-      note: 'ATEN-PRODUCTS-MIB has no pollable objects, so it will never add a panel. '
-          + 'It is most likely a registry of identifiers, or a module whose IMPORTS did not resolve.' },
-    { mib: 'SNMPv2-MIB', pollable: 20, charts: 14,
-      note: 'SNMPv2-MIB contributed 14 panels of 20 pollable objects; the rest have no data '
-          + 'in Prometheus, either not yet polled or not answered by the device.' },
+    { mib: 'ATEN-PRODUCTS-MIB', reporting: 0, charts: 0, note: NOT_REPORTING_NOTE },
+    { mib: 'SNMPv2-MIB', reporting: 1, charts: 1 },
   ],
-  warnings: [
-    'ATEN-PRODUCTS-MIB has no pollable objects, so it will never add a panel. '
-      + 'It is most likely a registry of identifiers, or a module whose IMPORTS did not resolve.',
-    'SNMPv2-MIB contributed 14 panels of 20 pollable objects; the rest have no data '
-      + 'in Prometheus, either not yet polled or not answered by the device.',
-  ],
+  warnings: [NOT_REPORTING_NOTE],
 };
 
 // stubDevice answers the reads the device page and the dashboard need.
@@ -140,28 +154,39 @@ test('the button leaves the dashboard showing the device, not an empty frame', a
   await expect(page.locator('#notificationContainer')).not.toContainText('Failed to generate dashboard');
 });
 
-test('a MIB that will never produce a panel says so', async ({ page }) => {
+test('a MIB contributing nothing says so, and does not claim it never will', async ({ page }) => {
   await serveWorkingTree(page);
   await stubDevice(page);
   await pressGenerate(page);
 
   const notifications = page.locator('#notificationContainer');
-  await expect(notifications).toContainText('ATEN-PRODUCTS-MIB has no pollable objects', { timeout: 15000 });
-  await expect(notifications).toContainText('never add a panel');
+  await expect(notifications).toContainText('ATEN-PRODUCTS-MIB is reporting nothing',
+    { timeout: 15000 });
+  // The actionable half: this may resolve itself, so wait rather than go
+  // hunting for a fault.
+  await expect(notifications).toContainText('wait one poll interval');
+
+  // And it must NOT claim permanence. That claim needed the MIB parsed, which
+  // is the coupling the catalog removed; asserting it from Prometheus alone
+  // would be a guess presented as fact.
+  await expect(notifications).not.toContainText('never');
 
   // The warning is several lines of explanation, so it must outlast the 3s a
   // one-line success message gets.
   await page.waitForTimeout(5000);
-  await expect(notifications).toContainText('ATEN-PRODUCTS-MIB',
-    { timeout: 1000 });
+  await expect(notifications).toContainText('ATEN-PRODUCTS-MIB', { timeout: 1000 });
 });
 
 test('a dashboard with nothing to explain reports its panel count instead', async ({ page }) => {
   await serveWorkingTree(page);
   await stubDevice(page, {
     ...GENERATED,
-    charts: [GENERATED.charts[0], { ...GENERATED.charts[0], id: 'SNMPv2-MIB_sysDescr' }],
-    mibs: [{ mib: 'SNMPv2-MIB', pollable: 2, charts: 2, note: '' }],
+    panels: [
+      SYS_UPTIME_PANEL,
+      { ...SYS_UPTIME_PANEL, id: 'SNMPv2-MIB_snmp_sysDescr', metric: 'snmp_sysDescr',
+        object: 'sysDescr', title: 'SNMPv2-MIB - sysDescr' },
+    ],
+    mibs: [{ mib: 'SNMPv2-MIB', reporting: 2, charts: 2 }],
     warnings: [],
   });
   await pressGenerate(page);

@@ -3,9 +3,9 @@ package api
 import (
 	"testing"
 
+	"github.com/jeremyhahn/go-netmon/internal/metrics"
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 	"github.com/jeremyhahn/go-netmon/internal/promname"
-	"github.com/jeremyhahn/go-netmon/internal/webui/dashboard"
 )
 
 // Which modules hold data, and for whom.
@@ -76,7 +76,7 @@ func TestATextReadingCountsAsData(t *testing.T) {
 // a device with 2.
 func TestLearnedTablesAnswerOnlyTheFleetWideQuestion(t *testing.T) {
 	const entryOID = ifEntryOID
-	walked := dashboard.LearnedTablesMap{entryOID: &dashboard.LearnedTable{}}
+	walked := map[string]*metrics.LearnedTableInfo{entryOID: {}}
 	module := objects(tableEntry(entryOID), column(ifInOctets, "ifInOctets"))
 
 	// Fleet-wide: the caller supplies the learned tables, and a table anyone has
@@ -118,7 +118,7 @@ func TestNoEvidenceMeansNoData(t *testing.T) {
 	if moduleHasData(objects(scalar(sysUpTimeOID, "sysUpTime")), nil, nil) {
 		t.Error("a module was reported as having data with nothing collected")
 	}
-	if moduleHasData(nil, dashboard.LearnedTablesMap{"1.3.6.1": &dashboard.LearnedTable{}},
+	if moduleHasData(nil, map[string]*metrics.LearnedTableInfo{"1.3.6.1": {}},
 		map[string]bool{"snmp_anything": true}) {
 		t.Error("a module defining no objects was reported as having data")
 	}

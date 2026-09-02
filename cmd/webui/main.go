@@ -15,6 +15,8 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/logging"
 	"github.com/jeremyhahn/go-netmon/internal/mib/loader"
 	"github.com/jeremyhahn/go-netmon/internal/mib/storage"
+	"github.com/jeremyhahn/go-netmon/internal/webui"
+	"github.com/jeremyhahn/go-netmon/internal/webui/alarm"
 	"github.com/jeremyhahn/go-netmon/internal/webui/api"
 	"github.com/jeremyhahn/go-netmon/internal/webui/client"
 	"github.com/jeremyhahn/go-netmon/internal/webui/provider"
@@ -151,6 +153,15 @@ func run(ctx context.Context) error {
 	pollerClient := client.NewPollerClient(*pollerURL, api.PollerRequestTimeout)
 	log.Println("Poller client initialized")
 
+	// The UI's static assets, compiled into this binary. Resolving them here
+	// rather than inside the server keeps the server free of any opinion about
+	// where its assets live, and makes a broken embed a startup error instead
+	// of a UI that answers 404 to everything but /api.
+	staticAssets, err := webui.Static()
+	if err != nil {
+		return fmt.Errorf("failed to open embedded web UI assets: %w", err)
+	}
+
 	// Create API server
 	log.Println("Initializing Web UI server...")
 	server, err := api.NewServer(api.Config{
@@ -164,6 +175,7 @@ func run(ctx context.Context) error {
 		PollerClient:    pollerClient,
 		PromClient:      promClient,
 		GoNetmonBaseURL: *pollerURL, // Pass poller URL for OID learner proxy
+		Assets:          staticAssets,
 		Logger:          logger,
 
 		// The poller's global timing. The web UI does not poll, but it has to
@@ -174,6 +186,13 @@ func run(ctx context.Context) error {
 			SNMPTimeout:     cfg.Global.SNMPTimeout,
 			SNMPRetries:     cfg.Global.SNMPRetries,
 		},
+
+		// The conditions the bell reports. They come from the same file the
+		// poller reads, and SIGHUP below re-reads it without a restart --
+		// which matters more here than for anything else in the file, because
+		// restarting this service costs minutes of MIB parsing and an
+		// operator tuning a threshold would do it several times.
+		AlarmRules: alarm.RulesFrom(cfg.Alarms),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
@@ -197,6 +216,18 @@ func run(ctx context.Context) error {
 		log.Printf("Warning: failed to load and register devices: %v", err)
 	}
 
+	// Keep the metric catalog warm. A dashboard load reads what is held
+	// rather than four Prometheus queries and 26,000 rows of JSON.
+	go server.RunCatalogRefresh(ctx)
+
+	// Evaluate the alarm rules for as long as the server runs.
+	if evaluator := server.Alarms(); evaluator != nil {
+		log.Printf("Watching %d alarm rules", evaluator.RuleCount())
+		go evaluator.Run(ctx)
+	}
+
+	go reloadOnSignal(ctx, server)
+
 	// Start the server
 	log.Printf("Starting Web UI server on %s", *listenAddr)
 	log.Printf("Open http://localhost%s in your browser", *listenAddr)
@@ -216,6 +247,39 @@ func run(ctx context.Context) error {
 		return nil
 	case err := <-errChan:
 		return fmt.Errorf("server error: %w", err)
+	}
+}
+
+// reloadOnSignal re-reads the configuration on SIGHUP.
+//
+// Only the alarm rules are re-applied, and that is the honest scope rather than
+// a partial implementation: the MIB catalog, the record store and the listening
+// socket are all bound at startup, and pretending a reload could change them
+// would be worse than saying it cannot. What an operator actually edits between
+// restarts is a threshold.
+//
+// A file that will not parse or will not validate leaves the running rules
+// exactly as they were. A reload that emptied the bell because of a typo would
+// be a monitoring outage caused by the act of configuring monitoring.
+func reloadOnSignal(ctx context.Context, server *api.Server) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGHUP)
+	defer signal.Stop(signals)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signals:
+			cfg, err := config.Load()
+			if err != nil {
+				log.Printf("Reload refused, keeping the running rules: %v", err)
+				continue
+			}
+			rules := alarm.RulesFrom(cfg.Alarms)
+			server.ReloadAlarms(rules)
+			log.Printf("Reloaded configuration: %d alarm rules", len(rules))
+		}
 	}
 }
 

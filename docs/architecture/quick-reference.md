@@ -208,7 +208,6 @@ internal/webui/static/js/app.js    (Refactor rendering)
 # Unit tests
 make test-parser
 make test-storage
-make test-dashboard
 
 # Integration tests
 make integration-test
@@ -220,7 +219,6 @@ make integration-test
 make coverage
 
 # Benchmarks
-make bench-dashboard
 ```
 
 ---

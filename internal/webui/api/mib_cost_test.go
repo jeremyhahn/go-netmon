@@ -737,21 +737,24 @@ func TestLearnedTablesWithoutPoller(t *testing.T) {
 	if tables := server.learnedTables(context.Background()); tables != nil {
 		t.Errorf("got %d tables, want nil when no poller is configured", len(tables))
 	}
-	if tables := server.fetchLearnedTables(context.Background()); tables != nil {
-		t.Errorf("got %d dashboard tables, want nil", len(tables))
-	}
 }
 
-// TestFetchLearnedTablesAdapts verifies the dashboard's view of the same fetch
-// carries the entry OID and index names it renders rows with.
-func TestFetchLearnedTablesAdapts(t *testing.T) {
+// TestLearnedTablesCarryTheEntryOIDAndItsIndexes pins what the module filter
+// reads out of the poller's answer.
+//
+// The dashboard used to consume these too, through an adapter that reshaped
+// them for a MIB-parsing generator. That generator is gone -- panels come from
+// the catalog now -- and the only remaining reader is the "does this module
+// have data?" filter, which needs the entry OID and nothing else. The adapter
+// went with it rather than being kept for one caller.
+func TestLearnedTablesCarryTheEntryOIDAndItsIndexes(t *testing.T) {
 	poller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"tables":{"1.3.6.1.2.1.2.2.1":{"entry_oid":"1.3.6.1.2.1.2.2.1",
 			"index_names":["ifIndex"],"column_oids":["1.3.6.1.2.1.2.2.1.10"],"sample_count":24}}}`))
 	}))
 	defer poller.Close()
 
-	tables := (&Server{goNetmonBaseURL: poller.URL}).fetchLearnedTables(context.Background())
+	tables := (&Server{goNetmonBaseURL: poller.URL}).learnedTables(context.Background())
 
 	table := tables[ifEntryOID]
 	if table == nil {

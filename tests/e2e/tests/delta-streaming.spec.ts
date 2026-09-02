@@ -30,7 +30,20 @@ test.use({
   },
 });
 
-type Frame = { query: string; series: number; bytes: number };
+// openFleetDevice sets the device selector's value and fires its change event.
+// The selector is populated by a separate load from the one that reveals the
+// fleet overview, so asking for a device before its option exists sets a value
+// the select does not have, fires a change nothing matches, and leaves the page
+// on no device at all -- which reads downstream as "nothing was subscribed".
+async function openDeviceById(page: Page, deviceId: number) {
+  await expect(
+    page.locator(`#dashboardDeviceSelect option[value="${deviceId}"]`),
+    `device ${deviceId} never appeared in the selector`,
+  ).toHaveCount(1, { timeout: 30000 });
+  await page.evaluate(id => (window as any).app.openFleetDevice(id), deviceId);
+}
+
+type Frame = { query: string; kind: string; series: number; bytes: number };
 
 async function serveWorkingTree(page: Page) {
   const assets: [string, string, string][] = [
@@ -49,16 +62,27 @@ async function serveWorkingTree(page: Page) {
   });
 }
 
-// watch records every reading the browser receives. Heartbeats are excluded:
-// they carry no data and one covers every steady query in a round.
+// watch records every reading the browser receives, of either kind.
+//
+// A reading arrives either whole (metric_snapshot) or as what changed
+// (metric_delta). Heartbeats are excluded: they carry no data and one covers
+// every steady query in a round.
+//
+// Both kinds are counted deliberately. Watching for one name only is how this
+// measurement came to pass while measuring nothing at all: the frames were
+// renamed and the filter matched none of them, so a test whose whole point is
+// that the wire is quiet reported a quiet wire because it had stopped looking.
 function watch(page: Page, frames: Frame[]) {
   page.on('websocket', ws => {
     ws.on('framereceived', f => {
       const payload = f.payload.toString();
       try {
         const msg = JSON.parse(payload);
-        if (msg.type !== 'metric_update') return;
-        frames.push({ query: msg.query, series: msg.metrics?.length || 0, bytes: payload.length });
+        if (msg.type !== 'metric_snapshot' && msg.type !== 'metric_delta') return;
+        const series = msg.type === 'metric_snapshot'
+          ? (msg.metrics?.length || 0)
+          : (msg.delta?.changed?.length || 0) + (msg.delta?.removed?.length || 0);
+        frames.push({ query: msg.query, kind: msg.type, series, bytes: payload.length });
       } catch { /* not a frame we measure */ }
     });
   });
@@ -82,7 +106,9 @@ test('an idle fleet overview streams nothing', async ({ page }) => {
 
   const bytes = frames.reduce((sum, f) => sum + f.bytes, 0);
   console.log(`\n=== fleet overview, ~4 rounds: ${frames.length} frames, ${bytes} bytes ===`);
-  for (const f of frames.slice(0, 5)) console.log(`  ${f.query} -> ${f.series} series, ${f.bytes} B`);
+  for (const f of frames.slice(0, 5)) {
+    console.log(`  ${f.kind} ${f.query} -> ${f.series} series, ${f.bytes} B`);
+  }
 
   // Nothing is selected, so nothing should be streaming. The overview has its
   // own status endpoint and does not need the metric stream at all.
@@ -106,7 +132,7 @@ test('a steady chart keeps advancing while its value holds', async ({ page }) =>
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#fleetOverview')).toBeVisible({ timeout: 30000 });
 
-  await page.evaluate(() => (window as any).app.openFleetDevice(9));
+  await openDeviceById(page, 9);
   await page.waitForTimeout(20000);
 
   // Count the points on every chart that has drawn, then leave it alone.
@@ -158,7 +184,7 @@ test('an open dashboard streams only what changed', async ({ page }) => {
 
   // lab-node-1-bmc is polled every 60s, so most five-second rounds have nothing
   // new to say about it.
-  await page.evaluate(() => (window as any).app.openFleetDevice(9));
+  await openDeviceById(page, 9);
   await page.waitForTimeout(20000);
 
   const settled = frames.length;

@@ -483,6 +483,17 @@ func (s *Server) refreshModuleObjects(name string) error {
 	if err := s.mibLoader.LoadModule(name); err != nil {
 		return &MIBRefreshError{Module: name, Err: err}
 	}
+
+	// What the catalog can describe has just changed, and the held copy is now
+	// one module out of date. Re-read it rather than waiting out the refresh
+	// interval, so the dashboard drawn straight after an import describes the
+	// module that was just imported.
+	//
+	// Detached from the request: an operator's browser closing the connection
+	// after the upload succeeded must not abandon the re-read, or the catalog
+	// stays stale until the timer comes round.
+	go s.RefreshCatalog(context.WithoutCancel(context.Background()))
+
 	return nil
 }
 

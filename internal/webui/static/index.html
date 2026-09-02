@@ -50,6 +50,34 @@
                     <span id="statusIndicator" class="status-dot offline"></span>
                     <span id="statusText">Disconnected</span>
                 </span>
+                <!-- The bell. Everything the UI said about a fault used to be
+                     a toast: shown once, for a few seconds, and then gone.
+                     This is the place that answers "is anything wrong right
+                     now" for a reader who was not watching the screen. -->
+                <div class="alarm-bell">
+                    <button id="alarmBellBtn" class="icon-btn" type="button"
+                            aria-haspopup="dialog" aria-expanded="false"
+                            aria-controls="alarmPanel"
+                            aria-label="Alarms" title="Alarms">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <path d="M8 1.5a3.6 3.6 0 0 0-3.6 3.6v2.2L3.2 10.1h9.6l-1.2-2.8V5.1A3.6 3.6 0 0 0 8 1.5Z"
+                                  stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                            <path d="M6.4 12a1.6 1.6 0 0 0 3.2 0" stroke="currentColor"
+                                  stroke-width="1.4" stroke-linecap="round"/>
+                        </svg>
+                        <span id="alarmBadge" class="alarm-badge" hidden></span>
+                    </button>
+
+                    <div id="alarmPanel" class="alarm-panel" role="dialog"
+                         aria-label="Triggered alarms" hidden>
+                        <div class="alarm-panel-head">
+                            <h3>Alarms</h3>
+                            <span id="alarmWatching" class="alarm-watching"></span>
+                        </div>
+                        <div id="alarmList" class="alarm-list"></div>
+                    </div>
+                </div>
+
                 <button id="themeToggle" class="icon-btn" type="button"
                         aria-label="Switch between light and dark theme" title="Toggle theme">
                     <svg class="icon-sun" width="16" height="16" viewBox="0 0 16 16" fill="none">
