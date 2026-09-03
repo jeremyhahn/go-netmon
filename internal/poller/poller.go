@@ -22,11 +22,21 @@ import (
 
 // Poller manages SNMP polling for multiple devices
 type Poller struct {
-	config     *config.Config
-	mibLoader  *loader.Loader
-	exporter   metrics.Exporter
-	pool       *snmp.Pool
-	workers    map[string]*worker
+	config    *config.Config
+	mibLoader *loader.Loader
+	exporter  metrics.Exporter
+	pool      *snmp.Pool
+	// registry is who owns each device name right now.
+	//
+	// ONE map, deliberately. It used to be two -- a worker map and a retiring
+	// map -- and "this name is free" was then two facts in two places, with
+	// nothing requiring a reader to consult both. Four check-then-act defects
+	// shipped in one branch against that split, each a correct fix that left
+	// the same seam one layer out, and the websocket hub reproduced it a fifth
+	// time in another package. A reader that consults this key alone gets a
+	// correct answer, because the intermediate state is a state of the entry
+	// rather than the absence of one thing beside the presence of another.
+	registry   map[string]*registration
 	resultChan chan *PollResult
 	logger     *slog.Logger
 	mu         sync.RWMutex
@@ -40,27 +50,51 @@ type Poller struct {
 	indexedRevision atomic.Uint64
 	refreshMu       sync.Mutex
 
-	// retiring holds one channel per device name currently being removed,
-	// closed when that removal has finished with the name.
-	//
-	// RemoveDevice cannot hold p.mu for its whole length -- closing an SNMP
-	// client waits for the request it has in flight, and the control plane must
-	// not stall behind a dead device. So the name leaves the worker map before
-	// its pool entry is retired, and without this a replacement registered in
-	// that window takes a client which the outgoing removal then closes. The
-	// replacement keeps the closed pointer, ensureClient will not reacquire it
-	// because the field is non-nil, and the device polls a dead connection for
-	// good.
-	//
-	// A per-NAME gate rather than a lock, so removing one device still cannot
-	// delay registering another.
-	retiring map[string]chan struct{}
-
 	// baseCtx is the lifetime workers run under. It is deliberately not the
 	// context of whichever API request added a device: a worker outlives the
 	// call that created it, and inheriting a request context would stop it the
 	// moment that request returned.
 	baseCtx context.Context
+}
+
+// registration is one device name's entry in the poller, and the single answer
+// to who owns that name.
+//
+// Three states, and the ABSENCE of a fourth is the point:
+//
+//	key absent                        the name is free
+//	worker != nil, retired == nil     the name is live
+//	worker == nil, retired != nil     the name is being retired
+//
+// There is no way to spell "gone from one place, present in another", because
+// there is only one place. That is what makes the ownership rule construction
+// rather than discipline: a reader consulting the key gets a whole answer, and
+// cannot get half of one by forgetting a second map.
+type registration struct {
+	// worker polls the device. nil once a removal has taken the name.
+	worker *worker
+
+	// retired is non-nil while a removal holds the name, and is closed when
+	// that removal has finished with it -- after the pool entry is gone, not
+	// before, so a waiter that wakes finds the name genuinely free.
+	retired chan struct{}
+}
+
+// live reports whether a registration is a worker rather than a retirement.
+func (r *registration) live() bool { return r != nil && r.worker != nil }
+
+// liveWorker returns the worker registered for a name, or nil when the name is
+// free or being retired. The caller holds p.mu.
+//
+// A name being retired has no worker to answer for: its worker has stopped and
+// its client is being closed, so reporting it would describe something that is
+// on its way out as though it were polling.
+func (p *Poller) liveWorker(name string) *worker {
+	entry := p.registry[name]
+	if !entry.live() {
+		return nil
+	}
+	return entry.worker
 }
 
 // Option configures a Poller at construction.
@@ -204,7 +238,7 @@ func NewWithExporter(cfg *config.Config, mibLoader *loader.Loader, exporter metr
 		mibLoader:  mibLoader,
 		exporter:   exporter,
 		pool:       snmp.NewPool(timeout, retries),
-		workers:    make(map[string]*worker),
+		registry:   make(map[string]*registration),
 		resultChan: make(chan *PollResult, 100),
 		logger:     logging.Discard(),
 		stopChan:   make(chan struct{}),
@@ -282,8 +316,10 @@ func (p *Poller) Stop() error {
 	//
 	// After wg.Wait, which means no worker is left to republish.
 	p.mu.Lock()
-	for _, w := range p.workers {
-		w.health.forget()
+	for _, entry := range p.registry {
+		if entry.live() {
+			entry.worker.health.forget()
+		}
 	}
 	p.mu.Unlock()
 
@@ -380,7 +416,7 @@ func (p *Poller) startWorker(device *config.Device) error {
 	}
 
 	// Store worker (caller must hold p.mu lock)
-	p.workers[device.Name] = w
+	p.registry[device.Name] = &registration{worker: w}
 
 	// Start worker goroutine. ctx bounds the work this call may do; the worker
 	// itself runs under the poller's own lifetime.
@@ -747,8 +783,12 @@ func (p *Poller) GetWorkerStatus() map[string]WorkerStatus {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	status := make(map[string]WorkerStatus, len(p.workers))
-	for name, w := range p.workers {
+	status := make(map[string]WorkerStatus, len(p.registry))
+	for name, entry := range p.registry {
+		if !entry.live() {
+			continue
+		}
+		w := entry.worker
 		status[name] = p.statusOf(w)
 	}
 
@@ -764,8 +804,8 @@ func (p *Poller) WorkerStatus(deviceName string) (WorkerStatus, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	w, exists := p.workers[deviceName]
-	if !exists {
+	w := p.liveWorker(deviceName)
+	if w == nil {
 		return WorkerStatus{}, false
 	}
 	return p.statusOf(w), true
@@ -848,11 +888,19 @@ func (p *Poller) AddDevice(ctx context.Context, device *config.Device) error {
 			return fmt.Errorf("poller is stopped")
 		}
 
-		retired, retiring := p.retiring[device.Name]
-		if !retiring {
+		// ONE lookup answers the whole question. Absent is free, a worker is
+		// taken, a retirement is wait -- and there is no fourth reading to
+		// forget, which is what the two maps kept producing.
+		entry, held := p.registry[device.Name]
+		if !held {
 			break
 		}
+		if entry.live() {
+			p.mu.Unlock()
+			return fmt.Errorf("device %s already exists", device.Name)
+		}
 
+		retired := entry.retired
 		p.mu.Unlock()
 		select {
 		case <-retired:
@@ -862,10 +910,6 @@ func (p *Poller) AddDevice(ctx context.Context, device *config.Device) error {
 		p.mu.Lock()
 	}
 	defer p.mu.Unlock()
-
-	if _, exists := p.workers[device.Name]; exists {
-		return fmt.Errorf("device %s already exists", device.Name)
-	}
 
 	// Start worker for the new device
 	return p.startWorker(device)
@@ -880,26 +924,26 @@ func (p *Poller) AddDevice(ctx context.Context, device *config.Device) error {
 // behind one dead box.
 func (p *Poller) RemoveDevice(deviceName string) error {
 	p.mu.Lock()
-	w, exists := p.workers[deviceName]
-	if !exists {
+	w := p.liveWorker(deviceName)
+	if w == nil {
 		p.mu.Unlock()
 		return fmt.Errorf("device %s not found", deviceName)
 	}
-	delete(p.workers, deviceName)
 
-	// The name is now absent from the worker map but its pool entry is still
-	// live. Claim it until that is no longer true.
+	// Live becomes retiring in ONE write. The worker leaves and the claim
+	// arrives together, so there is no instant in which the name looks free to
+	// anybody -- which is what the two maps could not promise, however
+	// carefully both were updated.
 	retired := make(chan struct{})
-	if p.retiring == nil {
-		p.retiring = make(map[string]chan struct{})
-	}
-	p.retiring[deviceName] = retired
+	p.registry[deviceName] = &registration{retired: retired}
 	p.mu.Unlock()
 
 	defer func() {
 		p.mu.Lock()
-		delete(p.retiring, deviceName)
+		delete(p.registry, deviceName)
 		p.mu.Unlock()
+		// Closed after the key is gone, so a waiter that wakes finds the name
+		// free rather than racing the delete it was waiting for.
 		close(retired)
 	}()
 

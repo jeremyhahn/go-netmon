@@ -733,7 +733,7 @@ func TestRemovalWaitsForACommitInFlight(t *testing.T) {
 	t.Cleanup(func() { deviceUnreachable.DeleteLabelValues(device) })
 
 	p.mu.RLock()
-	w := p.workers[device]
+	w := p.liveWorker(device)
 	p.mu.RUnlock()
 	if w == nil {
 		t.Fatal("no worker was registered for the fixture device")

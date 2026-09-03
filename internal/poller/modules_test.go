@@ -330,7 +330,7 @@ func TestAddDeviceLoadsTheDevicesModules(t *testing.T) {
 	}
 
 	p.mu.RLock()
-	w := p.workers[device.Name]
+	w := p.liveWorker(device.Name)
 	p.mu.RUnlock()
 	if w == nil {
 		t.Fatal("no worker was started for the device")

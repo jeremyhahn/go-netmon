@@ -456,7 +456,7 @@ func TestAddDeviceWaitsForTheSameNameToFinishRetiring(t *testing.T) {
 	}
 
 	p.mu.RLock()
-	w := p.workers[device]
+	w := p.liveWorker(device)
 	p.mu.RUnlock()
 	if w == nil {
 		t.Fatal("no worker was registered for the fixture device")
@@ -472,7 +472,7 @@ func TestAddDeviceWaitsForTheSameNameToFinishRetiring(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		p.mu.RLock()
-		_, stillListed := p.workers[device]
+		stillListed := p.liveWorker(device) != nil
 		p.mu.RUnlock()
 		if !stillListed {
 			break
@@ -558,7 +558,7 @@ func TestAddDeviceNeverInstallsAWorkerOntoAClaimedName(t *testing.T) {
 		}
 
 		p.mu.RLock()
-		w := p.workers[device]
+		w := p.liveWorker(device)
 		p.mu.RUnlock()
 		if w == nil {
 			t.Fatalf("iteration %d: no worker was registered", i)
@@ -587,8 +587,13 @@ func TestAddDeviceNeverInstallsAWorkerOntoAClaimedName(t *testing.T) {
 		deadline := time.Now().Add(raceObservationWindow)
 		for time.Now().Before(deadline) {
 			p.mu.RLock()
-			_, claimed := p.retiring[device]
-			_, listed := p.workers[device]
+			// "Claimed" means a REMOVAL holds the name, not merely that the
+			// key exists -- a live worker is an entry too. Reading the key's
+			// presence alone makes this condition true of the healthy state,
+			// which is the probe answering a question next to the one asked.
+			entry := p.registry[device]
+			claimed := entry != nil && entry.retired != nil
+			listed := entry.live()
 			p.mu.RUnlock()
 			if claimed && listed {
 				violated = true
