@@ -62,6 +62,31 @@ const ALARM_POLL_INTERVAL = 15000;
 // does not clip one through the middle.
 const PANEL_ROWS_VISIBLE = 8;
 
+// PANEL_POINT_CAP bounds the points one series keeps. A panel of forty rows
+// would otherwise hold forty times the history for the same span on screen.
+const PANEL_POINT_CAP = 200;
+
+// BACKFILL_RANGE is the window a chart asks for when its panel is registered.
+// Six hours at the endpoint's 30-second step is more points than
+// PANEL_POINT_CAP keeps, and the newest are the ones kept -- so a chart opens
+// showing roughly the span the live ticker would have taken sixteen minutes to
+// accumulate, rather than a blank plot.
+const BACKFILL_RANGE = '6h';
+
+// DEFAULT_SELECTED_ROWS is how many rows a table opens with charted.
+//
+// Chosen, not derived. Zero leaves an empty chart area, which is exactly how
+// the page looks broken today and is the failure being fixed; "all" is the
+// hairball being replaced. Three is enough to show that selection drives the
+// charts without teaching a wrong default, and it is taken from the top of the
+// table's own order so two people opening one device see the same three.
+const DEFAULT_SELECTED_ROWS = 3;
+
+// MAX_SELECTED_ROWS bounds what "select more" can do to a chart. A readability
+// choice rather than a performance one: the charts draw from a stream that is
+// already arriving, so the cost does not scale with the selection.
+const MAX_SELECTED_ROWS = 8;
+
 // Labels the bell does not repeat in an alarm's detail line: the device has its
 // own line, and the rest are bookkeeping rather than anything to act on.
 const ALARM_LABELS_HIDDEN = new Set(['__name__', 'device', 'source', 'instance', 'job']);
@@ -122,6 +147,16 @@ class MonitoringApp {
     constructor() {
         this.ws = null;
         this.charts = {};
+        // Range reads that resolved before their card had an element to draw
+        // on, keyed by that element's id and applied when it is built.
+        this.pendingBackfill = new Map();
+
+        // Row tables: what each row currently reads, and which rows the reader
+        // has charted. Keyed by "<device>-<module>-<tableId>".
+        this.tableRows = new Map();
+        this.tableSelection = new Map();
+        this.tableFilter = new Map();
+        this.paneTables = new Map();
         // The most recent reading for each subscribed query, and the sequence
         // number that names it: Map(query -> { seq, byKey: Map(key -> sample) }).
         //
@@ -222,6 +257,7 @@ class MonitoringApp {
         this.loadDevices();
         // The MIB browser loads when it is first opened, not on every page load.
         this.setupEventListeners();
+        this.bindRowTables();
         this.setupModals();
 
         // The landing surface is the fleet, not an empty frame waiting for a
@@ -6852,7 +6888,18 @@ class MonitoringApp {
         const put = (name, panel) => {
             let held = byModule.get(name);
             if (!held) {
-                held = { mib: name, panels: [], warnings: noteFor(name) };
+                held = {
+                    mib: name,
+                    panels: [],
+                    warnings: noteFor(name),
+                    // The tables belonging to this module, carried through the
+                    // split. Rebuilding a per-module payload and forgetting a
+                    // top-level field is how the server can send an arrangement
+                    // the browser never sees: the panels arrived, the tables did
+                    // not, and the pane rendered exactly as it did before.
+                    tables: (dashboard.tables || []).filter(table =>
+                        (table.module || UNATTRIBUTED_MODULE) === name)
+                };
                 byModule.set(name, held);
             }
             held.panels.push(panel);
@@ -7219,6 +7266,9 @@ class MonitoringApp {
             <article class="panel chart-container is-empty">
                 ${this.panelHeadMarkup(panel)}
                 <div id="${chartId}" class="chart-canvas"></div>
+                <div class="chart-stale" hidden>
+                    <span class="chart-stale-text"></span>
+                </div>
                 <div class="chart-empty">
                     <span class="chart-empty-title">Waiting for data…</span>
                     <span class="chart-empty-detail">Listening for the first sample.</span>
@@ -7280,6 +7330,14 @@ class MonitoringApp {
             html += '</div>';
         }
 
+        // The rows come first, because they are what a reader is looking for:
+        // which interface, and what does it say. The charts under them answer
+        // "and what has it been doing", for the rows picked here.
+        const tables = dashboard.tables || [];
+        for (const table of tables) {
+            html += this.rowTableMarkup(deviceId, mibName, table, panels);
+        }
+
         if (plots.length > 0) {
             html += this.sectionHeadMarkup('Measurements', plots.length,
                 'Numbers over time. A counter is drawn as its rate.');
@@ -7300,6 +7358,7 @@ class MonitoringApp {
         }
 
         tabPane.innerHTML = html;
+        this.paneTables.set(`${deviceId}-${mibName}`, { tables, panels });
 
         // Visibility belongs to .tab-pane.active. Every MIB is rendered up
         // front, so forcing an inline display here stacked all of them on the
@@ -7381,6 +7440,246 @@ class MonitoringApp {
         return `panel-${deviceId}-${mibName}-${this.slug(panel.id)}`;
     }
 
+    // ------------------------------------------------------------------
+    // Row tables
+    //
+    // A device's indexed metrics are rows, not a wall of series. Before this,
+    // every interface of a switch was drawn as its own line behind a scrolling
+    // legend -- unreadable on a device with hundreds of them, and slow for the
+    // same reason, because the page asked for every series of every panel.
+    //
+    // The table lists the rows with their CURRENT values, which is one sample
+    // each, and the charts below draw only the rows the reader picks. So the
+    // expensive thing -- history across hundreds of series -- is never fetched,
+    // and the page's cost stops scaling with how many interfaces a device has.
+    // ------------------------------------------------------------------
+
+    tableKey(deviceId, mibName, table) {
+        return `${deviceId}-${mibName}-${this.slug(table.id)}`;
+    }
+
+    // tableColumns are the columns shown by default: the server decided which,
+    // from the catalog's kinds and from what the rows currently read.
+    tableColumns(table, panels) {
+        const byMetric = new Map(panels.map(panel => [panel.metric, panel]));
+        return (table.columns || [])
+            .filter(column => column.default)
+            .map(column => ({ column, panel: byMetric.get(column.metric) }))
+            .filter(entry => entry.panel);
+    }
+
+    // tableSummary is the columns every row agrees about, said once.
+    //
+    // They are not hidden. A column that vanished would make its absence carry
+    // meaning -- uniform, deselected, or not reported at all are three different
+    // reasons and one appearance -- so a value the whole table shares is stated
+    // here, and moves back into the table the moment a row disagrees.
+    tableSummary(table, panels) {
+        const byMetric = new Map(panels.map(panel => [panel.metric, panel]));
+        return (table.columns || [])
+            .filter(column => !column.varies && column.value !== undefined && column.value !== '')
+            .map(column => {
+                const panel = byMetric.get(column.metric);
+                const name = panel ? (panel.object || panel.metric) : column.metric;
+                return `${name} ${column.value}`;
+            });
+    }
+
+    rowTableMarkup(deviceId, mibName, table, panels) {
+        const key = this.tableKey(deviceId, mibName, table);
+        const columns = this.tableColumns(table, panels);
+        if (columns.length === 0) return '';
+
+        const summary = this.tableSummary(table, panels);
+        const heads = columns.map(entry =>
+            `<th scope="col">${this.escapeHtml(entry.panel.object || entry.panel.metric)}</th>`).join('');
+
+        return `
+            <section class="row-table" data-table-key="${this.escapeAttr(key)}">
+                <div class="row-table-controls">
+                    <label class="row-table-filter">
+                        <span class="visually-hidden">Filter rows</span>
+                        <input type="search" class="row-table-search"
+                               placeholder="Filter rows…"
+                               data-table-key="${this.escapeAttr(key)}">
+                    </label>
+                    <span class="row-table-count" aria-live="polite"></span>
+                </div>
+                ${summary.length > 0
+                    ? `<p class="row-table-summary">All rows: ${summary.map(s => this.escapeHtml(s)).join(' · ')}</p>`
+                    : ''}
+                <table class="row-table-grid">
+                    <thead>
+                        <tr>
+                            <th scope="col" class="row-table-pick">Chart</th>
+                            <th scope="col">Row</th>
+                            ${heads}
+                        </tr>
+                    </thead>
+                    <tbody data-table-body="${this.escapeAttr(key)}">
+                        <tr class="row-table-waiting"><td colspan="${columns.length + 2}">Waiting for the first reading…</td></tr>
+                    </tbody>
+                </table>
+            </section>
+        `;
+    }
+
+    // recordTableRow notes what one row of one table currently reads.
+    recordTableRow(key, rowKey, name, metric, text) {
+        let rows = this.tableRows.get(key);
+        if (!rows) {
+            rows = new Map();
+            this.tableRows.set(key, rows);
+        }
+        let row = rows.get(rowKey);
+        if (!row) {
+            row = { name, values: new Map() };
+            rows.set(rowKey, row);
+        }
+        if (name) row.name = name;
+        row.values.set(metric, text);
+    }
+
+    // selectionFor returns the rows charted for a table, seeding the default on
+    // first use so the charts are never empty on arrival.
+    selectionFor(key, ordered) {
+        let selected = this.tableSelection.get(key);
+        if (!selected) {
+            selected = new Set(ordered.slice(0, DEFAULT_SELECTED_ROWS));
+            this.tableSelection.set(key, selected);
+        }
+        return selected;
+    }
+
+    // renderTableBody draws the rows, in name order, filtered by the search box.
+    renderTableBody(deviceId, mibName, table, panels) {
+        const key = this.tableKey(deviceId, mibName, table);
+        const body = document.querySelector(`[data-table-body="${CSS.escape(key)}"]`);
+        if (!body) return;
+
+        const columns = this.tableColumns(table, panels);
+        const rows = this.tableRows.get(key) || new Map();
+        // Ordered by the name the reader sees, and numerically within it, so
+        // eth10 follows eth9 rather than eth1.
+        const ordered = [...rows.keys()].sort((a, b) =>
+            String(rows.get(a).name).localeCompare(String(rows.get(b).name), undefined,
+                { numeric: true, sensitivity: 'base' }));
+        const selected = this.selectionFor(key, ordered);
+
+        const needle = (this.tableFilter.get(key) || '').toLowerCase();
+        const visible = ordered.filter(rowKey =>
+            needle === '' || String(rows.get(rowKey).name).toLowerCase().includes(needle));
+
+        const count = document.querySelector(
+            `[data-table-key="${CSS.escape(key)}"] .row-table-count`);
+        if (count) {
+            count.textContent = needle
+                ? `${visible.length} of ${ordered.length} rows · ${selected.size} charted`
+                : `${ordered.length} rows · ${selected.size} charted`;
+        }
+
+        if (visible.length === 0) {
+            body.innerHTML = `<tr class="row-table-waiting"><td colspan="${columns.length + 2}">${
+                ordered.length === 0 ? 'Waiting for the first reading…' : 'No row matches that filter.'
+            }</td></tr>`;
+            return;
+        }
+
+        body.innerHTML = visible.map(rowKey => {
+            const row = rows.get(rowKey);
+            const picked = selected.has(rowKey);
+            const cells = columns.map(entry =>
+                `<td>${this.escapeHtml(row.values.get(entry.column.metric) ?? '—')}</td>`).join('');
+            return `
+                <tr class="${picked ? 'is-charted' : ''}">
+                    <td class="row-table-pick">
+                        <input type="checkbox" ${picked ? 'checked' : ''}
+                               data-table-key="${this.escapeAttr(key)}"
+                               data-row-key="${this.escapeAttr(rowKey)}"
+                               aria-label="Chart ${this.escapeAttr(row.name)}">
+                    </td>
+                    <th scope="row">${this.escapeHtml(row.name)}</th>
+                    ${cells}
+                </tr>
+            `;
+        }).join('');
+    }
+
+    // bindRowTables wires the table's two controls once, on the document, so a
+    // pane re-render does not have to re-attach anything.
+    bindRowTables() {
+        document.addEventListener('change', event => {
+            const box = event.target.closest('input[type="checkbox"][data-row-key]');
+            if (!box) return;
+            this.toggleChartedRow(box.dataset.tableKey, box.dataset.rowKey, box.checked, box);
+        });
+
+        document.addEventListener('input', event => {
+            const search = event.target.closest('.row-table-search');
+            if (!search) return;
+            this.tableFilter.set(search.dataset.tableKey, search.value.trim());
+            this.redrawTable(search.dataset.tableKey);
+        });
+    }
+
+    // toggleChartedRow adds or removes one row from what the charts draw.
+    //
+    // Bounded, because "select all" would rebuild the hairball this replaced
+    // through the new control. Refusing is said out loud rather than silently
+    // ignoring the click, which would read as the checkbox being broken.
+    toggleChartedRow(key, rowKey, wanted, box) {
+        const selected = this.tableSelection.get(key) || new Set();
+        if (wanted) {
+            if (selected.size >= MAX_SELECTED_ROWS) {
+                if (box) box.checked = false;
+                this.showNotification(
+                    `Charting is limited to ${MAX_SELECTED_ROWS} rows at once. Clear one to add another.`,
+                    'warning');
+                return;
+            }
+            selected.add(rowKey);
+        } else {
+            selected.delete(rowKey);
+        }
+        this.tableSelection.set(key, selected);
+        this.redrawTable(key);
+        this.redrawChartsFor(key);
+    }
+
+    redrawTable(key) {
+        for (const [paneKey, pane] of this.paneTables) {
+            const [deviceId, ...rest] = paneKey.split('-');
+            const mibName = rest.join('-');
+            for (const table of pane.tables) {
+                if (this.tableKey(deviceId, mibName, table) === key) {
+                    this.renderTableBody(deviceId, mibName, table, pane.panels);
+                }
+            }
+        }
+    }
+
+    // redrawChartsFor repaints the charts of a table whose selection changed,
+    // from data already held: picking a row shows its history immediately
+    // rather than starting it from the next tick.
+    redrawChartsFor(key) {
+        for (const [paneKey, pane] of this.paneTables) {
+            const [deviceId, ...rest] = paneKey.split('-');
+            const mibName = rest.join('-');
+            for (const table of pane.tables) {
+                if (this.tableKey(deviceId, mibName, table) !== key) continue;
+                for (const column of table.columns || []) {
+                    const panel = pane.panels.find(p => p.metric === column.metric);
+                    if (!panel) continue;
+                    const chart = this.charts[this.panelElementId(deviceId, mibName, panel)];
+                    if (chart && chart._panelSeries && chart._panelSeries.size > 0) {
+                        chart._lastUpdate = 0;
+                        chart.setOption(this.buildPanelOption(chart, panel), true);
+                    }
+                }
+            }
+        }
+    }
+
     // slug reduces a panel id to something usable as a DOM id.
     slug(value) {
         return String(value).replace(/[^A-Za-z0-9_-]/g, '_');
@@ -7417,6 +7716,15 @@ class MonitoringApp {
             } else {
                 subscription.metricQueries.add(panel.query);
                 this.initializeEmptyChart(elementId, panel.object || panel.metric);
+                // Fetched when the panel is REGISTERED, not when its first
+                // sample arrives. A chart with no live data yet is exactly the
+                // chart that needs history, and hanging this off the first
+                // sample meant waiting a tick to start asking -- or, for a
+                // series not currently reporting, never asking. Not awaited:
+                // live points draw as they arrive and the history is merged
+                // behind them whenever it lands.
+                this.backfillPanel(target).catch(error =>
+                    console.warn(`backfill for ${panel.title}:`, error));
             }
             subscription.objects.set(panel.query, target);
         }
@@ -7474,6 +7782,56 @@ class MonitoringApp {
             .join('/');
     }
 
+    // feedTables records what a panel's rows currently read, for any table this
+    // panel is a column of.
+    //
+    // The same stream that draws the charts fills the table: one current value
+    // per row per tick is exactly what a table of current values wants, so
+    // there is no second fetch and nothing polls.
+    feedTables(target, metrics) {
+        const panel = target.panel;
+        if (!panel || !panel.index_labels || panel.index_labels.length === 0) return;
+
+        for (const [paneKey, pane] of this.paneTables) {
+            if (!pane.tables.some(table =>
+                (table.columns || []).some(column => column.metric === panel.metric))) {
+                continue;
+            }
+            const [deviceId, ...rest] = paneKey.split('-');
+            const mibName = rest.join('-');
+
+            for (const table of pane.tables) {
+                if (!(table.columns || []).some(column => column.metric === panel.metric)) continue;
+                const key = this.tableKey(deviceId, mibName, table);
+                for (const metric of metrics) {
+                    const labels = metric.metric || {};
+                    const rowKey = this.seriesKey(panel, labels);
+                    if (!rowKey) continue;
+                    const text = panel.value_label
+                        ? (labels[panel.value_label] ?? '')
+                        : this.formatPanelValue(panel, metric.value);
+                    this.recordTableRow(key, rowKey, this.seriesName(panel, labels),
+                        panel.metric, text);
+                }
+                this.renderTableBody(deviceId, mibName, table, pane.panels);
+            }
+        }
+    }
+
+    // chartedRows is the set of rows a panel may draw, or null when the panel
+    // belongs to no table and draws everything.
+    chartedRows(panel) {
+        for (const [paneKey, pane] of this.paneTables) {
+            for (const table of pane.tables) {
+                if (!(table.columns || []).some(column => column.metric === panel.metric)) continue;
+                const [deviceId, ...rest] = paneKey.split('-');
+                const key = this.tableKey(deviceId, rest.join('-'), table);
+                return this.tableSelection.get(key) || null;
+            }
+        }
+        return null;
+    }
+
     // updatePanel routes one query's result to the widget that asked for it.
     updatePanel(target, metrics, time) {
         // A reading with no series in it is an answer, not the absence of one:
@@ -7490,6 +7848,7 @@ class MonitoringApp {
             this.updatePanelTile(target, metrics);
             return;
         }
+        this.feedTables(target, metrics);
         this.updatePanelChart(target, metrics, time);
     }
 
@@ -7511,13 +7870,74 @@ class MonitoringApp {
             return;
         }
 
+        // "No current reading" and "no history" are different facts, and this
+        // used to collapse them: the series was cleared, so a metric that
+        // stopped reporting lost its entire plotted past -- the chart
+        // destroying the only information it had left, at the moment that
+        // information became the most valuable thing on the page. History
+        // exists for the gap.
+        //
+        // Keeping the line alone would be worse than the bug it fixes: a
+        // populated chart reads as current, so a device that went quiet an
+        // hour ago would look healthy. That is absence rendered as health,
+        // which is the fault this stack has spent a long time removing.
+        //
+        // So: keep the line, and SAY the feed is empty. A chart with nothing
+        // to keep still falls through to the terminal state, because "last
+        // known" is not a thing to render when there is no last known.
         const chart = this.charts[target.elementId];
+        const plotted = chart && chart._panelSeries && chart._panelSeries.size > 0;
+        if (plotted) {
+            this.markChartStale(target.elementId, this.newestPlotted(chart));
+            return;
+        }
         if (chart && chart._panelSeries) {
             chart._panelSeries.clear();
             chart._hasData = false;
             chart.clear();
         }
         this.markChartNoData(target.elementId);
+    }
+
+    // newestPlotted is the timestamp of the most recent point on any series,
+    // which is what "last known" means for the card as a whole.
+    newestPlotted(chart) {
+        let newest = 0;
+        for (const row of chart._panelSeries.values()) {
+            const last = row.points[row.points.length - 1];
+            if (last && last[0] > newest) newest = last[0];
+        }
+        return newest;
+    }
+
+    // markChartStale says the plot is last-known rather than current.
+    //
+    // The label carries the STATE rather than asserting a condition: a reader
+    // sees "Last known 14:03:12 - no current reading", which is a fact about
+    // what they are looking at, not a warning they have to interpret.
+    markChartStale(chartId, newest) {
+        const card = this.chartCard(chartId);
+        if (!card) return;
+
+        card.classList.add('is-stale');
+        const banner = card.querySelector('.chart-stale');
+        const text = card.querySelector('.chart-stale-text');
+        if (text) {
+            text.textContent = newest
+                ? `Last known ${new Date(newest).toLocaleTimeString()} — no current reading`
+                : 'No current reading';
+        }
+        if (banner) banner.hidden = false;
+    }
+
+    // clearChartStale takes the label off when readings resume.
+    clearChartStale(chartId) {
+        const card = this.chartCard(chartId);
+        if (!card) return;
+
+        card.classList.remove('is-stale');
+        const banner = card.querySelector('.chart-stale');
+        if (banner) banner.hidden = true;
     }
 
     // updatePanelTile renders the rows of a state or text panel.
@@ -7676,7 +8096,7 @@ class MonitoringApp {
             // The same window every series has always used. A panel of forty
             // rows would otherwise hold forty times the history for the same
             // span of time on screen.
-            if (row.points.length > 200) row.points.shift();
+            if (row.points.length > PANEL_POINT_CAP) row.points.shift();
         }
 
         if (!chart._hasData) {
@@ -7685,6 +8105,7 @@ class MonitoringApp {
             chart._timeBand = netmonCharts.timeBand(0);
             chart._spanMs = 0;
         }
+        this.clearChartStale(target.elementId);
 
         // Throttled for the same reason single-series charts are: a tick is
         // five seconds and a redraw of forty lines is not free.
@@ -7695,9 +8116,106 @@ class MonitoringApp {
         chart.setOption(this.buildPanelOption(chart, panel), true);
     }
 
+    // backfillPanel gives a chart the history it would otherwise spend a minute
+    // accumulating.
+    //
+    // Every chart on this page started EMPTY and gained one point per series
+    // per five-second tick: blank at t=0, one dot at t=5, a hairline at t=10,
+    // and about a minute before it read as a line. That is half of "the
+    // dashboard takes an extremely long time to load" -- the other half being
+    // how many series are drawn -- and it is neither a slow query nor a slow
+    // render. There was no query for history at all: the stream is an INSTANT
+    // read and updatePanelChart appends what it returns. loadChartData was
+    // written against the range endpoint and never called from anywhere.
+    async backfillPanel(target) {
+        const panel = target.panel;
+        if (!panel || !panel.query) return;
+
+        const response = await fetch('/api/metrics/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ metric: panel.query, time_range: BACKFILL_RANGE })
+        });
+        if (!response.ok) {
+            throw new Error(`${response.status} ${await response.text()}`);
+        }
+
+        const series = await response.json();
+        if (!Array.isArray(series) || series.length === 0) return;
+
+        const chart = this.chartFor(target.elementId);
+        if (!chart) {
+            // The card has no element to draw on yet. Held rather than
+            // discarded: this request resolves in milliseconds and the pane is
+            // rendered a frame or two later, so dropping it loses the history
+            // for the life of the page -- and only sometimes, which is the
+            // worst way for it to be wrong. chartFor applies it when the
+            // instance is built. One entry per pending card, deleted on use.
+            this.pendingBackfill.set(target.elementId, { panel, series });
+            return;
+        }
+        this.applyBackfill(chart, target.elementId, panel, series);
+    }
+
+    // applyBackfill merges one range read into a chart's series.
+    //
+    // Merged rather than assigned, because the first live points can arrive
+    // while the request is in flight. Assigning would discard them -- the
+    // newest readings on the chart, thrown away by the thing fetching the
+    // oldest -- so each series is concatenated and re-sorted, and a timestamp
+    // already plotted is not drawn twice.
+    applyBackfill(chart, elementId, panel, series) {
+        if (!chart._panelSeries) chart._panelSeries = new Map();
+
+        for (const line of series) {
+            const labels = line.labels || {};
+            const key = this.seriesKey(panel, labels) || panel.title;
+            const history = (line.values || [])
+                .map(point => [Number(point[0]) * 1000, parseFloat(point[1])])
+                .filter(point => Number.isFinite(point[0]) && Number.isFinite(point[1]));
+            if (history.length === 0) continue;
+
+            let row = chart._panelSeries.get(key);
+            if (!row) {
+                row = { name: this.seriesName(panel, labels), points: [] };
+                chart._panelSeries.set(key, row);
+            }
+
+            // Whatever is already plotted keeps its timestamp: it came from the
+            // live stream, which is the same reading by a shorter path.
+            const plotted = new Set(row.points.map(point => point[0]));
+            row.points = history
+                .filter(point => !plotted.has(point[0]))
+                .concat(row.points)
+                .sort((a, b) => a[0] - b[0]);
+            if (row.points.length > PANEL_POINT_CAP) {
+                row.points = row.points.slice(-PANEL_POINT_CAP);
+            }
+        }
+
+        if (!chart._hasData) {
+            this.revealChart(elementId);
+            chart._hasData = true;
+            chart._timeBand = netmonCharts.timeBand(0);
+            chart._spanMs = 0;
+        }
+        chart._lastUpdate = 0;
+        chart.setOption(this.buildPanelOption(chart, panel), true);
+    }
+
     // buildPanelOption is the ECharts option for a multi-series panel.
     buildPanelOption(chart, panel) {
-        const keys = [...chart._panelSeries.keys()].sort();
+        // Only the rows the reader picked in the table above.
+        //
+        // Drawing every row is what made this page unusable: hundreds of
+        // interfaces became hundreds of lines behind a scrolling legend, and
+        // the legend was the only way to tell them apart. The data for the rest
+        // is still held -- picking another row draws it immediately, with the
+        // history it already has -- it is simply not on the plot.
+        const charted = this.chartedRows(panel);
+        const keys = [...chart._panelSeries.keys()]
+            .filter(key => !charted || charted.size === 0 || charted.has(key))
+            .sort();
 
         // The same rule the tiles use: a name two rows share is qualified with
         // the index that tells them apart.
@@ -7956,7 +8474,15 @@ class MonitoringApp {
         if (title === undefined) return null;
 
         this.pendingCharts.delete(chartId);
-        return this.buildChart(chartId, title);
+        const chart = this.buildChart(chartId, title);
+
+        // History that arrived before this card had an element to draw on.
+        const held = this.pendingBackfill.get(chartId);
+        if (chart && held) {
+            this.pendingBackfill.delete(chartId);
+            this.applyBackfill(chart, chartId, held.panel, held.series);
+        }
+        return chart;
     }
 
     // buildChart creates the ECharts instance for a registered card.

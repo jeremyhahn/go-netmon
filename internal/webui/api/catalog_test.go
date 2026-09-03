@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -31,6 +32,25 @@ type catalogFixture struct {
 
 	// Device is what the device reports, for the "which panels?" question.
 	Device []string
+
+	// Values is what each metric currently reads, one entry per ROW, for the
+	// "which columns differentiate anything?" question. A metric absent from
+	// here reports no rows, which is what a device that does not carry it looks
+	// like -- so a test that cares about column defaults has to say so, and one
+	// that does not is unaffected.
+	Values map[string][]float64
+
+	// Unreadable is how many EXTRA rows a metric returns that carry no usable
+	// value -- Prometheus's "NaN", which is how it encodes an undefined result.
+	// The decoder drops those, so a fixture that cannot emit them cannot state
+	// the case where a column's rows are partly unreadable.
+	Unreadable map[string]int
+
+	// Labels is what an INFO metric's rows read. An info metric's sample is
+	// always 1 and its words are in the "value" label, so a fixture that can
+	// only set samples cannot express two rows that differ -- which is exactly
+	// the case a column rule reading samples gets wrong.
+	Labels map[string][]string
 
 	// Fail names the queries to answer with a server error, or holds "*" for
 	// all of them. Each read degrades on its own, and there is no other way to
@@ -110,6 +130,52 @@ func catalogClient(t *testing.T, f catalogFixture) *PrometheusClient {
 				rows = append(rows, map[string]interface{}{"__name__": m})
 			}
 			write(w, rows)
+		case strings.Contains(q, promname.NameLabel+`=~"`):
+			// The column-value read: one query carrying every column of a
+			// table as a __name__ alternation, answered with one series per
+			// row per metric. Values, not names, so this cannot reuse write().
+			result := []map[string]interface{}{}
+			for _, metric := range f.Device {
+				if !strings.Contains(q, metric) {
+					continue
+				}
+				for row, value := range f.Values[metric] {
+					result = append(result, map[string]interface{}{
+						"metric": map[string]interface{}{
+							"__name__": metric,
+							"ifindex":  strconv.Itoa(row + 1),
+						},
+						"value": []interface{}{1756607200.0, strconv.FormatFloat(value, 'g', -1, 64)},
+					})
+				}
+				// Rows Prometheus returns with no usable value. Stamped after
+				// the readable ones so their row indices do not collide.
+				for n := 0; n < f.Unreadable[metric]; n++ {
+					result = append(result, map[string]interface{}{
+						"metric": map[string]interface{}{
+							"__name__": metric,
+							"ifindex":  strconv.Itoa(len(f.Values[metric]) + n + 1),
+						},
+						"value": []interface{}{1756607200.0, "NaN"},
+					})
+				}
+				// Info rows: the sample is 1 on every one of them, as
+				// Prometheus publishes them, and the reading is in the label.
+				for row, text := range f.Labels[metric] {
+					result = append(result, map[string]interface{}{
+						"metric": map[string]interface{}{
+							"__name__": metric,
+							"ifindex":  strconv.Itoa(row + 1),
+							"value":    text,
+						},
+						"value": []interface{}{1756607200.0, "1"},
+					})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "success",
+				"data":   map[string]interface{}{"resultType": "vector", "result": result},
+			})
 		default:
 			write(w, nil)
 		}

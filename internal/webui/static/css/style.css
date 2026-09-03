@@ -2881,3 +2881,117 @@ input[readonly] {
     line-height: 1.45;
     color: var(--text-secondary);
 }
+
+/* A chart whose feed has gone empty keeps its line and says so.
+ *
+ * Clearing the plot instead was the old behaviour and it destroyed the only
+ * information left at the moment it mattered most. Keeping the plot WITHOUT
+ * this label would be worse again: a populated chart reads as current, so a
+ * device that went quiet an hour ago would look healthy.
+ *
+ * Warning-tier text on the panel background, which is the 4.5:1 token rather
+ * than the graphic-tier one, because this is prose a person reads. */
+.chart-stale {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.5rem;
+    z-index: 2;
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    background: var(--panel-bg, var(--bg-secondary));
+    border: 1px solid var(--warning-text);
+    pointer-events: none;
+}
+
+.chart-stale-text {
+    color: var(--warning-text);
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+/* The row table: a device's indexed metrics listed as rows, with the reader
+ * picking which to chart.
+ *
+ * It replaces a chart that drew every interface as its own line behind a
+ * scrolling legend — unreadable on a switch with hundreds of ports, and slow
+ * for the same reason. */
+.row-table {
+    margin: 0 0 1.25rem;
+}
+
+.row-table-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.row-table-search {
+    padding: 0.3rem 0.5rem;
+    min-width: 14rem;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 0.25rem;
+}
+
+.row-table-count {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+/* The values every row shares, said once, so a column that differentiates
+ * nothing does not spend the table's width repeating itself — and does not
+ * disappear either, which would make its absence carry meaning. */
+.row-table-summary {
+    margin: 0 0 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.row-table-grid {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.row-table-grid th,
+.row-table-grid td {
+    padding: 0.3rem 0.5rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.row-table-grid thead th {
+    color: var(--text-secondary);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.row-table-grid tbody th {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.row-table-pick {
+    width: 3.5rem;
+    text-align: center;
+}
+
+.row-table-grid tr.is-charted {
+    background: var(--bg-secondary);
+}
+
+.row-table-waiting td {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}

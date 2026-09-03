@@ -46,7 +46,26 @@ type prometheusResponse struct {
 }
 
 // Query executes an instant query
+// Query returns the samples an instant query produced, dropping any row that
+// carries no usable value.
+//
+// Callers that need to know a row was dropped use QueryReportingDiscards.
+// Silence is the right answer for a renderer -- there is nothing to draw -- and
+// the wrong answer for anything deciding what a set of rows AGREES about, since
+// a discarded row is not a row that agrees.
 func (p *PrometheusClient) Query(ctx context.Context, query string) ([]websocket.MetricValue, error) {
+	metrics, _, err := p.QueryReportingDiscards(ctx, query)
+	return metrics, err
+}
+
+// QueryReportingDiscards is Query, and also says which rows produced no usable
+// value: their label sets, in the order Prometheus returned them.
+//
+// A row can be discarded for five reasons below, and every one of them is a row
+// Prometheus DID return. Reading the survivors as the whole answer turns "three
+// rows, one unreadable" into "two rows that agree", which is a different claim
+// and a false one.
+func (p *PrometheusClient) QueryReportingDiscards(ctx context.Context, query string) ([]websocket.MetricValue, []map[string]string, error) {
 	u := fmt.Sprintf("%s/api/v1/query", p.baseURL)
 
 	params := url.Values{}
@@ -54,12 +73,12 @@ func (p *PrometheusClient) Query(ctx context.Context, query string) ([]websocket
 
 	req, err := http.NewRequestWithContext(ctx, "GET", u+"?"+params.Encode(), http.NoBody)
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
+		return nil, nil, fmt.Errorf("creating request: %w", err)
 	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("executing request: %w", err)
+		return nil, nil, fmt.Errorf("executing request: %w", err)
 	}
 	// Closing the body only returns the connection to the pool; the call's
 	// outcome is already determined by what was read above.
@@ -67,36 +86,41 @@ func (p *PrometheusClient) Query(ctx context.Context, query string) ([]websocket
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
+		return nil, nil, fmt.Errorf("reading response: %w", err)
 	}
 
 	var promResp prometheusResponse
 	if err := json.Unmarshal(body, &promResp); err != nil {
-		return nil, fmt.Errorf("unmarshaling response: %w", err)
+		return nil, nil, fmt.Errorf("unmarshaling response: %w", err)
 	}
 
 	if promResp.Status != "success" {
-		return nil, fmt.Errorf("prometheus error: %s (%s)", promResp.Error, promResp.ErrorType)
+		return nil, nil, fmt.Errorf("prometheus error: %s (%s)", promResp.Error, promResp.ErrorType)
 	}
 
 	metrics := make([]websocket.MetricValue, 0, len(promResp.Data.Result))
+	var discarded []map[string]string
 	for _, result := range promResp.Data.Result {
 		if len(result.Value) != 2 {
+			discarded = append(discarded, result.Metric)
 			continue
 		}
 
 		timestamp, ok := result.Value[0].(float64)
 		if !ok {
+			discarded = append(discarded, result.Metric)
 			continue
 		}
 
 		valueStr, ok := result.Value[1].(string)
 		if !ok {
+			discarded = append(discarded, result.Metric)
 			continue
 		}
 
 		value, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
+			discarded = append(discarded, result.Metric)
 			continue
 		}
 
@@ -118,6 +142,7 @@ func (p *PrometheusClient) Query(ctx context.Context, query string) ([]websocket
 		// Prometheus saying there is no value here, and a sample is how this
 		// API says there is one.
 		if math.IsNaN(value) || math.IsInf(value, 0) {
+			discarded = append(discarded, result.Metric)
 			continue
 		}
 
@@ -128,7 +153,7 @@ func (p *PrometheusClient) Query(ctx context.Context, query string) ([]websocket
 		})
 	}
 
-	return metrics, nil
+	return metrics, discarded, nil
 }
 
 // QueryRange executes a range query and returns raw Prometheus result

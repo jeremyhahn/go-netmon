@@ -36,8 +36,16 @@ type Dashboard struct {
 	// tab it asked for.
 	MIB string `json:"mib,omitempty"`
 
-	Title    string        `json:"title"`
-	Panels   []Panel       `json:"panels"`
+	Title  string  `json:"title"`
+	Panels []Panel `json:"panels"`
+
+	// Tables group the indexed panels by the index they share, so a renderer
+	// can draw rows and let a reader choose which ones to chart. Present on a
+	// module's tab only; see generateDashboard for why.
+	//
+	// A panel belongs to at most one table and every panel is still in Panels:
+	// a table says how to arrange them, not which of them exist.
+	Tables   []Table       `json:"tables,omitempty"`
 	MIBs     []MIBCoverage `json:"mibs"`
 	Warnings []string      `json:"warnings"`
 
@@ -351,6 +359,21 @@ func (s *Server) generateDashboard(ctx context.Context, device *storage.Device, 
 
 	sortPanelsForDisplay(panels)
 
+	// After the sort, so a table's columns arrive in the order their titles
+	// read -- the same order the cards are in, for the same reason.
+	//
+	// Tables are built for a module's tab only. The column decision needs each
+	// column's current value on every row, which is one query per table; a
+	// device-scoped dashboard spans every module a device carries -- 220 panels
+	// on dist-01 -- and paying for all of them to render one tab would trade
+	// the load time this work exists to fix for a different one.
+	var tables []Table
+	if scope == scopeModule {
+		tables = buildTables(panels)
+		s.markVaryingColumns(ctx, device.Name, tables)
+		chooseDefaultColumns(tables, panels)
+	}
+
 	coverage := make([]MIBCoverage, 0, len(byModule))
 	for _, c := range byModule {
 		c.Note = coverageNote(*c)
@@ -374,6 +397,7 @@ func (s *Server) generateDashboard(ctx context.Context, device *storage.Device, 
 		Device:             device.Name,
 		Title:              title,
 		Panels:             panels,
+		Tables:             tables,
 		MIBs:               coverage,
 		Warnings:           warnings,
 		CatalogUnavailable: !read.readable,
