@@ -37,8 +37,52 @@ modified by design, and staged work often sits beside an experiment.
 > never a bare `checkout`, never a recursive delete of a path you have not
 > listed first.**
 
+**That rule is narrower than it sounds, and reading it as broader cost a fourth
+incident the same day it was written.** `git checkout <branch> -- internal/poller/`
+names a path. It also destroyed an entire uncommitted refactor, because **the
+blast radius is not the path — it is whatever is dirty under the path**, and the
+whole change was under it. Naming a path bounds the damage; it does not prevent
+it.
+
+So the rule that actually holds is procedural rather than syntactic:
+
+> **Commit before a destructive operation, not after.**
+
+A WIP commit on your own branch costs nothing, is revertible, and is a backup.
+The `/tmp` copy that saved the refactor above had been left by a mutation loop
+for an unrelated reason: that is a coincidence, not a backup, and it had been
+relied on twice before anyone noticed.
+
+The reasoning error underneath all of it, stated by the person who made it three
+times in one day:
+
+> *"I have been treating 'I can recover it' as equivalent to 'it is safe,' three
+> times, and only luck has made those the same."*
+
 For mutation testing specifically, copy the file to `/tmp` and restore with
-`cp`, which touches exactly what you named.
+`cp`, which touches exactly what you named — and commit first anyway.
+
+## A rule that reads as a guarantee and is not one
+
+The most dangerous thing in this document is a sentence that sounds like it
+closes a hazard and closes only part of it, because it converts caution into
+confidence. Three instances, all met on 2026-09-02 and 2026-09-03, and **every
+one of them caught someone who had already written it down**:
+
+- **`pgrep -x`** fixes a script matching its own name. It does nothing about a
+  *different* binary with the same name, which is the case that actually
+  mattered.
+- **The bracket trick** (`[g]o-netmon`) is offered as defeating self-match in a
+  `ps | grep` pipeline. It defeats one form of it and not the general case.
+- **"Name paths"**, above. It bounds a destructive command; it does not stop one
+  from eating uncommitted work under that path.
+
+The pattern: a real mitigation for a real failure, read as covering the
+*neighbouring* failure it does not touch. The test is to ask **what exactly does
+this rule make impossible**, and then whether the thing you are about to do is
+inside that set — rather than whether it feels like the kind of thing the rule
+was written about.
+
 
 ## A count is the most convincing form of a wrong answer
 
