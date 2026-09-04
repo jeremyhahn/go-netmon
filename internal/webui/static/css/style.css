@@ -2995,3 +2995,38 @@ input[readonly] {
     clip: rect(0 0 0 0);
     white-space: nowrap;
 }
+
+/* Search across what a device reports, over the selected time range.
+ *
+ * Sits above the module rail because it answers a different question: the rail
+ * narrows MODULES, this narrows READINGS, and "where is Office Switch?" is the
+ * one a reader usually has. */
+.series-search {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0 0 0.75rem;
+}
+
+.series-search-field {
+    flex: 1 1 22rem;
+    max-width: 34rem;
+}
+
+.series-search-input {
+    width: 100%;
+    padding: 0.4rem 0.6rem;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 0.25rem;
+}
+
+/* The count is prose a reader acts on, so it takes the 4.5:1 token rather than
+ * the graphic tier. A blank count after a search reads as the search not having
+ * run, which is why searchSeries always writes something. */
+.series-search-count {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}

@@ -262,6 +262,7 @@ class MonitoringApp {
         // The MIB browser loads when it is first opened, not on every page load.
         this.setupEventListeners();
         this.bindRowTables();
+        this.bindSeriesSearch();
         this.setupModals();
 
         // The landing surface is the fleet, not an empty frame waiting for a
@@ -7640,6 +7641,118 @@ class MonitoringApp {
                 </tr>
             `;
         }).join('');
+    }
+
+    // ------------------------------------------------------------------
+    // Searching what the device reports
+    //
+    // The owner asked for search across historical data on 2026-09-02. Viewing
+    // history already worked -- the time-range selector -- but there was no way
+    // to FIND a series: a reader who knows a port is called "Office Switch" had
+    // no path from that string to its chart.
+    //
+    // v1 matches names: the metric, the MIB object, the row's identity, and the
+    // friendly labels the exporter promotes (ifAlias, ifDescr). Matching rows
+    // are charted over whatever time range is selected, so the history is the
+    // history already on screen rather than a second query path.
+    //
+    // Value conditions -- "show me when X > Y" -- are v2 and are a different
+    // feature: they need a query language rather than a substring, and go
+    // through PromQL. See go-netmon#95.
+    // ------------------------------------------------------------------
+
+    bindSeriesSearch() {
+        const input = document.getElementById('seriesSearch');
+        if (!input) return;
+        input.addEventListener('input', () => this.searchSeries(input.value.trim()));
+    }
+
+    // seriesMatches returns, per table, the row keys whose name or identity
+    // matches -- and the panels whose own names match, which is how a reader
+    // finds "temperature" rather than a port.
+    seriesMatches(needle) {
+        const lowered = needle.toLowerCase();
+        const perTable = new Map();
+        let panels = 0;
+
+        for (const [paneKey, pane] of this.paneTables) {
+            const [deviceId, ...rest] = paneKey.split('-');
+            const mibName = rest.join('-');
+
+            for (const panel of pane.panels) {
+                const words = `${panel.metric} ${panel.object || ''} ${panel.title || ''}`;
+                if (words.toLowerCase().includes(lowered)) panels++;
+            }
+
+            for (const table of pane.tables) {
+                const key = this.tableKey(deviceId, mibName, table);
+                const rows = this.tableRows.get(key);
+                if (!rows) continue;
+                const hits = [...rows.keys()].filter(rowKey => {
+                    const row = rows.get(rowKey);
+                    // Key, name AND the row's readings.
+                    //
+                    // The alias a reader searches for -- "Office Switch" -- is
+                    // usually a VALUE in a column rather than the row's name:
+                    // ifAlias is its own info metric, and the row is named from
+                    // ifName. Searching key and name alone found ports by index
+                    // and by interface name and missed every alias, which is
+                    // the string a person actually remembers.
+                    const words = [rowKey, row.name, ...row.values.values()].join(' ');
+                    return words.toLowerCase().includes(lowered);
+                });
+                if (hits.length > 0) perTable.set(key, hits);
+            }
+        }
+        return { perTable, panels };
+    }
+
+    // searchSeries charts what matches and says how much did.
+    //
+    // An empty box restores the default selection rather than leaving whatever
+    // the last search charted -- otherwise clearing a search silently keeps its
+    // result, which reads as the search still being active.
+    searchSeries(needle) {
+        const count = document.getElementById('seriesSearchCount');
+
+        if (needle === '') {
+            for (const key of this.tableSeeded) {
+                const rows = this.tableRows.get(key) || new Map();
+                this.tableSelection.set(key,
+                    new Set(this.orderedRowKeys(rows).slice(0, DEFAULT_SELECTED_ROWS)));
+                this.redrawTable(key);
+                this.redrawChartsFor(key);
+            }
+            if (count) count.textContent = '';
+            return;
+        }
+
+        const { perTable, panels } = this.seriesMatches(needle);
+        let charted = 0;
+
+        for (const [key, hits] of perTable) {
+            // Bounded by the same ceiling a reader is held to by hand. A search
+            // that matched four hundred ports and drew them all would rebuild
+            // the hairball through a different door.
+            const take = hits.slice(0, MAX_SELECTED_ROWS);
+            charted += take.length;
+            this.tableSelection.set(key, new Set(take));
+            this.redrawTable(key);
+            this.redrawChartsFor(key);
+        }
+
+        if (!count) return;
+        const rows = [...perTable.values()].reduce((n, hits) => n + hits.length, 0);
+        if (rows === 0 && panels === 0) {
+            // Said explicitly. A blank count after a search reads as the search
+            // not having run, which is the failure this whole codebase has
+            // spent two days removing.
+            count.textContent = `No reading matches “${needle}”.`;
+            return;
+        }
+        const capped = rows > charted ? `, charting ${charted}` : '';
+        count.textContent =
+            `${rows} row${rows === 1 ? '' : 's'} and ${panels} metric${panels === 1 ? '' : 's'} match${capped}.`;
     }
 
     // bindRowTables wires the table's two controls once, on the document, so a

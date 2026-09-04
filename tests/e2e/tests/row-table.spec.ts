@@ -456,3 +456,86 @@ test('a table-bound chart names its lines without a pager', async ({ page }) => 
     + 'scrolling pager; the pager exists for panels nothing is filtering')
     .not.toBe('scroll');
 });
+
+test('searching a port alias charts that port and says how many matched', async ({ page }) => {
+  // The owner asked for search across historical data on 2026-09-02 and it was
+  // never built. Viewing history worked; FINDING a series did not — a reader
+  // who knows a port is called "uplink 7" had no path from that string to its
+  // chart.
+  await serveWorkingTree(page);
+  await stubDashboard(page);
+  await openDashboard(page);
+  await feed(page, PORTS);
+
+  await page.locator('#seriesSearch').fill('uplink 7');
+
+  const charted = await page.evaluate(() => {
+    const app = (window as any).app;
+    const [selected] = [...app.tableSelection.values()];
+    return [...selected];
+  });
+  expect(charted, 'the search matched but charted something other than the one row '
+    + 'whose alias was typed').toEqual(['7']);
+
+  await expect(page.locator('#seriesSearchCount')).toContainText('1 row');
+});
+
+test('a search that matches nothing says so, rather than going blank', async ({ page }) => {
+  // A blank count after a search reads as the search not having run — the
+  // failure this codebase has spent two days removing, in a text field.
+  await serveWorkingTree(page);
+  await stubDashboard(page);
+  await openDashboard(page);
+  await feed(page, PORTS);
+
+  await page.locator('#seriesSearch').fill('nothing-matches-this');
+
+  await expect(page.locator('#seriesSearchCount')).toContainText('No reading matches');
+  await expect(page.locator('#seriesSearchCount')).toContainText('nothing-matches-this');
+});
+
+test('clearing the search restores the default selection', async ({ page }) => {
+  // Otherwise clearing a search silently keeps its result, and the charts go on
+  // showing a filter the reader has just removed.
+  await serveWorkingTree(page);
+  await stubDashboard(page);
+  await openDashboard(page);
+  await feed(page, PORTS);
+
+  await page.locator('#seriesSearch').fill('uplink 7');
+  await page.locator('#seriesSearch').fill('');
+
+  const charted = await page.evaluate(() => {
+    const app = (window as any).app;
+    const [selected] = [...app.tableSelection.values()];
+    return selected.size;
+  });
+  expect(charted, 'clearing the box left the search result charted, so the reader '
+    + 'has no way back to where they started').toBe(DEFAULT_SELECTED);
+});
+
+test('a broad search is bounded by the same ceiling as picking by hand', async ({ page }) => {
+  // "uplink" matches every port. Charting all of them would rebuild the
+  // hairball the table exists to replace, through a different door — and the
+  // ceiling a reader is held to by hand has to hold for a search too, or the
+  // bound is a property of the control rather than of the chart.
+  await serveWorkingTree(page);
+  await stubDashboard(page);
+  await openDashboard(page);
+  await feed(page, PORTS);
+
+  await page.locator('#seriesSearch').fill('uplink');
+
+  const charted = await page.evaluate(() => {
+    const app = (window as any).app;
+    const [selected] = [...app.tableSelection.values()];
+    return selected.size;
+  });
+  expect(charted, `a search charted ${charted} rows; the ceiling is 8 whether the `
+    + 'rows are picked by hand or by matching').toBe(8);
+
+  // And it must SAY that it charted fewer than it found, or the reader believes
+  // they are looking at every match.
+  await expect(page.locator('#seriesSearchCount')).toContainText(`${PORTS.length} rows`);
+  await expect(page.locator('#seriesSearchCount')).toContainText('charting 8');
+});

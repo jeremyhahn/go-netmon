@@ -132,6 +132,21 @@
                  hundreds of modules and a horizontal row has only one screen of
                  room, whereas a column has a scrollbar and a filter box. -->
             <div id="mibTabsContainer" class="mib-tabs-container" style="display: none;">
+                <!-- Search across what this device REPORTS, over the selected time
+                     range: a metric, a MIB object, a port name, an ifAlias. The
+                     module filter beside the tab list narrows the MODULES; this
+                     narrows the readings, which is the question a reader
+                     usually has ("where is Office Switch?"). -->
+                <div class="series-search">
+                    <label class="series-search-field">
+                        <span class="visually-hidden">Search readings</span>
+                        <input type="search" id="seriesSearch" class="series-search-input"
+                               placeholder="Search readings — a port, an alias, a metric…"
+                               autocomplete="off" aria-describedby="seriesSearchCount">
+                    </label>
+                    <p class="series-search-count" id="seriesSearchCount"
+                       role="status" aria-live="polite"></p>
+                </div>
                 <div class="mib-nav-layout">
                     <div class="mib-nav">
                         <div class="mib-nav-controls">
