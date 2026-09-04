@@ -7844,11 +7844,24 @@ class MonitoringApp {
             return;
         }
 
+        // Every panel feeds the table, whatever it renders as.
+        //
+        // This used to sit below the branch, so a state or text panel returned
+        // at updatePanelTile and never reached it -- and those are exactly the
+        // columns a reader needs: ifAlias is a port's human name, ifOperStatus
+        // is whether it is up. The table showed a dash on every row for them
+        // while the cards above displayed the same values, because the values
+        // reached the tile and stopped there.
+        //
+        // How a value is DRAWN and whether it belongs in the table are
+        // different questions, and putting the call after the branch answered
+        // the second with the first.
+        this.feedTables(target, metrics);
+
         if (target.panel.type === 'state' || target.panel.type === 'text') {
             this.updatePanelTile(target, metrics);
             return;
         }
-        this.feedTables(target, metrics);
         this.updatePanelChart(target, metrics, time);
     }
 

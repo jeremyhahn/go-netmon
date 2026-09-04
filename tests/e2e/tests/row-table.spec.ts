@@ -75,6 +75,22 @@ const STATUS = {
   index_labels: ['ifindex'], series_labels: ['ifname'],
 };
 
+// A text panel: its reading is words in a label, and its sample is 1.
+const ALIAS = {
+  id: 'IF-MIB_snmp_ifalias_info', title: 'IF-MIB - ifAlias', type: 'text',
+  metric: 'snmp_ifalias_info', query: 'snmp_ifalias_info{device="dist-01"}',
+  module: 'IF-MIB', object: 'ifAlias', kind: 'string', description: 'Alias.',
+  index_labels: ['ifindex'], series_labels: ['ifname'], value_label: 'value',
+};
+
+// A state panel: decoded from a number to a word.
+const OPER = {
+  id: 'IF-MIB_snmp_ifOperStatus', title: 'IF-MIB - ifOperStatus', type: 'state',
+  metric: 'snmp_ifOperStatus', query: 'snmp_ifOperStatus{device="dist-01"}',
+  module: 'IF-MIB', object: 'ifOperStatus', kind: 'enum', description: 'State.',
+  index_labels: ['ifindex'], series_labels: ['ifname'], enum: { '1': 'up', '2': 'down' },
+};
+
 const TABLE = {
   id: 'IF-MIBifindex',
   module: 'IF-MIB',
@@ -82,6 +98,8 @@ const TABLE = {
   columns: [
     { panel_id: OCTETS.id, metric: OCTETS.metric, kind: 'gauge', varies: true, default: true },
     { panel_id: STATUS.id, metric: STATUS.metric, kind: 'gauge', varies: true, default: true },
+    { panel_id: ALIAS.id, metric: ALIAS.metric, kind: 'string', varies: true, default: true },
+    { panel_id: OPER.id, metric: OPER.metric, kind: 'enum', varies: true, default: true },
     // A column every row agrees about: summarized, not dropped.
     {
       panel_id: 'IF-MIB_snmp_ifMtu', metric: 'snmp_ifMtu', kind: 'gauge',
@@ -110,7 +128,7 @@ async function stubDashboard(page: Page) {
     status: 200, contentType: 'application/json',
     body: JSON.stringify({
       device: 'dist-01', title: 'dist-01 - IF-MIB',
-      panels: [OCTETS, STATUS], tables: [TABLE],
+      panels: [OCTETS, STATUS, ALIAS, OPER], tables: [TABLE],
       mibs: [{ mib: 'IF-MIB', reporting: 2, charts: 2 }], warnings: [],
     }),
   }));
@@ -158,10 +176,17 @@ async function feed(page: Page, ports: typeof PORTS) {
     const app = (window as any).app;
     const [subscription] = [...app.activeSubscriptions.values()];
     for (const target of subscription.objects.values()) {
-      const metrics = rows.map((port: { index: string; name: string }) => ({
-        metric: { ifindex: port.index, ifname: port.name, device: 'dist-01' },
-        value: target.panel.metric === 'snmp_ifOperStatus' ? 1 : 1000 + Number(port.index),
-      }));
+      const metrics = rows.map((port: { index: string; name: string }) => {
+        const labels: Record<string, string> = {
+          ifindex: port.index, ifname: port.name, device: 'dist-01',
+        };
+        // An info metric's sample is 1 and its words are in a label.
+        if (target.panel.value_label) labels[target.panel.value_label] = 'uplink ' + port.index;
+        return {
+          metric: labels,
+          value: target.panel.metric === 'snmp_ifOperStatus' ? 1 : 1000 + Number(port.index),
+        };
+      });
       app.updatePanel(target, metrics, Math.floor(Date.now() / 1000));
     }
   }, ports);
@@ -267,4 +292,31 @@ test('a value every row shares is stated once, not repeated down a column', asyn
   // meaning: uniform, deselected and not-reported would all look the same.
   await expect(page.locator('.row-table-summary')).toContainText('ifMtu 1500');
   await expect(page.locator('.row-table-summary')).toContainText('All rows');
+});
+
+test('a column whose reading is words shows the words, not a dash', async ({ page }) => {
+  // Observed on monitor-01 after the first deploy: IFALIAS, IFDESCR, IFADMINSTATUS
+  // and IFCONNECTORPRESENT showed "—" on every row, while the cards above the
+  // table displayed the same values. The data was arriving; it stopped at the
+  // tile.
+  //
+  // updatePanel returned early for state and text panels -- calling
+  // updatePanelTile and returning -- and the table was fed AFTER that branch.
+  // So the two column kinds a reader most needs to navigate by (a port's name
+  // and whether it is up) were the two that never reached the table.
+  //
+  // The fixture that missed it had two panels, both numeric. Every panel type
+  // being the same kind is a fixture too regular to tell "feeds the table"
+  // from "feeds the table when it happens to be a chart".
+  await serveWorkingTree(page);
+  await stubDashboard(page);
+  await openDashboard(page);
+  await feed(page, PORTS);
+
+  const firstRow = page.locator('.row-table-grid tbody tr').first();
+
+  await expect(firstRow, 'the text column shows a dash; its reading is in a label and '
+    + 'reached the tile instead of the table').toContainText('uplink 1');
+  await expect(firstRow, 'the state column shows a dash; a state is a column a reader '
+    + 'navigates by, and it never reached the table').not.toContainText('—');
 });
