@@ -156,6 +156,10 @@ class MonitoringApp {
         this.tableRows = new Map();
         this.tableSelection = new Map();
         this.tableFilter = new Map();
+        // Tables whose default selection has been applied. Separate from the
+        // selection itself, because an EMPTY selection is a choice a reader
+        // made and must not be re-seeded back to the default.
+        this.tableSeeded = new Set();
         this.paneTables = new Map();
         // The most recent reading for each subscribed query, and the sequence
         // number that names it: Map(query -> { seq, byKey: Map(key -> sample) }).
@@ -7487,8 +7491,15 @@ class MonitoringApp {
 
     rowTableMarkup(deviceId, mibName, table, panels) {
         const key = this.tableKey(deviceId, mibName, table);
+        // A table with no default columns still gets a body.
+        //
+        // Returning nothing here meant no section, so no rows, so nothing to
+        // tick -- and because the selection was seeded by rendering, its charts
+        // then drew every row they held. Three of four chart groups on the live
+        // page were unfiltered for that reason. A table whose values are all
+        // summarized still has rows worth charting, and the reader still needs
+        // somewhere to pick them.
         const columns = this.tableColumns(table, panels);
-        if (columns.length === 0) return '';
 
         const summary = this.tableSummary(table, panels);
         const heads = columns.map(entry =>
@@ -7540,15 +7551,39 @@ class MonitoringApp {
         row.values.set(metric, text);
     }
 
-    // selectionFor returns the rows charted for a table, seeding the default on
-    // first use so the charts are never empty on arrival.
-    selectionFor(key, ordered) {
-        let selected = this.tableSelection.get(key);
-        if (!selected) {
-            selected = new Set(ordered.slice(0, DEFAULT_SELECTED_ROWS));
-            this.tableSelection.set(key, selected);
-        }
-        return selected;
+    // selectionFor returns the rows charted for a table.
+    //
+    // A plain getter. It used to seed the default too, and it is called from
+    // renderTableBody -- so a table that never rendered a body never got a
+    // selection, and every chart of its columns drew every row it held. Three
+    // of four chart groups on the live page were unfiltered for exactly that
+    // reason. Rendering is a view concern; ownership of which rows are charted
+    // is not, and tying the second to the first meant a table that did not draw
+    // could not filter.
+    selectionFor(key) {
+        return this.tableSelection.get(key) || new Set();
+    }
+
+    // seedSelection applies the default the first time a table has rows.
+    //
+    // Where rows are RECORDED rather than where they are drawn, and only once:
+    // a reader who unticks every row has chosen an empty selection, and
+    // re-seeding it would overrule them on the next tick.
+    seedSelection(key, ordered) {
+        if (this.tableSeeded.has(key) || ordered.length === 0) return;
+        this.tableSeeded.add(key);
+        this.tableSelection.set(key, new Set(ordered.slice(0, DEFAULT_SELECTED_ROWS)));
+    }
+
+    // orderedRowKeys is the table's row order: by the name a reader sees, and
+    // numerically within it, so eth10 follows eth9 rather than eth1.
+    //
+    // Shared by the seeding and the rendering, so "the first three rows" cannot
+    // mean two different things in the two places.
+    orderedRowKeys(rows) {
+        return [...rows.keys()].sort((a, b) =>
+            String(rows.get(a).name).localeCompare(String(rows.get(b).name), undefined,
+                { numeric: true, sensitivity: 'base' }));
     }
 
     // renderTableBody draws the rows, in name order, filtered by the search box.
@@ -7559,12 +7594,8 @@ class MonitoringApp {
 
         const columns = this.tableColumns(table, panels);
         const rows = this.tableRows.get(key) || new Map();
-        // Ordered by the name the reader sees, and numerically within it, so
-        // eth10 follows eth9 rather than eth1.
-        const ordered = [...rows.keys()].sort((a, b) =>
-            String(rows.get(a).name).localeCompare(String(rows.get(b).name), undefined,
-                { numeric: true, sensitivity: 'base' }));
-        const selected = this.selectionFor(key, ordered);
+        const ordered = this.orderedRowKeys(rows);
+        const selected = this.selectionFor(key);
 
         const needle = (this.tableFilter.get(key) || '').toLowerCase();
         const visible = ordered.filter(rowKey =>
@@ -7573,9 +7604,15 @@ class MonitoringApp {
         const count = document.querySelector(
             `[data-table-key="${CSS.escape(key)}"] .row-table-count`);
         if (count) {
-            count.textContent = needle
-                ? `${visible.length} of ${ordered.length} rows · ${selected.size} charted`
-                : `${ordered.length} rows · ${selected.size} charted`;
+            const scope = needle
+                ? `${visible.length} of ${ordered.length} rows`
+                : `${ordered.length} rows`;
+            // An empty selection is a choice, and the charts below are empty
+            // because of it. Saying "0 charted" alone reads as a fault; saying
+            // what to do about it does not.
+            count.textContent = selected.size === 0
+                ? `${scope} · none charted — tick a row to chart it`
+                : `${scope} · ${selected.size} charted`;
         }
 
         if (visible.length === 0) {
@@ -7813,6 +7850,11 @@ class MonitoringApp {
                     this.recordTableRow(key, rowKey, this.seriesName(panel, labels),
                         panel.metric, text);
                 }
+                // Seeded here, from the rows just recorded, so a table filters its
+                // charts whether or not it has drawn anything.
+                const rows = this.tableRows.get(key) || new Map();
+                this.seedSelection(key, this.orderedRowKeys(rows));
+
                 this.renderTableBody(deviceId, mibName, table, pane.panels);
             }
         }
@@ -8225,9 +8267,18 @@ class MonitoringApp {
         // the legend was the only way to tell them apart. The data for the rest
         // is still held -- picking another row draws it immediately, with the
         // history it already has -- it is simply not on the plot.
+        // A panel belonging to no table draws everything: it has no rows to
+        // pick from. A panel belonging to one draws exactly what is ticked --
+        // including nothing.
+        //
+        // "|| charted.size === 0" used to sit in this filter, so unticking the
+        // last row drew all forty series instead of none. It reads as a
+        // defensive fallback and it is the whole bug: absent meaning
+        // unfiltered, hand-written into the filter whose purpose is to stop
+        // drawing everything.
         const charted = this.chartedRows(panel);
         const keys = [...chart._panelSeries.keys()]
-            .filter(key => !charted || charted.size === 0 || charted.has(key))
+            .filter(key => !charted || charted.has(key))
             .sort();
 
         // The same rule the tiles use: a name two rows share is qualified with
@@ -8236,6 +8287,30 @@ class MonitoringApp {
         for (const row of this.distinctNames(null,
                 keys.map(key => ({ key, name: chart._panelSeries.get(key).name })))) {
             labelled.set(row.key, row.name);
+        }
+
+        // Nothing ticked is a state this has to render, not one to fall over on.
+        //
+        // The lines below read chart._panelSeries.get(keys[0]) for the x axis,
+        // which throws when keys is empty -- and a throw here leaves the LAST
+        // option in place, so the chart went on showing a series the reader had
+        // just unticked. An empty plot that says so is the answer; the previous
+        // drawing is not.
+        if (keys.length === 0) {
+            return {
+                series: [],
+                legend: { show: false },
+                xAxis: { type: 'time', show: false },
+                yAxis: { type: 'value', show: false },
+                graphic: {
+                    type: 'text', left: 'center', top: 'middle',
+                    style: {
+                        text: 'No rows charted',
+                        fill: netmonCharts.axisColor ? netmonCharts.axisColor() : '#888',
+                        fontSize: 12,
+                    },
+                },
+            };
         }
 
         const longest = keys.reduce(

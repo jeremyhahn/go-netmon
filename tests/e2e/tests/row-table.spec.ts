@@ -56,6 +56,8 @@ const DEVICE = {
 
 // Twelve interfaces: more than the three that open charted, and enough that a
 // reader has to find one rather than see them all at once.
+const DEFAULT_SELECTED = 3;
+
 const PORTS = Array.from({ length: 12 }, (_, i) => ({
   index: String(i + 1),
   name: `eth${i + 1}`,
@@ -319,4 +321,98 @@ test('a column whose reading is words shows the words, not a dash', async ({ pag
     + 'reached the tile instead of the table').toContainText('uplink 1');
   await expect(firstRow, 'the state column shows a dash; a state is a column a reader '
     + 'navigates by, and it never reached the table').not.toContainText('—');
+});
+
+// plottedFor reports what one chart HOLDS against what it PLOTS. Both numbers,
+// because "3 plotted" proves nothing if only 3 are held, and "40 held" proves
+// nothing about what is on screen.
+async function plottedFor(page: Page) {
+  return page.evaluate(() => {
+    const app = (window as any).app;
+    const out: { held: number; plotted: number }[] = [];
+    for (const chart of Object.values(app.charts || {}) as any[]) {
+      if (chart && chart._panelSeries && chart._panelSeries.size > 0) {
+        out.push({ held: chart._panelSeries.size, plotted: (chart.getOption().series || []).length });
+      }
+    }
+    return out;
+  });
+}
+
+test('unticking every row plots nothing, and the table says so', async ({ page }) => {
+  // The filter carried "|| charted.size === 0", so an empty selection drew
+  // EVERY row rather than none -- absent meaning unfiltered, hand-written into
+  // the filter whose purpose is to stop drawing everything.
+  await serveWorkingTree(page);
+  await stubDashboard(page);
+  await openDashboard(page);
+  await feed(page, PORTS);
+
+  const before = await plottedFor(page);
+  expect(before.some(c => c.plotted === DEFAULT_SELECTED), 'nothing opened charted, so '
+    + 'this test cannot observe the selection being emptied').toBe(true);
+
+  for (let i = 0; i < DEFAULT_SELECTED; i++) {
+    await page.locator('.row-table-grid tbody input[type="checkbox"]:checked').first()
+      .click({ force: true });
+  }
+
+  const after = await plottedFor(page);
+  for (const chart of after) {
+    expect(chart.plotted, `a chart plots ${chart.plotted} of ${chart.held} rows with `
+      + 'nothing ticked; an empty selection is a choice and drawing every row '
+      + 'answers it with the opposite').toBe(0);
+    expect(chart.held, 'the rows were discarded rather than merely unplotted; '
+      + 'ticking one again would have nothing to draw').toBeGreaterThan(0);
+  }
+
+  await expect(page.locator('.row-table-count')).toContainText('none charted');
+  await expect(page.locator('.row-table-count')).toContainText('tick a row');
+});
+
+test('a table whose columns are all summarized still lists its rows', async ({ page }) => {
+  // rowTableMarkup returned '' when no column was default, so there was no
+  // section, no rows, nothing to tick -- and because the selection was seeded
+  // by rendering, that table's charts then drew every row they held.
+  await serveWorkingTree(page);
+  await page.route(url => url.pathname === '/api/devices' && url.search === '',
+    route => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ devices: [DEVICE] }) }));
+  await page.route(url => url.pathname === '/api/devices/4', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(DEVICE) }));
+  await page.route(url => url.pathname === '/api/devices/4/mibs', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({
+      direct_mibs: [{ id: 7, name: 'IF-MIB', object_count: 40, assignment: { enabled: true } }],
+      all_mibs: [{ id: 7, name: 'IF-MIB', object_count: 40, assignment: { enabled: true } }],
+    }) }));
+  await page.route(url => url.pathname === '/api/metrics/query', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify([]) }));
+  // Every column uniform, so none is a default column.
+  await page.route(url => url.pathname === '/api/devices/4/dashboard', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({
+      device: 'dist-01', title: 'dist-01 - IF-MIB',
+      panels: [OCTETS],
+      tables: [{
+        id: 'IF-MIBifindex', module: 'IF-MIB', index_labels: ['ifindex'],
+        columns: [{ panel_id: OCTETS.id, metric: OCTETS.metric, kind: 'gauge',
+          varies: false, value: '1000', default: false }],
+      }],
+      mibs: [{ mib: 'IF-MIB', reporting: 1, charts: 1 }], warnings: [],
+    }) }));
+
+  await page.evaluate(() => {}).catch(() => {});
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => {
+    const sel = document.getElementById('dashboardDeviceSelect') as HTMLSelectElement | null;
+    return !!sel && [...sel.options].some(o => o.value === '4');
+  }, { timeout: 20000 });
+  await page.evaluate(() => (window as any).app.openFleetDevice(4));
+  await page.waitForSelector('.row-table', { timeout: 20000 });
+  await feed(page, PORTS);
+
+  await expect(page.locator('.row-table-grid tbody th'),
+    'the table rendered no rows because none of its columns was a default, so there '
+    + 'is nothing to tick and its charts filter nothing').toHaveCount(PORTS.length);
 });
