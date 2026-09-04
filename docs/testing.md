@@ -460,6 +460,60 @@ The tell is that a mutation you expect to fail does not. That is a finding about
 the *claim*, not evidence that the test is merely weak — see "Mutate before you
 believe a test", which is the instrument that caught both of these.
 
+## Two suites that verify each other's assumptions
+
+The row table shipped **inert**. The server emitted no `tables` on the endpoint
+the browser fetches, so the page drew nothing — while nine Go tests and nine
+Playwright specs passed.
+
+Neither suite was weak. They were pointed at each other:
+
+- **Every Go test asked `/api/mibs/{id}/dashboard`**, the endpoint where the
+  tables were built. The browser never calls it; it fetches
+  `/api/devices/{id}/dashboard` once and splits the payload itself.
+- **Every Playwright spec mocked `tables` onto the device endpoint** — the shape
+  the frontend needs, and a shape the server did not produce at that scope.
+
+So the mock asserted what the server *ought* to send, the Go tests asserted what
+a *different* endpoint *did* send, and **nothing compared them**. Both ends were
+correct against the other's assumptions, and the contract between them was never
+exercised against the running product.
+
+> **A mock is a claim about the server. Something has to check the claim.**
+
+The cheap defences, in order of what they cost:
+
+- **Ask the URL the product asks.** The test that would have caught this differs
+  from nine that did not by one path string. Before mocking an endpoint, grep the
+  client for the URL it actually requests.
+- **Distinguish absent from empty.** The new test decodes into a raw map rather
+  than the typed struct, because a missing key and an empty array are the same
+  `nil` slice once typed — and "the field is absent" was the entire failure.
+- **Render the page, once, against a real server.** A payload check proves a
+  payload. The owner was looking at a browser; nobody had opened one.
+
+## Fixing a bug in a mechanism is evidence about how the mechanism works
+
+The restriction that caused the above — tables built only at module scope — rested
+on the belief that the browser fetched a dashboard per module tab.
+
+**That belief had already been disproved by the author's own earlier fix.** A bug
+where `tables` was dropped from the browser's per-module rebuild had been found
+and repaired *days* before. That rebuild exists precisely because the browser
+fetches **one device payload and splits it itself** — which is the fact that makes
+the module-scope restriction wrong.
+
+The evidence was in hand, examined closely enough to fix code inside it, and
+filed as a different bug.
+
+> **When you fix something, ask what its existence tells you. A mechanism you had
+> to repair is a mechanism you now have evidence about — update the beliefs that
+> mention it, not just the lines you changed.**
+
+The tell is a comment justifying a decision by describing behaviour elsewhere in
+the system. That comment is a claim about code you are not editing, it ages
+silently, and nothing fails when it stops being true.
+
 ## Say what a number means
 
 An assertion tolerance is a claim. `domTolerance` in the optical DOM tests is
