@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"slices"
+	"sort"
 	"testing"
 
 	webuiStorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
@@ -460,5 +462,82 @@ func TestAColumnWithAnUnreadableRowIsNotSummarizedAsUniform(t *testing.T) {
 	if shown := defaultColumns(t, dash); !slices.Contains(shown, "snmp_ifMtu") {
 		t.Errorf("default columns = %v, want the column shown: the row that could "+
 			"not be read is the one most worth looking at", shown)
+	}
+}
+
+// TestTheEndpointTheBrowserRendersFromCarriesTables is the test whose absence
+// let this feature ship inert.
+//
+// Every other table test here asks /api/mibs/{id}/dashboard, because that is
+// where the tables were built. **The browser never calls it.** app.js fetches
+// /api/devices/{id}/dashboard once and splits the panels per module itself, so
+// tables were being built on an endpoint nothing draws from.
+//
+// Measured on dist-01 before the fix:
+//
+//	/api/devices/5/dashboard  ->  220 panels, no "tables" key
+//	/api/mibs/56/dashboard    ->   11 panels, 2 tables
+//
+// The server emitted an arrangement, the browser received a payload without
+// it, and nothing errored. The Playwright specs passed 9 of 9 against a mock
+// that supplied tables on the device endpoint -- a shape the server did not
+// produce. A mock is a claim about the server, and nothing compared them.
+//
+// So this test asks the endpoint the product asks, which is the only version
+// that can fail the way production failed.
+func TestTheEndpointTheBrowserRendersFromCarriesTables(t *testing.T) {
+	catalog := []map[string]interface{}{
+		{catMetric: "snmp_ifMtu", catModule: "IF-MIB", catObject: "ifMtu",
+			catKind: "gauge", catDescription: "MTU", catIndexLabels: "ifindex"},
+		{catMetric: "snmp_ifSpeed", catModule: "IF-MIB", catObject: "ifSpeed",
+			catKind: "gauge", catDescription: "speed", catIndexLabels: "ifindex"},
+	}
+	s := newTestServer(t)
+	s.promClient = catalogClient(t, catalogFixture{
+		Retained: catalog, Current: catalog,
+		Device: []string{"snmp_ifMtu", "snmp_ifSpeed"},
+		Values: map[string][]float64{
+			"snmp_ifMtu":   {1500, 9000, 1500},
+			"snmp_ifSpeed": {1000, 1000, 1000},
+		},
+	})
+
+	ctx := context.Background()
+	device := storeDevice(t, s, "dist-01", "192.0.2.14")
+	mib := &webuiStorage.MIB{Name: "IF-MIB", FilePath: "/mibs/IF-MIB.mib"}
+	if err := s.storage.CreateMIB(ctx, mib); err != nil {
+		t.Fatalf("CreateMIB: %v", err)
+	}
+	if err := s.storage.AssignMIBToDevice(ctx, device, mib.ID); err != nil {
+		t.Fatalf("AssignMIBToDevice: %v", err)
+	}
+
+	// The URL app.js uses. Not the MIB-scoped one.
+	rec := do(t, s, http.MethodGet, "/api/devices/"+itoa(device)+"/dashboard", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+
+	// Decoded as the browser sees it -- a raw map, so an absent key is
+	// distinguishable from an empty array. Decoding into Dashboard would give
+	// a nil slice for both, and "the field is missing" is exactly the failure.
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	raw, hasTables := payload["tables"]
+	if !hasTables {
+		present := make([]string, 0, len(payload))
+		for k := range payload {
+			present = append(present, k)
+		}
+		sort.Strings(present)
+		t.Fatalf("the response has no \"tables\" key at all; the browser renders "+
+			"from this endpoint and would draw no table. keys = %v", present)
+	}
+	tables, _ := raw.([]interface{})
+	if len(tables) == 0 {
+		t.Fatal("the response carries an empty tables array; the indexed metrics " +
+			"of this device share an index and should group into one")
 	}
 }

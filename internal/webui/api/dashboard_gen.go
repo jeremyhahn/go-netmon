@@ -362,17 +362,29 @@ func (s *Server) generateDashboard(ctx context.Context, device *storage.Device, 
 	// After the sort, so a table's columns arrive in the order their titles
 	// read -- the same order the cards are in, for the same reason.
 	//
-	// Tables are built for a module's tab only. The column decision needs each
-	// column's current value on every row, which is one query per table; a
-	// device-scoped dashboard spans every module a device carries -- 220 panels
-	// on dist-01 -- and paying for all of them to render one tab would trade
-	// the load time this work exists to fix for a different one.
-	var tables []Table
-	if scope == scopeModule {
-		tables = buildTables(panels)
-		s.markVaryingColumns(ctx, device.Name, tables)
-		chooseDefaultColumns(tables, panels)
-	}
+	// Built for EVERY scope, because the browser renders from the
+	// device-scoped response.
+	//
+	// This was module-scope only, on the reasoning that a device-scoped
+	// dashboard spans every module and paying for all of them to render one
+	// tab was a poor trade. The reasoning was sound and the premise was wrong:
+	// the page fetches /api/devices/{id}/dashboard ONCE and splits it per
+	// module in the browser. It never requests /api/mibs/{id}/dashboard for
+	// rendering at all.
+	//
+	// So the tables were built on an endpoint nothing draws from, and the
+	// feature shipped inert -- the server emitting an arrangement, the browser
+	// receiving a payload without it, and no error anywhere. Measured on
+	// dist-01: /api/devices/5/dashboard returned 220 panels and no `tables`
+	// key, while /api/mibs/56/dashboard returned 11 panels and 2 tables.
+	//
+	// The cost that motivated the restriction is real and is now paid here:
+	// one instant query per table, on a response that already costs ~0.4s. It
+	// is bounded by modules x index-label-sets rather than by panel count, and
+	// a page that renders nothing is not a cheaper page.
+	tables := buildTables(panels)
+	s.markVaryingColumns(ctx, device.Name, tables)
+	chooseDefaultColumns(tables, panels)
 
 	coverage := make([]MIBCoverage, 0, len(byModule))
 	for _, c := range byModule {
