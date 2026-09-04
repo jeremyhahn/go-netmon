@@ -416,3 +416,43 @@ test('a table whose columns are all summarized still lists its rows', async ({ p
     'the table rendered no rows because none of its columns was a default, so there '
     + 'is nothing to tick and its charts filter nothing').toHaveCount(PORTS.length);
 });
+
+test('a table-bound chart names its lines without a pager', async ({ page }) => {
+  // The "◀ 1/20 ▶" pager is what the owner reported as unusable: on a switch it
+  // is the only way to tell hundreds of lines apart, and reaching the last one
+  // takes longer than the question is worth.
+  //
+  // It exists because a panel could hold forty rows. A panel bound to a table
+  // now draws at most MAX_SELECTED_ROWS, which fits as plain names — so the
+  // pager should be gone from exactly these charts, and only these.
+  await serveWorkingTree(page);
+  await stubDashboard(page);
+  await openDashboard(page);
+  await feed(page, PORTS);
+
+  const legend = await page.evaluate(() => {
+    const app = (window as any).app;
+    for (const chart of Object.values(app.charts || {}) as any[]) {
+      if (chart && chart._panelSeries && chart._panelSeries.size > 0) {
+        const opt = chart.getOption();
+        const first = (opt.legend || [])[0] || {};
+        return {
+          held: chart._panelSeries.size,
+          plotted: (opt.series || []).length,
+          type: first.type ?? null,
+          shown: first.show !== false,
+        };
+      }
+    }
+    return null;
+  });
+
+  expect(legend, 'no chart held any series, so there is no legend to inspect').not.toBeNull();
+  expect(legend!.held, 'the chart is not holding more rows than it plots, so this '
+    + 'test is not measuring a chart the table is filtering').toBeGreaterThan(legend!.plotted);
+  expect(legend!.shown, 'the legend is hidden, so the lines have no names at all — '
+    + 'which is not the fix, it is the other failure').toBe(true);
+  expect(legend!.type, 'the chart plots a handful of rows and still carries the '
+    + 'scrolling pager; the pager exists for panels nothing is filtering')
+    .not.toBe('scroll');
+});

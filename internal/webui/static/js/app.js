@@ -8258,6 +8258,20 @@ class MonitoringApp {
         chart.setOption(this.buildPanelOption(chart, panel), true);
     }
 
+    // legendOption picks how a panel names its lines.
+    //
+    // One line needs no legend; the card's title says what it is. A handful get
+    // their names listed. More than that gets the pager back, because the
+    // alternative is a legend that buries the plot -- and a panel with more
+    // series than the selection bound is one no table is filtering.
+    legendOption(count) {
+        if (count <= 1) return { show: false };
+        if (count <= MAX_SELECTED_ROWS) {
+            return { top: 0, itemHeight: 8, itemWidth: 14 };
+        }
+        return { type: 'scroll', top: 0, itemHeight: 8, itemWidth: 14 };
+    }
+
     // buildPanelOption is the ECharts option for a multi-series panel.
     buildPanelOption(chart, panel) {
         // Only the rows the reader picked in the table above.
@@ -8328,11 +8342,21 @@ class MonitoringApp {
                     return `${when}<br/>${lines.join('<br/>')}`;
                 }
             },
-            // A panel of forty rows cannot show forty names without burying the
-            // plot, so the legend scrolls rather than wrapping down the card.
-            legend: keys.length > 1
-                ? { type: 'scroll', top: 0, itemHeight: 8, itemWidth: 14 }
-                : { show: false },
+            // The scrolling legend -- the "1/20" pager with arrows -- is what
+            // the owner reported as unusable: on a switch it is the only way to
+            // tell hundreds of lines apart, and reaching the last one takes
+            // longer than the question is worth.
+            //
+            // It exists because a panel could hold forty rows. A panel bound to
+            // a table now draws at most MAX_SELECTED_ROWS, which fits as plain
+            // names, so the pager is not needed and is not shown.
+            //
+            // It is kept for panels that are NOT bound to a table -- they have
+            // no rows to pick from and still draw everything they hold, so the
+            // scroll is the difference between a crowded legend and a buried
+            // plot. Removing it outright would trade one unusable card for
+            // another.
+            legend: this.legendOption(keys.length),
             grid: { left: 4, right: 14, top: keys.length > 1 ? 30 : 18, bottom: 2, containLabel: true },
             xAxis: this.timeAxisOption(longest, chart._panelSeries.get(keys[0]).points),
             yAxis: {
