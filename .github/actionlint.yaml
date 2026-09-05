@@ -7,7 +7,7 @@
 self-hosted-runner:
   labels:
     - claude
-    - code-review-qwen
+    - code-review
     - codex
 
 # No repository or organization configuration variables are defined, so any
