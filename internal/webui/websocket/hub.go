@@ -110,6 +110,12 @@ const (
 	// current one.
 	MessageTypeMetricDelta = "metric_delta"
 
+	// CapabilityAllSteady is what a browser announces to be sent the collapsed
+	// all-steady heartbeat instead of the full query list. The name is the
+	// field it unlocks, so an older server that has never heard of it ignores
+	// the announcement and a newer one needs no version table.
+	CapabilityAllSteady = "all_steady"
+
 	// MessageTypeMetricsUnchanged names the queries that were re-read this
 	// round and found to be exactly as the client already has them.
 	//
@@ -136,6 +142,22 @@ const (
 type ClientMessage struct {
 	Type    string   `json:"type"`
 	Queries []string `json:"queries,omitempty"`
+
+	// Supports names the frame shapes this browser knows how to apply.
+	//
+	// It exists because a page that is ALREADY OPEN cannot be taught anything.
+	// Deploying a server that sends a frame the loaded script does not
+	// understand does not degrade that tab, it silently stops it: the old
+	// handler reads a field that is not there, advances nothing, and every
+	// chart holds its last value while the connection stays up and the page
+	// looks fine. In a monitoring tool a line that stops moving reads as calm.
+	//
+	// So the SERVER is the side that has to be careful, and it is careful by
+	// default: a client that says nothing is sent the frames that have always
+	// worked. Only a browser that announces a shape is sent it. A version
+	// number would not do -- it would have to be checked by the very script
+	// that is too old to know it should look.
+	Supports []string `json:"supports,omitempty"`
 }
 
 // ServerMessage represents a message to the client
@@ -155,8 +177,18 @@ type ServerMessage struct {
 	Delta *Delta `json:"delta,omitempty"`
 
 	// Queries carries the subjects of a metrics_unchanged frame: the queries
-	// whose readings this client already holds.
+	// whose readings this client already holds. It is omitted when AllSteady
+	// is set, because then the client already knows the whole set.
 	Queries []string `json:"queries,omitempty"`
+
+	// AllSteady says every one of this client's subscriptions was steady this
+	// round. It is the common steady-state case -- a dashboard of a couple
+	// hundred queries none of which moved -- and it lets the frame name none
+	// of them: the client advances every reading it holds. Without it the
+	// heartbeat re-lists every subscribed query string on every round, which
+	// on a large dashboard is the query text of the whole page every five
+	// seconds to say nothing changed.
+	AllSteady bool `json:"all_steady,omitempty"`
 
 	Error     string `json:"error,omitempty"`
 	Timestamp int64  `json:"timestamp"`
@@ -340,17 +372,59 @@ func (h *Hub) sendSteady(ctx context.Context, steady *steadyQueries) {
 	steady.mu.Lock()
 	defer steady.mu.Unlock()
 
+	// How many queries each of these clients is subscribed to, read once under
+	// the hub lock. The all-steady decision compares a client's steady count
+	// against its subscription count, and client.subs is guarded by that lock;
+	// reading it here in the send loop, which runs after the round with the
+	// lock released, would race Subscribe and Unsubscribe. Snapshot it, then
+	// send with the lock dropped so a slow client cannot stall the hub.
+	h.mu.RLock()
+	subCount := make(map[*Client]int, len(steady.byClient))
+	for client := range steady.byClient {
+		subCount[client] = len(client.subs)
+	}
+	h.mu.RUnlock()
+
 	now := time.Now().Unix()
 	for client, queries := range steady.byClient {
 		if len(queries) == 0 {
 			continue
 		}
 
-		data, err := json.Marshal(ServerMessage{
-			Type:      MessageTypeMetricsUnchanged,
-			Queries:   queries,
-			Timestamp: now,
-		})
+		msg := ServerMessage{Type: MessageTypeMetricsUnchanged, Timestamp: now}
+		// Every subscription steady means the client already holds the whole
+		// set, so the frame names none of them and the client advances all it
+		// holds. A query that moved got a value frame instead and is absent
+		// from the steady list, so equal counts NORMALLY mean nothing moved.
+		//
+		// Normally, not always. The client list for a query is snapshotted at
+		// the top of the round, so a client that unsubscribes WHILE the round
+		// runs is still in it and can still be added to the steady set. Let it
+		// unsubscribe exactly as many queries as moved for it and the two
+		// counts coincide again -- subs-minus-moved on one side, subs-minus-
+		// unsubscribed on the other -- and the flag is set on a round where
+		// something did move.
+		//
+		// That is harmless, in both of the shapes it can take. The browser
+		// drops a query's held reading when it unsubscribes, so a moved query
+		// is either gone from what the browser holds, or still held and already
+		// updated by the frame it received earlier in this same round. Either
+		// way the client re-advances a CURRENT value; the cost is one duplicate
+		// point on a chart, never a stale reading rendered as a live one.
+		//
+		// When only some were steady, the names are still required so the
+		// client advances those and no others.
+		// Only to a browser that said it can apply it. One that said nothing is
+		// running a script from before the flag existed, and would read a field
+		// that is not there, advance nothing, and hold every chart at its last
+		// value with the connection still up.
+		if n := subCount[client]; client.supportsAllSteady.Load() && n > 0 && len(queries) == n {
+			msg.AllSteady = true
+		} else {
+			msg.Queries = queries
+		}
+
+		data, err := json.Marshal(msg)
 		if err != nil {
 			log.Printf("Error marshaling unchanged notice: %v", err)
 			continue
@@ -562,6 +636,19 @@ func (h *Hub) Subscribe(client *Client, query string) bool {
 }
 
 // Unsubscribe removes a client from a query subscription
+// announce records the frame shapes a browser says it can apply.
+//
+// Announcements only ever ADD: a reconnecting page re-subscribes tab by tab,
+// and a later subscribe carrying no capability list must not retract what an
+// earlier one established.
+func (c *Client) announce(supports []string) {
+	for _, capability := range supports {
+		if capability == CapabilityAllSteady {
+			c.supportsAllSteady.Store(true)
+		}
+	}
+}
+
 func (h *Hub) Unsubscribe(client *Client, query string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -642,6 +729,11 @@ type Client struct {
 	// subs is every query this client is subscribed to. It is guarded by the
 	// hub's lock, not the one above, because the hub is what mutates it.
 	subs map[string]struct{}
+
+	// supportsAllSteady is set when this browser has said it can apply an
+	// all-steady frame. It is written by the client's own read loop and read
+	// by the streaming rounds, so it is atomic rather than under either lock.
+	supportsAllSteady atomic.Bool
 
 	// seen records the sequence of the last reading delivered for each query,
 	// which is what decides whether this client can take a delta or needs the
@@ -729,6 +821,7 @@ func (c *Client) ReadPump() {
 
 		switch msg.Type {
 		case MessageTypeSubscribe:
+			c.announce(msg.Supports)
 			var refused int
 			for _, query := range msg.Queries {
 				if !c.hub.Subscribe(c, query) {

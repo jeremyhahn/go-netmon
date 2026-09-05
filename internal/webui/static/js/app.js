@@ -62,6 +62,18 @@ const ALARM_POLL_INTERVAL = 15000;
 // does not clip one through the middle.
 const PANEL_ROWS_VISIBLE = 8;
 
+// WS_SUPPORTS names the frame shapes this script knows how to apply, sent with
+// every subscribe so the server never sends a frame this page cannot read.
+//
+// It is announced rather than inferred from a version, because the page that
+// gets this wrong is the one ALREADY OPEN when a new server is deployed: its
+// script is what would have to notice, and it is exactly the script too old to
+// know there is anything to notice. Announcing puts the decision on the side
+// that is current -- the server sends the old frames to anyone who has not
+// asked for the new ones, so a stale tab keeps working instead of quietly
+// freezing every chart on the page while the connection stays up.
+const WS_SUPPORTS = ['all_steady'];
+
 // PANEL_POINT_CAP bounds the points one series keeps. A panel of forty rows
 // would otherwise hold forty times the history for the same span on screen.
 const PANEL_POINT_CAP = 200;
@@ -669,6 +681,27 @@ class MonitoringApp {
                 // view whose line stops at the last change reads as data
                 // having stopped, and the duration of a steady value is itself
                 // something to see.
+                //
+                // all_steady is the common case said in one flag: every query
+                // this browser holds was steady this round, so the server names
+                // none of them and we advance every reading we have. A query
+                // that moved arrived as its own value frame and updated its
+                // chart already, so it is normally not among what we hold.
+                //
+                // Normally, not always: a mid-round unsubscribe can make the
+                // server's two counts coincide and set the flag on a round
+                // where something moved (see sendSteady). Advancing everything
+                // is still right there -- what we unsubscribed we no longer
+                // hold, and what moved and is still held was updated by its own
+                // frame moments ago, so the worst case is one duplicate point
+                // at the value the chart is already showing.
+                if (message.all_steady) {
+                    for (const [query, held] of this.lastReadings) {
+                        this.updateDashboardCharts(query, [...held.byKey.values()],
+                            message.timestamp);
+                    }
+                    return;
+                }
                 for (const query of message.queries || []) {
                     const held = this.lastReadings.get(query);
                     if (held) {
@@ -7881,7 +7914,7 @@ class MonitoringApp {
 
         const queries = [...subscription.statusQueries, ...subscription.metricQueries];
         if (queries.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: 'subscribe', queries }));
+            this.ws.send(JSON.stringify({ type: 'subscribe', queries, supports: WS_SUPPORTS }));
         }
     }
 
@@ -8784,7 +8817,8 @@ class MonitoringApp {
             console.log(`Re-subscribing to ${key} with ${allQueries.length} queries`);
             this.ws.send(JSON.stringify({
                 type: 'subscribe',
-                queries: allQueries
+                queries: allQueries,
+                supports: WS_SUPPORTS
             }));
         });
 

@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,7 @@ func sample(index string, value float64, at int64) MetricValue {
 func TestUnchangedResultIsNotResent(t *testing.T) {
 	h := NewHub(staticQuery([]MetricValue{sample("1", 42, 1700000000)}), nil)
 	client := &Client{send: make(chan []byte, 64)}
+	client.announce([]string{CapabilityAllSteady}) // this browser can apply an all-steady frame
 	h.Subscribe(client, `snmp_ifInOctets{device="core-01"}`)
 
 	h.streamMetrics(context.Background())
@@ -123,8 +125,14 @@ func TestUnchangedResultIsNotResent(t *testing.T) {
 			"without them a steady chart stops at its last change", len(beats))
 	}
 	for _, beat := range beats {
-		if len(beat.Queries) != 1 || beat.Queries[0] != `snmp_ifInOctets{device="core-01"}` {
-			t.Errorf("heartbeat named %v, want the steady query", beat.Queries)
+		// This client holds a single subscription, so a steady round is an
+		// all-steady round: the flag is set and no query is named, and the
+		// browser advances every reading it holds -- here, the one.
+		if !beat.AllSteady {
+			t.Error("heartbeat did not set all_steady though every subscription was steady")
+		}
+		if len(beat.Queries) != 0 {
+			t.Errorf("heartbeat named %v; the all-steady flag re-lists nothing", beat.Queries)
 		}
 		if len(beat.Metrics) != 0 {
 			t.Errorf("heartbeat carried %d samples; it exists to carry none", len(beat.Metrics))
@@ -380,5 +388,147 @@ func TestASettledValueIsAskedAboutLessOften(t *testing.T) {
 	if got := len(heartbeats(frames)); got != rounds-1 {
 		t.Errorf("sent %d heartbeats across %d rounds, want one per round after the first: "+
 			"a backed-off query must still tick", got, rounds-1)
+	}
+}
+
+// TestHeartbeatCollapsesToAFlagWhenEverySubscriptionIsSteady is the point of
+// the all-steady flag: on the common round where nothing a client watches has
+// moved, it is told with one flag rather than a re-listing of every query name
+// it already holds. On a dashboard of a couple hundred queries that is the
+// query text of the whole page, every round, to say nothing changed.
+func TestHeartbeatCollapsesToAFlagWhenEverySubscriptionIsSteady(t *testing.T) {
+	h := NewHub(staticQuery([]MetricValue{sample("1", 42, 1700000000)}), nil)
+	client := &Client{send: make(chan []byte, 64)}
+	client.announce([]string{CapabilityAllSteady}) // this browser can apply an all-steady frame
+	h.Subscribe(client, `snmp_ifInOctets{device="core-01"}`)
+	h.Subscribe(client, `snmp_ifOutOctets{device="core-01"}`)
+
+	// The first round delivers both readings; drain them.
+	h.streamMetrics(context.Background())
+	if got := len(readings(collectFrames(t, client))); got != 2 {
+		t.Fatalf("first round sent %d readings, want 2: a new subscriber gets each value", got)
+	}
+
+	// The second round moves nothing, and every subscription is steady, so a
+	// single flag stands in for the whole list.
+	h.streamMetrics(context.Background())
+	beats := heartbeats(collectFrames(t, client))
+	if len(beats) != 1 {
+		t.Fatalf("steady round sent %d heartbeats, want one", len(beats))
+	}
+	if !beats[0].AllSteady {
+		t.Error("all_steady not set though both subscriptions were steady")
+	}
+	if len(beats[0].Queries) != 0 {
+		t.Errorf("heartbeat named %v; the all-steady flag re-lists nothing", beats[0].Queries)
+	}
+	if len(beats[0].Metrics) != 0 {
+		t.Errorf("heartbeat carried %d samples; it exists to carry none", len(beats[0].Metrics))
+	}
+	if beats[0].Timestamp == 0 {
+		t.Error("heartbeat carried no timestamp, so a chart cannot know how far to advance")
+	}
+}
+
+// TestHeartbeatKeepsTheListWhenOnlySomeSubscriptionsAreSteady is the other
+// half: when a subset moved, the steady ones must still be named so the client
+// advances those and no others. The flag would tell it to advance everything,
+// including the query it is about to receive a new value for.
+func TestHeartbeatKeepsTheListWhenOnlySomeSubscriptionsAreSteady(t *testing.T) {
+	var moved float64
+	h := NewHub(func(_ context.Context, q string) ([]MetricValue, error) {
+		if strings.Contains(q, "moving") {
+			moved++
+			return []MetricValue{{
+				Metric: map[string]string{"__name__": "snmp_moving"}, Value: moved, Timestamp: 1700000000,
+			}}, nil
+		}
+		return []MetricValue{{
+			Metric: map[string]string{"__name__": "snmp_steady"}, Value: 1, Timestamp: 1700000000,
+		}}, nil
+	}, nil)
+	client := &Client{send: make(chan []byte, 64)}
+	h.Subscribe(client, "snmp_moving")
+	h.Subscribe(client, "snmp_steady")
+
+	h.streamMetrics(context.Background()) // first round: two snapshots
+	if got := len(readings(collectFrames(t, client))); got != 2 {
+		t.Fatalf("first round sent %d readings, want 2", got)
+	}
+
+	h.streamMetrics(context.Background()) // second round: one delta, one steady
+	frames := collectFrames(t, client)
+
+	if got := len(readings(frames)); got != 1 {
+		t.Fatalf("second round sent %d readings, want 1 (only the query that moved)", got)
+	}
+	beats := heartbeats(frames)
+	if len(beats) != 1 {
+		t.Fatalf("second round sent %d heartbeats, want one", len(beats))
+	}
+	if beats[0].AllSteady {
+		t.Error("all_steady set though one subscription moved this round")
+	}
+	if len(beats[0].Queries) != 1 || beats[0].Queries[0] != "snmp_steady" {
+		t.Errorf("heartbeat named %v, want [snmp_steady]", beats[0].Queries)
+	}
+}
+
+// TestAHeartbeatToAnUnannouncedBrowserStillNamesEveryQuery is the compatibility
+// half of the all-steady flag, and the reason the flag is negotiated at all.
+//
+// A browser that was loaded before this build exists is running a script whose
+// unchanged-handler reads message.queries and nothing else. Send it a frame
+// that names none of them and it advances none of them: every chart on the page
+// holds its last value, with the socket still open and nothing on screen saying
+// anything is wrong. In a monitoring tool that reads as calm, which is the one
+// failure a monitoring tool must never have. The page cannot be fixed from the
+// server -- it is already loaded -- so the server stays conservative until the
+// browser says otherwise.
+func TestAHeartbeatToAnUnannouncedBrowserStillNamesEveryQuery(t *testing.T) {
+	h := NewHub(staticQuery([]MetricValue{sample("1", 42, 1700000000)}), nil)
+
+	// No announce: this is a browser from before the flag existed.
+	client := &Client{send: make(chan []byte, 64)}
+	h.Subscribe(client, `snmp_ifInOctets{device="core-01"}`)
+	h.Subscribe(client, `snmp_ifOutOctets{device="core-01"}`)
+
+	h.streamMetrics(context.Background())
+	if got := len(readings(collectFrames(t, client))); got != 2 {
+		t.Fatalf("first round sent %d readings, want 2", got)
+	}
+
+	h.streamMetrics(context.Background())
+	beats := heartbeats(collectFrames(t, client))
+	if len(beats) != 1 {
+		t.Fatalf("steady round sent %d heartbeats, want one", len(beats))
+	}
+	if beats[0].AllSteady {
+		t.Error("all_steady was set for a browser that never said it could apply it")
+	}
+	if len(beats[0].Queries) != 2 {
+		t.Errorf("heartbeat named %v; an unannounced browser needs every query listed, "+
+			"because naming none of them stops all of its charts", beats[0].Queries)
+	}
+}
+
+// TestAnnouncingIsCumulativeAcrossSubscribes guards the reconnect path. A page
+// re-subscribes one dashboard at a time, and only the frames it builds itself
+// carry the capability list; anything that ever sent a bare subscribe would
+// otherwise retract the announcement and silently drop the browser back to the
+// full-list frames it had already outgrown.
+func TestAnnouncingIsCumulativeAcrossSubscribes(t *testing.T) {
+	client := &Client{send: make(chan []byte, 64)}
+
+	client.announce([]string{CapabilityAllSteady})
+	if !client.supportsAllSteady.Load() {
+		t.Fatal("announcing the capability did not record it")
+	}
+
+	client.announce(nil)
+	client.announce([]string{})
+	client.announce([]string{"something-else-entirely"})
+	if !client.supportsAllSteady.Load() {
+		t.Error("a later subscribe without a capability list retracted the announcement")
 	}
 }
