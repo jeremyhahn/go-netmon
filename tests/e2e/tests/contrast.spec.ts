@@ -73,6 +73,7 @@ const TEXT = [
   '.panel-eyebrow',
   '.panel-title',
   '.panel-note',
+  '.panel-note-compact',
   '.panel-unit',
   '.panel-row-name',
   '.panel-row-value',

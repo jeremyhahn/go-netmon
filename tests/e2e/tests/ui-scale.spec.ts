@@ -767,10 +767,30 @@ test.describe('descriptions', () => {
     async ({ page }) => {
       await openDashboard(page);
 
-      // The caption class is .panel-note now: a panel head separates provenance,
-      // name, unit and description, and the description is the one that holds a
-      // single line so every plot in a row starts at the same height.
-      const caption = page.locator('.tab-pane.active .panel-note').first();
+      // The caption under test is a CHART card's: a scalar tile keeps its
+      // description as a compact control (.panel-note-compact), not the clipped
+      // one-line .panel-note, so this scopes to a chart card. Tabs render on
+      // activation (lazy), and the tab open on load may be scalars only, so
+      // click through the rail until an active pane holds a chart-card caption.
+      const tabNames = (await page.locator('#mibTabList .tab-button').allTextContents())
+        .map(t => t.trim()).filter(Boolean);
+      let located = false;
+      for (const name of tabNames) {
+        await page.evaluate(n => {
+          const b = [...document.querySelectorAll('#mibTabList .tab-button')]
+            .find(x => (x.textContent || '').trim() === n);
+          if (b) (b as HTMLElement).click();
+        }, name);
+        try {
+          await page.waitForSelector('.tab-pane.active .chart-container .panel-note',
+            { timeout: 8000 });
+          located = true;
+          break;
+        } catch { /* this tab has no chart-card caption; try the next */ }
+      }
+      expect(located, 'no module tab rendered a chart card with a description caption').toBe(true);
+
+      const caption = page.locator('.tab-pane.active .chart-container .panel-note').first();
       await expect(caption).toBeVisible({ timeout: 45000 });
 
       // The single line is load-bearing: it is what makes every plot in a row

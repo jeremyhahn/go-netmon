@@ -1599,6 +1599,38 @@ input.mib-nav-search { width: 100%; min-width: 0; }
     white-space: nowrap;
 }
 
+/* On a scalar tile the reading is the content, so its description is a compact
+   control -- an info glyph and a short label -- not a clipped paragraph printed
+   between the name and the value. This is what makes the reading the first
+   substantial thing the eye lands on; the full text opens from the same sheet.
+   It overrides the block, full-width, dotted-underline base of .desc-trigger. */
+.panel-note-compact {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    width: auto;
+    margin-top: 2px;
+    padding: 1px 7px 1px 5px;
+    border-radius: var(--r-pill);
+    background: var(--surface-inset);
+    font-size: var(--t-xs);
+    font-weight: 550;
+    /* --text-secondary on --surface-inset, the same pairing .panel-unit uses
+       and the contrast walk already measures: a control, not a whisper. */
+    color: var(--text-secondary);
+    text-decoration: none;
+}
+.panel-note-compact:hover {
+    color: var(--accent);
+    text-decoration: none;
+}
+.panel-note-compact .desc-trigger-icon { font-size: var(--t-sm); line-height: 1; }
+.panel-note-compact .desc-trigger-label { letter-spacing: 0.02em; }
+
+/* The compact head sits tighter to its reading than a chart head does to its
+   plot: there is no clipped line under it to leave room for. */
+.panel-head-compact { gap: 2px; }
+
 /* ---- section heads ------------------------------------------------------
    The boundary between one group of panels and the next. A heading with a rule
    carries it; whitespace alone does not, because at this density there is
@@ -1766,6 +1798,59 @@ input.mib-nav-search { width: 100%; min-width: 0; }
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
 }
+
+/* A READING row inverts the row's shrink policy. Everywhere else the value is
+   the short half -- "up", "enabled", a number -- and must not be squeezed by a
+   long interface name, which is what flex-shrink: 0 above protects. On a row
+   carrying one of an info metric's several readings the halves swap: the name
+   is a fixed label (sys_descr) and the value is the text, a 190-character
+   sysDescr among them. So here the VALUE is what gives way.
+
+   It wraps and stops at three lines rather than clipping to one, because a
+   device description truncated at "Cisco NX-OS(tm) Nexus9000" has told the
+   reader nothing they did not already know from the device name. The clamp is
+   the same idiom .status-value uses, and it is measured to work: what it
+   replaces was one run-together string in which everything after sysDescr was
+   below the clip and unreachable.
+
+   The text is left-aligned where every other row's value is not. A value that
+   fits is still flush right -- its box hugs its content, so the alignment has
+   nothing to act on and the column of answers is unbroken. It acts only on the
+   one value that WRAPPED, and there right alignment costs a ragged left edge
+   on three lines of prose and hides the clamp's ellipsis in the rag. Aligning
+   left buys back both and changes nothing else.
+
+   Figures go back to proportional for the same reason. Tabular figures exist so
+   a COLUMN of numbers does not jitter as it updates; inside a sentence --
+   "Nexus9000 ... Version 9.3(13) ... 2002-2024" -- they only set the digits at
+   an unnatural width against the letters around them. */
+.panel-row.is-reading .panel-row-name { flex-shrink: 0; }
+.panel-row.is-reading .panel-row-value {
+    flex-shrink: 1;
+    min-width: 0;
+    /* width, not the .desc-trigger base's 100%: a reading that FITS has to keep
+       hugging its content, or it would stretch across the row and break the
+       flush-right column the short answers form. */
+    width: auto;
+    text-align: left;
+    font-variant-numeric: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* Every reading opens its full text in the sheet, but only the one that was
+   actually cut says so. The underline is the affordance, and it is spent where
+   it buys something: on three lines of prose ending in an ellipsis it explains
+   the ellipsis, while under every short answer on the card it would be three
+   dotted rules decorating values that are already whole.
+
+   .is-clipped is set by measurement after the row list is written, because
+   whether a reading was cut is a fact about this card at this width. */
+.panel-row.is-reading .panel-row-value:not(.is-clipped) { text-decoration-line: none; }
+.panel-row.is-reading .panel-row-value.is-clipped { text-decoration-color: var(--text-muted); }
 
 /* What is not shown, and the way to see it. */
 .panel-rows-more {

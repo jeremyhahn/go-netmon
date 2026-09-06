@@ -1588,13 +1588,24 @@ class MonitoringApp {
         const meta = (detail.meta || [])
             .filter(([, value]) => value !== undefined && value !== null && value !== '');
 
-        return `<button type="button" class="desc-trigger${detail.className ? ' ' + detail.className : ''}"
+        // A compact trigger shows a fixed affordance -- an info glyph and the
+        // word "Description" -- instead of a clipped line of the text itself.
+        // It is for places that put the reading first and the documentation one
+        // click away, rather than printing a paragraph of it above the value.
+        // The full text still travels in data-desc-text for the sheet.
+        const content = detail.compact
+            ? '<span class="desc-trigger-icon" aria-hidden="true">ⓘ</span>' +
+              '<span class="desc-trigger-label">Description</span>'
+            : this.escapeHtml(text);
+        const label = detail.compact ? ' aria-label="Read the description"' : '';
+
+        return `<button type="button" class="desc-trigger${detail.className ? ' ' + detail.className : ''}"${label}
                     aria-haspopup="dialog" title="Read the full description"
                     data-desc-title="${this.escapeAttr(detail.title || '')}"
                     data-desc-eyebrow="${this.escapeAttr(detail.eyebrow || '')}"
                     data-desc-meta="${this.escapeAttr(JSON.stringify(meta))}"
                     data-desc-text="${this.escapeAttr(text)}"
-                >${this.escapeHtml(text)}</button>`;
+                >${content}</button>`;
     }
 
     // A table cell or list line whose description would otherwise run away with
@@ -7313,7 +7324,7 @@ class MonitoringApp {
     //
     // Size alone would not do it -- two things at 11.5px are still told apart
     // here, by weight, by colour and by case.
-    panelHeadMarkup(panel) {
+    panelHeadMarkup(panel, options = {}) {
         const provenance = panel.module
             || (panel.kind === 'string' && !panel.object ? 'Reading' : '')
             || 'Unattributed';
@@ -7332,20 +7343,29 @@ class MonitoringApp {
 
         const unit = this.panelUnit(panel);
 
+        // On a scalar tile the reading is the content, so the description is a
+        // compact control -- an info glyph, one click from the full text --
+        // rather than a clipped paragraph printed between the name and the
+        // value. On a chart card the clipped line is kept: it is what makes
+        // every plot in a row start at the same height.
+        const compact = Boolean(options.compactDescription);
+        const descTrigger = this.descriptionTriggerHtml(panel.description, {
+            title: name,
+            eyebrow: panel.module || 'Metric',
+            className: compact ? 'panel-note-compact' : 'panel-note',
+            compact,
+            meta: [['Metric', panel.metric], ['OID', panel.oid]]
+        });
+
         return `
-            <header class="panel-head">
+            <header class="panel-head${compact ? ' panel-head-compact' : ''}">
                 <p class="panel-eyebrow">${this.escapeHtml(provenance)}</p>
                 <div class="panel-headline">
                     <h4 class="panel-title${named ? '' : ' is-identifier'}"
                         title="${this.escapeAttr(name)}">${this.escapeHtml(name)}</h4>
                     ${unit ? `<span class="panel-unit">${this.escapeHtml(unit)}</span>` : ''}
                 </div>
-                ${this.descriptionTriggerHtml(panel.description, {
-                    title: name,
-                    eyebrow: panel.module || 'Metric',
-                    className: 'panel-note',
-                    meta: [['Metric', panel.metric], ['OID', panel.oid]]
-                })}
+                ${descTrigger}
             </header>
         `;
     }
@@ -7367,11 +7387,13 @@ class MonitoringApp {
         `;
     }
 
-    // A tile is the same head over a reading that is words rather than a plot.
+    // A tile is the same head over a reading that is words rather than a plot --
+    // but the reading is the content here, so its head keeps the description as
+    // a compact control rather than a clipped paragraph above the value.
     tileCardMarkup(elementId, panel) {
         return `
             <article class="panel status-item">
-                ${this.panelHeadMarkup(panel)}
+                ${this.panelHeadMarkup(panel, { compactDescription: true })}
                 <div id="${elementId}" class="status-value" data-waiting="1">Waiting for data…</div>
             </article>
         `;
@@ -8204,23 +8226,38 @@ class MonitoringApp {
         if (!element) return;
 
         const panel = target.panel;
-        const rows = this.distinctNames(panel, (metrics || []).map(metric => {
+        const rows = this.distinctNames(panel, (metrics || []).flatMap(metric => {
             const labels = metric.metric || {};
             const identity = this.seriesIdentity(panel, labels);
-            const reading = panel.type === 'text'
-                ? this.textReading(panel, labels)
-                : this.decodeState(panel, metric.value);
+            const key = this.seriesKey(panel, labels) || panel.title;
+
+            if (panel.type !== 'text') {
+                return [{
+                    key,
+                    name: identity.name,
+                    reading: this.decodeState(panel, metric.value)
+                }];
+            }
 
             // A text reading with no name of its own IS the identity. Putting
             // the row's index in front of it -- "369098752  port-channel1" --
             // adds a number nobody can use to the only thing worth reading.
-            const anonymous = panel.type === 'text' && !identity.named;
+            const anonymous = !identity.named;
 
-            return {
-                key: this.seriesKey(panel, labels) || panel.title,
-                name: anonymous ? '' : identity.name,
-                reading
-            };
+            // One series can carry SEVERAL readings, and each of them is a row
+            // of its own named by the label it arrived on. Only then is the row
+            // a label opposite a piece of text, which is what `labelled` marks:
+            // an interface's ifAlias is one reading under the port's name and
+            // must keep the shared row layout.
+            const readings = this.textReadings(panel, labels);
+            const labelled = readings.length > 1;
+
+            return readings.map(reading => ({
+                key,
+                name: reading.label || (anonymous ? '' : identity.name),
+                reading: reading.text,
+                labelled
+            }));
         })).filter(row => row.reading !== undefined && row.reading !== '');
 
         if (rows.length === 0) {
@@ -8250,15 +8287,63 @@ class MonitoringApp {
 
         element.innerHTML =
             '<span class="panel-rows">' + shown.map(row =>
-                `<span class="panel-row${row.name ? '' : ' is-unnamed'}">` +
+                `<span class="panel-row${row.name ? '' : ' is-unnamed'}${row.labelled ? ' is-reading' : ''}">` +
                 (row.name ? `<span class="panel-row-name">${this.escapeHtml(row.name)}</span>` : '') +
-                `<span class="panel-row-value">${this.escapeHtml(row.reading)}</span></span>`
+                (row.labelled
+                    ? this.readingValueMarkup(row, panel)
+                    : `<span class="panel-row-value">${this.escapeHtml(row.reading)}</span>`) +
+                '</span>'
             ).join('') + '</span>' +
             (hidden > 0
                 ? `<button type="button" class="panel-rows-more" data-panel-more="1">${hidden} more</button>`
                 : (expanded && rows.length > PANEL_ROWS_VISIBLE
                     ? '<button type="button" class="panel-rows-more" data-panel-more="1">Show fewer</button>'
                     : ''));
+
+        this.markClippedReadings(element);
+    }
+
+    // readingValueMarkup renders one of an info metric's readings as a control
+    // that opens the whole of it.
+    //
+    // The reading is CLIPPED on the card -- a sysDescr is 190 characters and
+    // its row gives it three lines -- so without a way to open it, clipping
+    // would destroy text the operator can read today. It opens the same sheet a
+    // description does, because that sheet is precisely where long text is
+    // readable, SELECTABLE and copyable; the codebase already rejected a title
+    // tooltip for being none of those.
+    //
+    // It opens under the READING's own name, never "Description". The sheet now
+    // carries two kinds of content -- a MIB's documentation and a device's
+    // data -- and showing a reading under a heading that says "Description"
+    // presents the one as the other.
+    readingValueMarkup(row, panel) {
+        const meta = [['Metric', panel.metric], ['OID', panel.oid]]
+            .filter(([, value]) => value !== undefined && value !== null && value !== '');
+
+        return `<button type="button" class="desc-trigger panel-row-value"
+                    aria-haspopup="dialog"
+                    aria-label="Open the full ${this.escapeAttr(row.name)} reading"
+                    data-desc-title="${this.escapeAttr(row.name)}"
+                    data-desc-eyebrow="Reading"
+                    data-desc-meta="${this.escapeAttr(JSON.stringify(meta))}"
+                    data-desc-text="${this.escapeAttr(row.reading)}"
+                >${this.escapeHtml(row.reading)}</button>`;
+    }
+
+    // markClippedReadings flags the readings the card could not show in full.
+    //
+    // Every reading opens, because a value worth reading is worth copying --
+    // an sysObjectID is easier to take from the sheet than off the card. But
+    // only the one that was actually CUT advertises it, and whether a reading
+    // was cut is a fact about this card at this width with this font, not
+    // about its length: a character count here would be a second copy of the
+    // layout, maintained separately from the layout and wrong on a narrow
+    // tile. So it is measured, once, off the box that did the clipping.
+    markClippedReadings(element) {
+        for (const value of element.querySelectorAll('.panel-row.is-reading .panel-row-value')) {
+            value.classList.toggle('is-clipped', value.scrollHeight > value.clientHeight + 1);
+        }
     }
 
     // checkPanelTileTimeout gives up on a tile that never received a sample.
@@ -8269,26 +8354,47 @@ class MonitoringApp {
         this.markStatusNoData(elementId);
     }
 
-    // textReading pulls the words out of an info metric.
+    // textReadings pulls the words out of an info metric, one reading per row.
     //
     // Its sample is always 1, so everything it has to say is in its labels. The
     // usual shape is one "value" label holding the reading, and the catalog
-    // says so. Some families carry several instead -- snmp_system_info collapses
-    // the whole system group into sysdescr, syscontact, syslocation and the
-    // rest -- so where the named label is absent, the labels that are not
-    // bookkeeping ARE the reading.
-    textReading(panel, labels) {
+    // says so: that is a single reading, and the card's own title names it.
+    // Some families carry SEVERAL instead -- snmp_system_info collapses the
+    // whole system group into sys_descr, sys_name, sys_object_id and the rest
+    // -- so where the named label is absent, the labels that are not
+    // bookkeeping ARE the readings, and each is returned separately.
+    //
+    // They used to be joined into one "sys_descr=..., sys_name=..." string and
+    // printed as a paragraph. sysDescr alone is 190 characters, so it filled
+    // the tile's four visible lines by itself and pushed every other reading
+    // on the series below the clip: the card showed a wall of text and withheld
+    // the two readings a reader could have used. Measured on dist-01,
+    // 2026-09-05 -- 253 characters rendered as 4 of 6 lines.
+    //
+    // The label is reported as it is published rather than prettified back to
+    // its MIB spelling. "sys_object_id" is what the exporter writes and what a
+    // reader greps in Prometheus, and the round trip is not faithful anyway:
+    // the MIB object is sysObjectID, which no mechanical un-snaking produces.
+    textReadings(panel, labels) {
         const named = panel.value_label && labels[panel.value_label];
-        if (named) return named;
+        if (named) return [{ label: '', text: named }];
 
         const skip = new Set([
             '__name__', 'device', 'oid', 'source', 'instance', 'job',
             ...(panel.index_labels || [])
         ]);
+        // Every carried reading keeps its label, including when there is only
+        // one of them. Dropping the label there would read better on the cards
+        // that exist today -- but what is carried is not only the catalog's
+        // readings: mergeExtraLabels puts a device's configured TAGS on the
+        // same series, and they are not in the skip set above. A device tagged
+        // with one thing would then render that tag's value alone, unlabelled,
+        // as though it were the panel's reading. The set of panels this reaches
+        // is a function of how the fleet is tagged, so it is not something the
+        // renderer can settle by measuring the fleet once.
         return Object.keys(labels).sort()
             .filter(name => !skip.has(name) && labels[name] !== '')
-            .map(name => `${name}=${labels[name]}`)
-            .join(', ');
+            .map(name => ({ label: name, text: labels[name] }));
     }
 
     // distinctNames qualifies a display name that two rows honestly share.
