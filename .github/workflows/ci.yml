@@ -29,10 +29,28 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      - name: Install linters
-        run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2  # PINNED (devops.md §9, documented): v2.12.2 CANNOT LINT Go 1.27 -- its buildir SSA pass panics "unexpected expr: *ast.KeyValueExpr" on stdlib package "poll", a red gate with zero findings. v2.13.0 was previously rejected for shipping honnef.co/go/tools v0.8.0-rc.1 whose nilness pass panicked; v2.13.2 (2026-08-27) ships v0.8.1, non-rc, and runs clean on this repo under go1.27.0. Verified before bumping, not assumed.
-          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+      # No "go install" step here. golangci-lint v2.13.2 and actionlint v1.7.7
+      # come from the runner image (ci-runner:latest, which "ubuntu-latest" maps
+      # to), at pins asserted when that image is built -- the build fails closed
+      # if a tool's self-report disagrees with its pin, and /etc/ci-runner-tools.txt
+      # inside the image records what shipped.
+      #
+      # Installing them here was not merely redundant, it was a flake source.
+      # Every host in the fleet resolves AAAA for sum.golang.org and none has a
+      # default IPv6 route; job containers use network: "host" and inherit that
+      # exactly. Go usually falls back v6 -> v4, so this surfaced intermittently,
+      # as "network is unreachable" from the module proxy on a loaded runner.
+      #
+      # The golangci-lint pin is NOT weakened by dropping the line. It lives in
+      # the Makefile (GOLANGCI_LINT_VERSION), and "make lint" refuses to run a
+      # binary whose version does not match it -- so if the image ever bakes a
+      # different version this job fails with that mismatch named, rather than
+      # linting with the wrong one. That guard is why v2.13.2 is required at all:
+      # v2.12.2 cannot lint Go 1.27, its buildir SSA pass panics on stdlib
+      # "poll" and reports a red gate with zero findings.
+      #
+      # A version bump is a rebuild of the runner image plus the Makefile pin,
+      # reviewed together -- not a "go install" added back here.
 
       # Separate targets so a formatting failure is distinguishable from a lint
       # finding in the job log.
@@ -62,9 +80,11 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
+      # govulncheck v1.7.0 comes from the runner image, for the reason spelled
+      # out in the lint job above. It was installed here at "@latest", which
+      # made the scanner version -- and therefore the finding set -- whatever
+      # the proxy served that morning; the baked copy is pinned and recorded.
+      #
       # Covers the dependencies and the standard library this project links
       # against, so a regression in the go.mod toolchain pin fails here.
       - run: make security
