@@ -262,7 +262,7 @@ func TestPartiallyAnsweringDeviceKeepsCollecting(t *testing.T) {
 	if w.health.unreachable() {
 		t.Error("a device that answered is marked unreachable")
 	}
-	if got := w.health.schedule(); got != w.interval {
+	if got := w.health.delay(); got != w.interval {
 		t.Errorf("next poll in %s, want the normal interval %s: a healthy device was backed off", got, w.interval)
 	}
 	if got := testutil.ToFloat64(deviceUnreachable.WithLabelValues(w.device.Name)); got != 0 {
@@ -316,7 +316,7 @@ func TestBackoffWidensAcrossCyclesAndResetsOnRecovery(t *testing.T) {
 		if result := nextResult(t, results); result.Error == nil {
 			t.Fatalf("cycle %d against a silent device reported success", cycle+1)
 		}
-		if got := w.health.schedule(); got != want {
+		if got := w.health.delay(); got != want {
 			t.Errorf("after %d failed cycles the next poll is in %s, want %s", cycle+1, got, want)
 		}
 	}
@@ -331,7 +331,7 @@ func TestBackoffWidensAcrossCyclesAndResetsOnRecovery(t *testing.T) {
 	if w.health.unreachable() {
 		t.Error("the recovered device is still marked unreachable")
 	}
-	if got := w.health.schedule(); got != interval {
+	if got := w.health.delay(); got != interval {
 		t.Errorf("the recovered device is polled in %s, want its normal interval %s", got, interval)
 	}
 }
@@ -426,10 +426,19 @@ func TestFirstPollFailureIsReportedAsAFailedPoll(t *testing.T) {
 		t.Error("the failed poll carries no timestamp, so it reads as never having happened")
 	}
 
-	// Unreachable and ConsecutiveFailures are readable the moment the result
-	// arrives, because the worker calls health.silent() before it reports.
-	// NextPoll is not: see awaitScheduledRetry.
-	status := awaitScheduledRetry(t, p, "bastion")
+	// All three are readable the moment the result arrives, with no wait: the
+	// worker records the cycle's outcome and the retry it earned in one step,
+	// before it reports the result. This used to need awaitScheduledRetry,
+	// because the retry was scheduled after poll returned and NextPoll read as
+	// the zero time until then -- the window that made
+	// TestDeviceStatusReportsAnUnreachableDevice load-dependent (#33).
+	status, polling := p.WorkerStatus("bastion")
+	if !polling {
+		t.Fatal("the poller has no worker for bastion, which it was just given")
+	}
+	if status.NextPoll.IsZero() {
+		t.Fatal("the device is reported with no scheduled retry although its poll has already failed")
+	}
 	if !status.Unreachable {
 		t.Error("WorkerStatus does not report the device as unreachable")
 	}
@@ -446,35 +455,6 @@ func TestFirstPollFailureIsReportedAsAFailedPoll(t *testing.T) {
 	if !status.NextPoll.After(result.Timestamp) {
 		t.Errorf("WorkerStatus.NextPoll = %s, want a retry later than the poll that failed at %s",
 			status.NextPoll, result.Timestamp)
-	}
-}
-
-// awaitScheduledRetry returns the device's worker status once the worker has
-// recorded when it will next try the device.
-//
-// The wait is necessary because a worker reports its poll result BEFORE it
-// schedules the retry -- reachability.schedule() runs after worker.poll()
-// returns -- and reachability.due() reports the zero time until it does. So a
-// status read straight after a result legitimately carries a zero NextPoll, and
-// an assertion on it fails whenever the worker goroutine has not been scheduled
-// yet. Waiting for the value under test, rather than for the result that merely
-// precedes it, is what makes that deterministic.
-func awaitScheduledRetry(t *testing.T, p *Poller, device string) WorkerStatus {
-	t.Helper()
-
-	deadline := time.Now().Add(testPollTimeout)
-	for {
-		status, polling := p.WorkerStatus(device)
-		if !polling {
-			t.Fatalf("the poller has no worker for %s, which it was just given", device)
-		}
-		if !status.NextPoll.IsZero() {
-			return status
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the worker for %s scheduled no retry within %s", device, testPollTimeout)
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 

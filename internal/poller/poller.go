@@ -171,11 +171,11 @@ func (w *worker) commit(ctx context.Context, result *PollResult, health cycle) b
 
 	// The device either took part in this cycle or it did not, and that -- not
 	// whether every object came back -- is what decides its schedule.
-	if health.unreachable() {
-		w.health.silent()
-	} else {
-		w.health.answered()
-	}
+	//
+	// Recording the outcome IS scheduling the retry. They were two steps, the
+	// second of them after poll returned, and a status read between them saw a
+	// device reported unreachable with no retry time at all (#33).
+	w.health.record(!health.unreachable())
 
 	if w.exporter != nil && len(result.Results) > 0 {
 		if exportErr := w.exporter.ExportSNMPResults(ctx, w.device.Name, result.Results, w.device.Tags); exportErr != nil {
@@ -462,7 +462,9 @@ func (w *worker) run(ctx context.Context, wg *sync.WaitGroup) {
 		// delay the previous poll's outcome earned.
 		w.poll(ctx)
 
-		delay := w.health.schedule()
+		// The wait was decided when the poll's outcome was recorded, so that
+		// the retry an operator is told about is the one actually waited for.
+		delay := w.health.delay()
 		if w.health.unreachable() {
 			log.Printf("Device %s is unreachable (%d consecutive failed polls); next attempt in %s",
 				w.device.Name, w.health.failures(), delay)
@@ -812,15 +814,20 @@ func (p *Poller) WorkerStatus(deviceName string) (WorkerStatus, bool) {
 }
 
 // statusOf describes one worker. The caller holds p.mu.
+//
+// The three reachability fields come from ONE snapshot rather than three
+// separate reads, so the row an operator is shown is a state the device was
+// actually in.
 func (p *Poller) statusOf(w *worker) WorkerStatus {
+	health := w.health.snapshot()
 	return WorkerStatus{
 		DeviceName:          w.device.Name,
 		Device:              w.device,
 		Interval:            w.interval,
 		Running:             !p.stopped,
-		Unreachable:         w.health.unreachable(),
-		ConsecutiveFailures: w.health.failures(),
-		NextPoll:            w.health.due(),
+		Unreachable:         health.consecutive > 0,
+		ConsecutiveFailures: int(health.consecutive),
+		NextPoll:            health.nextPoll,
 	}
 }
 

@@ -71,6 +71,8 @@ func TestDeviceStatusReportsAnUnreachableDevice(t *testing.T) {
 
 	handler := NewPollerControlHandler(p, cfg)
 	device := unreachableDevice(t, "bastion")
+
+	registered := time.Now()
 	if err := p.AddDevice(t.Context(), device); err != nil {
 		t.Fatalf("AddDevice: %v", err)
 	}
@@ -80,8 +82,17 @@ func TestDeviceStatusReportsAnUnreachableDevice(t *testing.T) {
 	if status.ConsecutiveFailures == 0 {
 		t.Error("consecutive_failures = 0 for a device that has never answered")
 	}
-	if !status.NextPollTime.After(time.Now()) {
-		t.Errorf("next_poll_time = %s, want the retry the device is scheduled for", status.NextPollTime)
+
+	// The retry is bracketed against the registration rather than compared to
+	// time.Now(), which asserts something about the runner instead: the worker
+	// schedules it one poll interval past the cycle that failed, so a test
+	// stalled longer than that between the status read and the comparison would
+	// report a bug that is not there. Bracketing pins the value exactly and
+	// cannot fail for a stall.
+	interval := time.Duration(device.PollInterval) * time.Second
+	if status.NextPollTime.Before(registered) || status.NextPollTime.After(registered.Add(2*interval)) {
+		t.Errorf("next_poll_time = %s, want the retry the device is scheduled for, within [%s, %s]",
+			status.NextPollTime, registered, registered.Add(2*interval))
 	}
 	if !status.LastPollTime.IsZero() {
 		t.Errorf("last_poll_time = %s, want the zero time: no poll result has been recorded",
@@ -293,6 +304,16 @@ func awaitUnreachable(t *testing.T, handler *PollerControlHandler, device string
 	for {
 		status := handler.deviceStatus(device)
 		if status != nil && status.Unreachable {
+			// The two facts move together, or this helper is a race: a device
+			// reported unreachable always says when it will be tried again.
+			// They used to be written at two points in the worker's cycle, and
+			// a status read between them came back with the zero time here --
+			// which is what made TestDeviceStatusReportsAnUnreachableDevice
+			// fail once in three runs on a loaded host (#33). Asserted rather
+			// than waited out: a regression is a failure, not a slower test.
+			if status.NextPollTime.IsZero() {
+				t.Fatalf("device %s is reported unreachable with no scheduled retry: %+v", device, status)
+			}
 			return status
 		}
 		if time.Now().After(deadline) {

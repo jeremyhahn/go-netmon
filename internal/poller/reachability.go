@@ -129,83 +129,116 @@ func (c *cycle) unreachable() bool {
 	return c.answered == 0 && c.silent > 0
 }
 
+// reachState is everything a status read must see one consistent version of:
+// whether the device is answering, and when it will next be tried.
+//
+// It is replaced whole rather than field by field. Held as two atomics, the
+// device's state and its retry were written at two different points in the
+// worker's cycle -- silent() in commit, schedule() after poll returned, with
+// the export and the result report in between -- so a status request landing
+// between them read a device that was unreachable and had no scheduled retry,
+// and answered an operator "this device is down, and it will next be tried at
+// 0001-01-01T00:00:00Z". That is the pair the whole status endpoint exists to
+// report, and it was the one pair that could be read half-written (#33).
+type reachState struct {
+	// consecutive is how many cycles in a row the device answered nothing.
+	consecutive uint32
+
+	// delay is the wait this outcome earned, and nextPoll is when that wait
+	// expires. Both are fixed at the instant the outcome is recorded, so the
+	// retry the operator is told about is the one the worker actually waits
+	// for.
+	delay    time.Duration
+	nextPoll time.Time
+}
+
 // reachability is a worker's memory of whether its device is answering and when
 // it should be tried again.
 //
 // The worker writes it from its polling goroutine while the control API reads
-// it to answer a status request, so it is atomic rather than locked: a status
+// it to answer a status request, so it is a lock-free atomic snapshot: a status
 // lookup must never queue behind a poll, which is the failure this whole change
-// exists to stop.
+// exists to stop. There is exactly one writer -- record runs on the worker's
+// own goroutine -- so replacing the pointer is all the synchronization needed.
 type reachability struct {
 	device   string
 	interval time.Duration
 	ceiling  time.Duration
 
-	consecutive atomic.Uint32
-	nextPoll    atomic.Int64 // unix nanoseconds
+	state atomic.Pointer[reachState]
 }
 
 // newReachability starts a device out reachable, and publishes it as such so
 // that an alert on gonetmon_device_unreachable has a series to watch from the
 // moment the device is registered.
+//
+// nextPoll is left as the zero time: nothing has been scheduled until the first
+// cycle has been recorded, and due() says so rather than inventing an instant.
 func newReachability(device string, interval time.Duration) *reachability {
 	deviceUnreachable.WithLabelValues(device).Set(0)
 
-	return &reachability{
+	r := &reachability{
 		device:   device,
 		interval: interval,
 		ceiling:  maxBackoff,
 	}
+	r.state.Store(&reachState{delay: interval})
+	return r
 }
 
-// answered records a cycle the device took part in, which clears any backoff
-// immediately: one reply is enough to prove the device is back, and making it
-// serve a whole penalty interval first would leave a recovered device dark for
-// up to maxBackoff.
-// The gauge is published on every answered cycle rather than only on the
-// transition out of silence. Publishing only on the transition made the series
-// impossible to restore once something else had deleted it: a healthy device
-// sits at consecutive == 0 forever, so the transition never comes round again.
-// Something else does delete it -- a worker being replaced forgets the device
-// by NAME as it exits, and a device update keeps the name, so the replacement's
-// series can be removed out from under it. Setting a gauge is cheap; being
-// absent until the device next breaks and recovers is not.
-func (r *reachability) answered() {
-	r.consecutive.Store(0)
-	deviceUnreachable.WithLabelValues(r.device).Set(0)
-}
-
-// silent records a cycle the device answered no part of. Published on every
-// such cycle, for the same reason as answered.
-func (r *reachability) silent() {
-	r.consecutive.Add(1)
-	deviceUnreachable.WithLabelValues(r.device).Set(1)
-}
-
-// unreachable reports whether the device answered nothing in its last cycle.
-func (r *reachability) unreachable() bool { return r.consecutive.Load() > 0 }
-
-// failures reports how many cycles in a row the device has answered nothing.
-func (r *reachability) failures() int { return int(r.consecutive.Load()) }
-
-// due reports when the next poll is scheduled, or the zero time before the
-// first one has been scheduled.
-func (r *reachability) due() time.Time {
-	at := r.nextPoll.Load()
-	if at == 0 {
-		return time.Time{}
+// record files the outcome of one poll cycle and returns the wait it earned.
+//
+// A cycle the device took part in clears any backoff immediately: one reply is
+// enough to prove the device is back, and making it serve a whole penalty
+// interval first would leave a recovered device dark for up to maxBackoff.
+//
+// The gauge is published on every cycle rather than only on a transition.
+// Publishing only on the transition made the series impossible to restore once
+// something else had deleted it: a healthy device sits at consecutive == 0
+// forever, so the transition never comes round again. Something else does
+// delete it -- a worker being replaced forgets the device by NAME as it exits,
+// and a device update keeps the name, so the replacement's series can be
+// removed out from under it. Setting a gauge is cheap; being absent until the
+// device next breaks and recovers is not.
+func (r *reachability) record(answered bool) time.Duration {
+	consecutive := uint32(0)
+	if !answered {
+		consecutive = r.state.Load().consecutive + 1
 	}
-	return time.Unix(0, at)
-}
 
-// schedule returns how long the worker should wait before polling again, and
-// records when that poll comes due so the control API can tell an operator when
-// a backed-off device will next be tried.
-func (r *reachability) schedule() time.Duration {
-	delay := backoff(r.interval, r.ceiling, r.consecutive.Load())
-	r.nextPoll.Store(time.Now().Add(delay).UnixNano())
+	delay := backoff(r.interval, r.ceiling, consecutive)
+	r.state.Store(&reachState{
+		consecutive: consecutive,
+		delay:       delay,
+		nextPoll:    time.Now().Add(delay),
+	})
+
+	if consecutive > 0 {
+		deviceUnreachable.WithLabelValues(r.device).Set(1)
+	} else {
+		deviceUnreachable.WithLabelValues(r.device).Set(0)
+	}
 	return delay
 }
+
+// snapshot returns one consistent view of the device's state. A status read
+// takes this rather than calling the accessors below in turn, so that the row
+// it reports is a state the device was actually in.
+func (r *reachability) snapshot() reachState { return *r.state.Load() }
+
+// unreachable reports whether the device answered nothing in its last cycle.
+func (r *reachability) unreachable() bool { return r.state.Load().consecutive > 0 }
+
+// failures reports how many cycles in a row the device has answered nothing.
+func (r *reachability) failures() int { return int(r.state.Load().consecutive) }
+
+// due reports when the next poll is scheduled, or the zero time before the
+// first cycle has been recorded.
+func (r *reachability) due() time.Time { return r.state.Load().nextPoll }
+
+// delay reports the wait the last recorded cycle earned, which is the device's
+// own interval until one has been.
+func (r *reachability) delay() time.Duration { return r.state.Load().delay }
 
 // forget drops a device's published reachability, so a removed device leaves no
 // series behind.

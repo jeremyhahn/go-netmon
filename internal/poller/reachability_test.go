@@ -218,49 +218,131 @@ func TestReachabilityBacksOffAndRecovers(t *testing.T) {
 	if r.unreachable() {
 		t.Error("a newly registered device starts out unreachable")
 	}
-	before := time.Now()
-	got := r.schedule()
-	after := time.Now()
-	if got != interval {
-		t.Errorf("first schedule = %s, want the device's own interval %s", got, interval)
+	if due := r.due(); !due.IsZero() {
+		t.Errorf("due = %s before any cycle has been recorded, want the zero time", due)
 	}
 
-	// due() must report the instant schedule() computed: its own time.Now(),
+	before := time.Now()
+	got := r.record(true)
+	after := time.Now()
+	if got != interval {
+		t.Errorf("first recorded cycle earned %s, want the device's own interval %s", got, interval)
+	}
+
+	// due() must report the instant record() computed: its own time.Now(),
 	// which lies between the two readings taken around the call, plus the delay
 	// it returned. Bracketing it that way is deterministic and says more than
 	// the "is it in the future" check this replaces, which passed for any
 	// later-but-wrong value and, at a short interval, would fail on a stalled
-	// runner for reasons unrelated to the code (see unreachable_test.go's
-	// awaitScheduledRetry for where that shape actually bit).
+	// runner for reasons unrelated to the code.
 	earliest, latest := before.Add(got), after.Add(got)
 	if due := r.due(); due.Before(earliest) || due.After(latest) {
 		t.Errorf("due = %s, want the scheduled instant within [%s, %s]", due, earliest, latest)
 	}
 
 	for i, want := range []time.Duration{interval, 2 * interval, 4 * interval} {
-		r.silent()
+		if got := r.record(false); got != want {
+			t.Errorf("after %d failed cycles the wait is %s, want %s", i+1, got, want)
+		}
 		if !r.unreachable() {
 			t.Fatalf("after %d failed cycles the device is still reported reachable", i+1)
 		}
 		if got := r.failures(); got != i+1 {
 			t.Errorf("failures = %d, want %d", got, i+1)
 		}
-		if got := r.schedule(); got != want {
-			t.Errorf("after %d failed cycles schedule = %s, want %s", i+1, got, want)
+		if got := r.delay(); got != want {
+			t.Errorf("after %d failed cycles delay = %s, want %s", i+1, got, want)
 		}
 	}
 
 	// One reply is enough: a recovered device must not serve out the rest of
 	// its penalty before being polled normally again.
-	r.answered()
+	if got := r.record(true); got != interval {
+		t.Errorf("the cycle that recovered the device earned %s, want the normal interval %s", got, interval)
+	}
 	if r.unreachable() {
 		t.Error("a device that answered is still reported unreachable")
 	}
 	if got := r.failures(); got != 0 {
 		t.Errorf("failures = %d after recovery, want 0", got)
 	}
-	if got := r.schedule(); got != interval {
-		t.Errorf("schedule after recovery = %s, want the normal interval %s", got, interval)
+}
+
+// TestReachabilityPublishesTheOutcomeAndItsRetryTogether is the invariant
+// behind #33: a device reported unreachable always says when it will be tried
+// again.
+//
+// The two facts used to be written at two points in the worker's cycle --
+// silent() in commit, schedule() after poll returned, with the export and the
+// result report in between. A status read landing between them saw
+// unreachable=true and next_poll_time=0001-01-01T00:00:00Z, which is what the
+// endpoint exists to avoid telling an operator, and what made
+// TestDeviceStatusReportsAnUnreachableDevice in internal/api fail under load.
+//
+// This asserts the pair after the ONLY write there now is, in the same order
+// worker.commit performs it, so it fails by construction rather than by luck if
+// the two are ever separated again.
+func TestReachabilityPublishesTheOutcomeAndItsRetryTogether(t *testing.T) {
+	t.Parallel()
+
+	const interval = time.Minute
+	r := newReachability(t.Name(), interval)
+	t.Cleanup(r.forget)
+
+	before := time.Now()
+	r.record(false)
+
+	if !r.unreachable() {
+		t.Fatal("a cycle the device answered nothing of left it reported reachable")
+	}
+	due := r.due()
+	if due.IsZero() {
+		t.Fatal("the device is unreachable and has no scheduled retry: a status read here tells an operator the device is down and never says when it will be tried")
+	}
+	if !due.After(before) {
+		t.Errorf("due = %s, want a retry after the cycle that earned it at %s", due, before)
+	}
+	if got := r.failures(); got != 1 {
+		t.Errorf("failures = %d alongside the retry, want 1", got)
+	}
+}
+
+// TestReachabilityReadsAConsistentPairDuringPolling runs the reader and the
+// writer against each other, which is what the worker and the control API do.
+// Every read must be internally consistent; under -race it also proves the
+// snapshot is published safely.
+func TestReachabilityReadsAConsistentPairDuringPolling(t *testing.T) {
+	t.Parallel()
+
+	r := newReachability(t.Name(), time.Minute)
+	t.Cleanup(r.forget)
+
+	const cycles = 2000
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range cycles {
+			r.record(i%7 == 0)
+		}
+	}()
+
+	torn, reads := 0, 0
+	for {
+		select {
+		case <-done:
+			if torn > 0 {
+				t.Errorf("%d of %d status reads saw a device reported unreachable with no scheduled retry", torn, reads)
+			}
+			if reads == 0 {
+				t.Error("the reader never ran, so nothing was observed")
+			}
+			return
+		default:
+		}
+		reads++
+		if health := r.snapshot(); health.consecutive > 0 && health.nextPoll.IsZero() {
+			torn++
+		}
 	}
 }
 
@@ -283,17 +365,17 @@ func TestReachabilityPublishesTheDeviceState(t *testing.T) {
 		t.Errorf("gonetmon_device_unreachable{device=%q} = %v on registration, want 0", device, got)
 	}
 
-	r.silent()
+	r.record(false)
 	if got := gauge(); got != 1 {
 		t.Errorf("gonetmon_device_unreachable{device=%q} = %v while unreachable, want 1", device, got)
 	}
 
-	r.silent()
+	r.record(false)
 	if got := gauge(); got != 1 {
 		t.Errorf("gonetmon_device_unreachable{device=%q} = %v while still unreachable, want 1", device, got)
 	}
 
-	r.answered()
+	r.record(true)
 	if got := gauge(); got != 0 {
 		t.Errorf("gonetmon_device_unreachable{device=%q} = %v after recovery, want 0", device, got)
 	}
