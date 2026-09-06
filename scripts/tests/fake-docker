@@ -22,6 +22,10 @@
 #   inspect-status            if present, "docker inspect" fails with this code
 #   compose-volumes           logical volume names the compose file defines
 #   services.json             compose service -> image mapping
+#   images                    images this daemon has, one per line; a name not
+#                             listed is reported missing, exactly as a real
+#                             daemon does, which is what makes ImageID's
+#                             empty-id branch reachable
 #   log                       every invocation, for assertions about behaviour
 
 set -euo pipefail
@@ -53,6 +57,49 @@ ps_filter() {
   and a mistyped label key matches nothing on a real daemon -- both look like
   'no foreign containers' to a caller." ;;
     esac
+}
+
+# compose_ps_filter validates one "docker compose ps --filter" VALUE. Exactly
+# one key is understood; everything else is fatal for the same reason the
+# top-level ps arm refuses -- a filter this stub drops is a filter the caller
+# believes it applied.
+#
+# The "have we seen one" flag is SEPARATE from the value. Using the empty
+# string for both meant "--filter status=" parsed to empty, did not count as
+# seen, and let a second filter through the duplicate check -- an unset
+# sentinel that a legal input can forge.
+compose_ps_status=""
+compose_ps_status_seen=0
+compose_ps_filter() {
+    case "$1" in
+        "status="*)
+            [ "$compose_ps_status_seen" -eq 0 ] || die "compose ps: two status filters given ('$compose_ps_status' then '${1#status=}')"
+            compose_ps_status_seen=1
+            compose_ps_status="${1#status=}" ;;
+        *) die "unsupported 'compose ps' filter '$1'. This stub understands only
+  status=<state>." ;;
+    esac
+}
+
+# compose_require_services refuses an empty service list and any name the
+# compose file does not define. Shared by "stop" and "start" so the two cannot
+# drift: they were asymmetric once already, stop validating and start not.
+compose_require_services() {
+    local verb="$1"
+    shift
+    [ "$#" -gt 0 ] || die "compose $verb: no services named. The tooling always names what it
+  acts on, and the whole-project form is not a shape it issues, so this stub
+  refuses rather than guessing which was meant."
+    local want known line
+    for want in "$@"; do
+        known=0
+        while read -r line; do
+            [ "$line" = "$want" ] && known=1
+        done < <(jq -r '.services | keys[]' "$root/services.json")
+        [ "$known" -eq 1 ] || die "compose $verb: no such service '$want' in this compose file.
+  Real compose fails here; answering anyway would let an operation on a service
+  that does not exist read as a successful one."
+    done
 }
 
 die() {
@@ -94,38 +141,145 @@ cmd_compose() {
             ;;
         esac
     done
-    : "$project" "$file"
+    # -p AND -f ARE REQUIRED for every arm that reads or mutates project state.
+    # They were parsed and then discarded with a ": " no-op, so the stub
+    # answered "config" and "ps", and acted on "stop" and "up", for an
+    # invocation that named no project and no compose file at all. Production
+    # pins both on every call (netmon-stack.sh compose()), so a regression that
+    # dropped one would have been answered here exactly as if it had not.
+    # "compose version" is the one arm production issues unscoped.
+    case "${args[0]:-}" in
+    version) : ;;
+    *)
+        [ -n "$project" ] || die "compose ${args[0]:-<none>}: no -p project given. Every compose call the
+  tooling makes pins the project; answering an unscoped one would let a dropped
+  -p read exactly like a correct call."
+        [ -n "$file" ] || die "compose ${args[0]:-<none>}: no -f compose file given. Same reason as -p:
+  a compose file this stub does not require is one the caller can drop without
+  the tests noticing." ;;
+    esac
 
     case "${args[0]:-}" in
     version)
-        if [ "${args[1]:-}" = "--short" ]; then
-            printf '2.40.3\n'
-        else
-            printf 'Docker Compose version 2.40.3\n'
-        fi
+        # An unrecognised flag used to fall through to the long form, so a
+        # caller asking for something this stub does not model got an answer
+        # anyway. And it is VALIDATED BEFORE ANYTHING IS PRINTED: the
+        # extra-argument check first ran after the output, so
+        # "compose version --short junk" emitted the version AND then failed --
+        # and a caller spelled "$(... || echo unknown)" captures both.
+        [ "${#args[@]}" -le 2 ] || die "unsupported extra 'compose version' arguments: ${args[*]:2}"
+        case "${args[1]:-}" in
+        '')       printf 'Docker Compose version 2.40.3\n' ;;
+        --short)  printf '2.40.3\n' ;;
+        *)        die "unsupported 'compose version' argument '${args[1]}'" ;;
+        esac
         ;;
     config)
+        # "--format" used to be honoured without reading its VALUE, so
+        # "config --format yaml" returned JSON.
         case "${args[1]:-}" in
-        --volumes) cat "$root/compose-volumes" ;;
-        --format) cat "$root/services.json" ;;
+        --volumes)
+            [ "${#args[@]}" -le 2 ] || die "unsupported extra 'compose config --volumes' arguments: ${args[*]:2}"
+            cat "$root/compose-volumes" ;;
+        --format)
+            [ "${args[2]:-}" = "json" ] || die "unsupported 'compose config --format' value '${args[2]:-<none>}';
+  this stub renders JSON only"
+            [ "${#args[@]}" -le 3 ] || die "unsupported extra 'compose config --format' arguments: ${args[*]:3}"
+            cat "$root/services.json" ;;
         *) die "unsupported compose config: ${args[*]}" ;;
         esac
         ;;
     ps)
-        # Only "--services --filter status=running" is used by the tooling.
-        cat "$root/running" 2>/dev/null || true
+        # READS ITS FILTER. It used to cat the running set whatever it was
+        # asked, so "--filter status=running" was decorative: a regression to
+        # "status=exited", or to no filter at all, returned the running
+        # services and every test still passed. Same shape as the ps-filter
+        # defect the ownership check shipped three times.
+        local cps_services=0 cps_status="" cps_i=1 cps_expect=0
+        while [ "$cps_i" -lt "${#args[@]}" ]; do
+            if [ "$cps_expect" -eq 1 ]; then
+                compose_ps_filter "${args[$cps_i]}"
+                cps_expect=0
+                cps_i=$((cps_i + 1))
+                continue
+            fi
+            case "${args[$cps_i]}" in
+            --services)  cps_services=1 ;;
+            --filter)    cps_expect=1 ;;
+            --filter=*)  compose_ps_filter "${args[$cps_i]#--filter=}" ;;
+            *) die "unsupported 'compose ps' argument '${args[$cps_i]}'. This stub
+  understands --services and a status filter. Anything else is refused rather
+  than ignored: an argument this stub drops is one the code under test believes
+  it applied." ;;
+            esac
+            cps_i=$((cps_i + 1))
+        done
+        [ "$cps_expect" -eq 0 ] || die "compose ps: --filter was given with no value"
+        [ "$cps_services" -eq 1 ] || die "compose ps: this stub models only the --services listing"
+        cps_status="$compose_ps_status"
+        case "$cps_status" in
+        running) cat "$root/running" 2>/dev/null || true ;;
+        "") die "compose ps: no status filter given; this stub refuses to answer an
+  unfiltered listing, because the caller that drops its filter gets the same
+  answer as the caller that keeps it" ;;
+        *) die "unsupported 'compose ps' status filter '$cps_status'; this stub models
+  only status=running" ;;
+        esac
         ;;
     stop)
-        : >"$root/running"
+        # STOPS ONLY THE SERVICES NAMED. It used to truncate the running set
+        # whatever it was handed, so a regression that stopped the wrong subset
+        # -- or all four when it meant two -- was invisible. restore.sh stops a
+        # subset and restarts exactly that subset; the difference is an outage.
+        local cs_services=() cs_svc cs_hit cs_keep=()
+        cs_services=("${args[@]:1}")
+        compose_require_services stop "${cs_services[@]}"
+        while read -r cs_svc; do
+            [ -n "$cs_svc" ] || continue
+            cs_hit=0
+            for cs_known in "${cs_services[@]}"; do
+                [ "$cs_known" = "$cs_svc" ] && cs_hit=1
+            done
+            [ "$cs_hit" -eq 1 ] || cs_keep+=("$cs_svc")
+        done <"$root/running"
+        if [ "${#cs_keep[@]}" -gt 0 ]; then
+            printf '%s\n' "${cs_keep[@]}" >"$root/running"
+        else
+            : >"$root/running"
+        fi
         printf 'stopped\n' >>"$root/actions"
         ;;
     start)
-        shift_services=("${args[@]:1}")
-        printf '%s\n' "${shift_services[@]}" >"$root/running"
+        # VALIDATED LIKE stop, and for the same reason. This arm wrote whatever
+        # followed "start" straight into the running set and reported success,
+        # so "compose start bogus" invented a running service that the compose
+        # file does not define -- and every later assertion about what is
+        # running was then made against a fiction. It was missed in the first
+        # enumeration precisely because it DOES read its argument: reading one
+        # and validating it are different things, and stop had been given the
+        # check while start had not.
+        local start_services=()
+        start_services=("${args[@]:1}")
+        compose_require_services start "${start_services[@]}"
+        printf '%s\n' "${start_services[@]}" >"$root/running"
         printf 'started\n' >>"$root/actions"
         ;;
     up)
         # "up --no-start" materialises volumes; "up -d" starts everything.
+        #
+        # VALIDATED BEFORE ANYTHING IS CREATED. Anything that was not
+        # --no-start used to mean "start everything", so an unmodelled flag
+        # silently started the stack -- and the first version of that check ran
+        # AFTER the volumes had already been materialised, so a refused
+        # invocation still left the fixture mutated. A stub that refuses after
+        # acting has not refused.
+        case "${args[1]:-}" in
+        --no-start|-d) : ;;
+        *) die "unsupported 'compose up' argument '${args[1]:-<none>}'; this stub models
+  --no-start and -d" ;;
+        esac
+        [ "${#args[@]}" -le 2 ] || die "unsupported extra 'compose up' arguments: ${args[*]:2}"
+
         local name
         while read -r name; do
             [ -z "$name" ] && continue
@@ -188,6 +342,25 @@ cmd_volume() {
                 ;;
             esac
         done
+        # THE TEMPLATE'S CONTENT DECIDES THE ANSWER. This used to test only
+        # "is a format set" and then print the project label whatever it said,
+        # so a production change to the template -- to a label key that does
+        # not exist, which real docker answers EMPTY -- was undetectable. Same
+        # defect the inspect arm carried, one command over.
+        #
+        # No --format at all is the existence check: exit 0 if the volume is
+        # there, non-zero if it is not, and no output either way.
+        case "$fmt" in
+            ''|'{{index .Labels "com.docker.compose.project"}}') : ;;
+            *) die "unsupported 'volume inspect --format' template: $fmt. This stub
+  answers exactly one, the compose project label. A label key that does not
+  exist returns EMPTY on a real daemon, which is not what answering anyway
+  would produce." ;;
+        esac
+        # NO NAMES IS AN ERROR. With an empty list the loop simply did not run
+        # and the arm exited 0 -- a query that named nothing got a successful
+        # answer, which real docker does not give.
+        [ "${#names[@]}" -gt 0 ] || die "volume inspect: no volume named"
         local n
         for n in "${names[@]}"; do
             [ -d "$(vol_dir "$n")" ] || die "no such volume: $n"
@@ -198,6 +371,20 @@ cmd_volume() {
         done
         ;;
     ls)
+        # READS THE TEMPLATE. It used to list directory names whatever it was
+        # asked, so "--format '{{.Name}}'" was decorative.
+        shift
+        local lsfmt=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --format)   lsfmt="${2:-}"; shift 2 ;;
+                --format=*) lsfmt="${1#--format=}"; shift ;;
+                *)          die "unsupported 'volume ls' argument '$1'" ;;
+            esac
+        done
+        [ "$lsfmt" = '{{.Name}}' ] || die "unsupported 'volume ls --format' template: ${lsfmt:-<none>}.
+  This stub answers exactly one, {{.Name}} -- a bare listing prints a table
+  with a header on a real daemon, which is not what this returns."
         ls -1 "$root/volumes" 2>/dev/null || true
         ;;
     *) die "unsupported volume command: $*" ;;
@@ -361,10 +548,76 @@ inspect)
     exit 1
     ;;
 image)
-    printf 'sha256:%s\n' "$(printf '%s' "$*" | sha256sum | cut -c1-64)"
+    # MODELS WHETHER THE IMAGE EXISTS, and reads the template.
+    #
+    # It used to print "sha256:<hash of the whole argv>" unconditionally: it
+    # never checked the subcommand, never read --format, and never failed. Two
+    # consequences, and the second is the reason this is worth fixing.
+    #
+    #  1. The hash was OF THE ARGV, so it changed when an unrelated flag
+    #     changed and stayed the same when the image did not -- the opposite of
+    #     an image id.
+    #  2. A missing image is an ERROR on a real daemon, and ImageID at
+    #     netmon-stack.sh reads that error as "unknown, record an empty id"
+    #     via "|| echo". While this arm could not fail, THAT BRANCH WAS
+    #     UNREACHABLE FROM THE TESTS -- documented behaviour with no possible
+    #     coverage (#39).
+    #
+    # Known images are listed in $root/images, written by the fixture from the
+    # same service definitions that produce services.json, so the two cannot
+    # drift. The file is REQUIRED: absent, this arm refuses rather than
+    # assuming every image exists, which is the assumption it used to make.
+    shift
+    [ "${1:-}" = "inspect" ] || die "unsupported 'image' subcommand '${1:-<none>}'; this stub models only 'image inspect'"
+    shift
+    img_format=""
+    img_name=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --format)   img_format="${2:-}"; shift 2 ;;
+            --format=*) img_format="${1#--format=}"; shift ;;
+            -*)         die "unsupported 'image inspect' option '$1'" ;;
+            *)
+                [ -z "$img_name" ] || die "image inspect: more than one image named ('$img_name' then '$1')"
+                img_name="$1"; shift ;;
+        esac
+    done
+    [ -n "$img_name" ] || die "image inspect: no image named"
+    [ "$img_format" = '{{.Id}}' ] || die "unsupported 'image inspect --format' template: ${img_format:-<none>}. This
+  stub answers exactly one, {{.Id}}. A template it does not know is a question
+  it cannot answer, and answering anyway is how four defects on this stub
+  worked."
+    [ -f "$root/images" ] || die "image inspect: \$FAKE_DOCKER_ROOT/images does not exist, so this
+  stub cannot say whether '$img_name' is present. Refusing rather than assuming
+  it is: 'every image exists' is exactly the assumption this arm used to make."
+
+    if grep -qxF "$img_name" "$root/images"; then
+        # Stable per image, and a function of the IMAGE alone -- not of the
+        # argv, so an unrelated flag cannot change an id.
+        printf 'sha256:%s\n' "$(printf '%s' "$img_name" | sha256sum | cut -c1-64)"
+        exit 0
+    fi
+    printf 'Error response from daemon: No such image: %s\n' "$img_name" >&2
+    exit 1
     ;;
 version)
-    printf '27.0.0\n'
+    # READS THE TEMPLATE. It used to print the server version whatever it was
+    # asked, so the --format string was decorative and a change to it could not
+    # be detected.
+    shift
+    ver_format=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --format)   ver_format="${2:-}"; shift 2 ;;
+            --format=*) ver_format="${1#--format=}"; shift ;;
+            *)          die "unsupported 'version' argument '$1'" ;;
+        esac
+    done
+    case "$ver_format" in
+        '{{.Server.Version}}') printf '27.0.0\n' ;;
+        *) die "unsupported 'version --format' template: ${ver_format:-<none>}. This stub
+  answers exactly one, {{.Server.Version}}." ;;
+    esac
     ;;
 *) die "unsupported command: $*" ;;
 esac

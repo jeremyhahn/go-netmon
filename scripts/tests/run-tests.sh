@@ -185,6 +185,13 @@ new_fixture() {
         >"$FAKE_DOCKER_ROOT/compose-volumes"
     write_services_json "$MIB_TREE"
     printf '%s\n' go-netmon webui prometheus grafana >"$FAKE_DOCKER_ROOT/running"
+    # The images this daemon HAS. "docker image inspect" reports a name that is
+    # not here as missing, exactly as a real daemon does -- which is what makes
+    # ImageID's empty-id branch reachable at all (#39, #46). The list matches
+    # the images in every service rendering the suite writes.
+    printf '%s\n' go-netmon:latest go-netmon-webui:latest \
+        prom/prometheus:latest grafana/grafana:latest \
+        >"$FAKE_DOCKER_ROOT/images"
     # The containers the fake models, "<id> <project> <config_files>". The
     # baseline is a project holding only containers this compose file created,
     # which is what the ownership check must PERMIT.
@@ -1166,6 +1173,273 @@ test_restore_accepts_a_schema_1_backup_without_trees() {
         fail "a schema-1 archive did not restore" || return 1
     assert_file "volumes still restored" \
         "$FAKE_DOCKER_ROOT/volumes/go-netmon_webui-data/data/webui.db"
+}
+
+# The manifest records the image id each backup was produced by. Until #46 the
+# only assertion over .images counted the ENTRIES and never read image_id, so a
+# stub that returned a hash of its own argv -- or, once it started refusing,
+# nothing at all -- was invisible to the suite. A test that counts rows without
+# reading the field the rows exist to carry is a row-count test.
+test_backup_records_the_image_id_of_every_service() {
+    make_backup b1 || fail "backup failed" || return 1
+    local dir="$NETMON_REPO_ROOT/backups/b1"
+    assert_eq "four services recorded" \
+        "$(jq '.images | length' "$dir/manifest.json")" "4" || return 1
+    assert_eq "every service records a well-formed image id" \
+        "$(jq '[.images[] | select(.image_id | test("^sha256:[0-9a-f]{64}$"))] | length' \
+            "$dir/manifest.json")" "4" || return 1
+    assert_eq "one id per distinct image" \
+        "$(jq -r '[.images[].image_id] | unique | length' "$dir/manifest.json")" "4" || return 1
+    # The id is a function of the IMAGE NAME AND NOTHING ELSE. Distinctness is
+    # not enough to say that: the arm this replaced hashed the whole argv, and
+    # four distinct images still produced four distinct well-formed hashes, so
+    # every assertion above would have passed against it. Pinning the value is
+    # what actually rejects it -- an argv hash covers "inspect", "--format" and
+    # the template too, and cannot equal the hash of the name.
+    assert_eq "the id is the hash of the image name alone" \
+        "$(jq -r '.images[] | select(.image == "go-netmon:latest") | .image_id' "$dir/manifest.json")" \
+        "sha256:$(printf '%s' 'go-netmon:latest' | sha256sum | cut -c1-64)" || return 1
+}
+
+# ImageID records an image the daemon does not have as an EMPTY id rather than
+# failing the backup -- documented at netmon-stack.sh and raised as #39. Nothing
+# could reach that branch while the stub answered every image inspect
+# unconditionally; this is its first coverage.
+test_backup_records_an_empty_id_for_an_image_the_daemon_lacks() {
+    grep -vxF 'prom/prometheus:latest' "$FAKE_DOCKER_ROOT/images" >"$TEST_TMP/images" &&
+        mv "$TEST_TMP/images" "$FAKE_DOCKER_ROOT/images" ||
+        fail "could not remove the image from the fake daemon" || return 1
+    make_backup b1 || fail "backup failed" || return 1
+    local dir="$NETMON_REPO_ROOT/backups/b1"
+    # The ROW must exist. "select(...) | .image_id" prints nothing both for a
+    # row with an empty id and for NO ROW AT ALL, so the assertion below cannot
+    # tell "recorded as unknown" from "the service vanished from the manifest"
+    # without this. Same empty-output ambiguity as an absence assertion with no
+    # positive control.
+    assert_eq "the service is still recorded" \
+        "$(jq '[.images[] | select(.image == "prom/prometheus:latest")] | length' \
+            "$dir/manifest.json")" "1" || return 1
+    assert_eq "the absent image records an empty id" \
+        "$(jq -r '.images[] | select(.image == "prom/prometheus:latest") | .image_id' \
+            "$dir/manifest.json")" "" || return 1
+    # Positive control: the other three still have ids, so an empty field means
+    # THAT image was missing and not that the backup recorded nothing at all.
+    assert_eq "the other three still record ids" \
+        "$(jq '[.images[] | select(.image_id != "")] | length' "$dir/manifest.json")" "3" || return 1
+}
+
+# The manifest records what produced the backup: the daemon and compose
+# versions. Both are read through templates, and both are wrapped in
+# "|| echo unknown" -- so a query the daemon refuses records the string
+# "unknown" and the backup still succeeds. Nothing asserted these, which is why
+# the version arm could ignore its --format template for the life of the suite
+# (#46). "unknown" is the value a refused query produces, so asserting the real
+# one is what makes the template load-bearing.
+test_backup_records_the_daemon_and_compose_versions() {
+    make_backup b1 || fail "backup failed" || return 1
+    local m="$NETMON_REPO_ROOT/backups/b1/manifest.json"
+    assert_eq "daemon version recorded" \
+        "$(jq -r '.host.docker_version' "$m")" "27.0.0" || return 1
+    assert_eq "compose version recorded" \
+        "$(jq -r '.host.compose_version' "$m")" "2.40.3" || return 1
+}
+
+# report_unmanaged_volumes enumerates volumes through
+# "volume ls --format '{{.Name}}'" and names any that resemble a stack volume
+# without carrying the project label. The fixture holds exactly one, the
+# unlabelled look-alike this tooling must never touch. Nothing asserted the
+# report, so the ls arm could ignore its template (#46).
+test_backup_reports_the_unlabelled_lookalike_volume() {
+    local out
+    out="$("$BACKUP" --name b1 2>&1)" || fail "backup failed" || return 1
+    assert_contains "warns about the look-alike" "$out" "go-netmon-data  (project=<none>)" || return 1
+    assert_contains "says it is never touched" "$out" "never touched" || return 1
+    # Positive control: a MANAGED volume must not appear in the report, so the
+    # assertion above is the label check working and not the report naming
+    # every volume it enumerated.
+    case "$out" in
+    *"go-netmon_webui-data  (project="*)
+        fail "the report named a managed volume" || return 1 ;;
+    esac
+}
+
+# Refusing AFTER answering, or after acting, is not refusing. Three arms had
+# their validation running too late, or a sentinel a legal input could forge;
+# this is what pins each, and none of it is visible through the production
+# scripts because they never issue these shapes.
+test_fake_docker_refuses_before_it_answers_or_acts() {
+    local root out failed=0
+    root="$(mktemp -d)"
+    printf '%s\n' webui-data go-netmon-data >"$root/compose-volumes"
+    printf '%s\n' '{"services":{"go-netmon":{"image":"go-netmon:latest"},"webui":{"image":"go-netmon-webui:latest"}}}' \
+        >"$root/services.json"
+    printf '%s\n' go-netmon webui >"$root/running"
+
+    _fd()     { FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" "$@" 2>&1; }
+    _fd_out() { FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" "$@" 2>/dev/null; }
+
+    # 1. An unmodelled "compose up" flag must be refused BEFORE the volumes are
+    #    materialised. Checking only the exit status would pass just as well
+    #    against the version that created them and then died.
+    if out="$(_fd compose -p go-netmon -f /x.yml up --wait)"; then
+        fail "the fake accepted a 'compose up' flag it does not model: $out" || failed=1
+    fi
+    if [ -d "$root/volumes" ]; then
+        fail "the fake materialised volumes before refusing the invocation" || failed=1
+    fi
+    # A modelled flag with a trailing extra is still an invocation this stub
+    # does not model, and must also refuse before creating anything.
+    if out="$(_fd compose -p go-netmon -f /x.yml up --no-start junk)"; then
+        fail "the fake accepted a trailing argument after 'up --no-start': $out" || failed=1
+    fi
+    if [ -d "$root/volumes" ]; then
+        fail "the fake materialised volumes before refusing a trailing argument" || failed=1
+    fi
+    # Positive control: the modelled flag DOES create them, so the checks above
+    # are the ordering and not a stub that never creates anything.
+    if ! out="$(_fd compose -p go-netmon -f /x.yml up --no-start)"; then
+        fail "the fake rejected 'compose up --no-start': $out" || failed=1
+    elif [ ! -d "$root/volumes/go-netmon_webui-data" ]; then
+        fail "'compose up --no-start' created no volumes, so the ordering check proves nothing" || failed=1
+    fi
+
+    # 2. An EMPTY status filter must not forge the "none seen yet" sentinel and
+    #    let a second one through. The value and the seen-flag are separate for
+    #    exactly this: a sentinel a legal input can produce is not a sentinel.
+    if out="$(_fd compose -p go-netmon -f /x.yml ps --services --filter status= --filter status=running)"; then
+        fail "the fake accepted two status filters when the first was empty: $out" || failed=1
+    fi
+    if ! out="$(_fd compose -p go-netmon -f /x.yml ps --services --filter status=running)"; then
+        fail "the fake rejected the ps query production issues: $out" || failed=1
+    elif [ -z "$out" ]; then
+        fail "the accepted ps query returned nothing, so the refusal above proves nothing" || failed=1
+    fi
+
+    # 3. "compose version --short <extra>" must print NOTHING before refusing.
+    #    backup.sh spells it "$(... || echo unknown)", which captures stdout
+    #    from a command that then fails -- so an answer emitted before the
+    #    refusal is an answer the caller keeps.
+    if out="$(_fd_out compose version --short junk)"; then
+        fail "the fake accepted an extra 'compose version' argument" || failed=1
+    fi
+    [ -z "$out" ] || fail "the fake printed a version before refusing: $out" || failed=1
+    if ! out="$(_fd_out compose version --short)" || [ "$out" != "2.40.3" ]; then
+        fail "the fake did not answer the plain 'compose version --short': $out" || failed=1
+    fi
+
+    # 4. Trailing arguments after a modelled "compose config" must be refused
+    #    rather than ignored. Code-fixed in the same commit as the up/version
+    #    ordering, and review noted it was the one of the four with no direct
+    #    test -- a fix nothing exercises is a fix nobody can see regress.
+    if out="$(_fd compose -p go-netmon -f /x.yml config --format json junk)"; then
+        fail "the fake accepted a trailing argument after 'config --format json': $out" || failed=1
+    fi
+    if out="$(_fd compose -p go-netmon -f /x.yml config --volumes junk)"; then
+        fail "the fake accepted a trailing argument after 'config --volumes': $out" || failed=1
+    fi
+    if ! out="$(_fd compose -p go-netmon -f /x.yml config --format json)" || [ -z "$out" ]; then
+        fail "the fake did not answer the plain 'config --format json': $out" || failed=1
+    fi
+
+    # 5. Every project-scoped arm must REQUIRE -p and -f. Production pins both
+    #    on every call, so a dropped one has to be refused rather than
+    #    answered as if it had been supplied.
+    local scoped
+    for scoped in "config --format json" "ps --services --filter status=running" "stop go-netmon" "up --no-start"; do
+        # shellcheck disable=SC2086  # deliberate: each entry is an argv, not one word
+        if out="$(_fd compose -f /x.yml $scoped)"; then
+            fail "the fake answered '$scoped' with no -p project: $out" || failed=1
+        fi
+        # shellcheck disable=SC2086
+        if out="$(_fd compose -p go-netmon $scoped)"; then
+            fail "the fake answered '$scoped' with no -f compose file: $out" || failed=1
+        fi
+    done
+    # Positive control: the same argv WITH both flags is accepted, so the
+    # refusals above are the scope check and not a stub that refuses anything.
+    if ! out="$(_fd compose -p go-netmon -f /x.yml ps --services --filter status=running)" || [ -z "$out" ]; then
+        fail "the fake refused a fully scoped ps: $out" || failed=1
+    fi
+
+    # 6. "volume inspect" with no volume named is an error on a real daemon.
+    if out="$(_fd volume inspect)"; then
+        fail "the fake answered 'volume inspect' with no volume named: $out" || failed=1
+    fi
+
+    # 6b. "compose start" must refuse a service the compose file does not
+    #     define, exactly as "compose stop" does. It read its service list and
+    #     wrote it straight into the running set, so "start bogus" invented a
+    #     running service and every later assertion about what is running was
+    #     made against a fiction. Reading an argument and VALIDATING it are
+    #     different things -- the two arms were asymmetric, one checked and one
+    #     not, which is why the enumeration that found nine missed this one.
+    if out="$(_fd compose -p go-netmon -f /x.yml start bogus)"; then
+        fail "the fake started a service the compose file does not define: $out" || failed=1
+    fi
+    if out="$(_fd compose -p go-netmon -f /x.yml start)"; then
+        fail "the fake accepted 'compose start' with no services named: $out" || failed=1
+    fi
+    if out="$(_fd compose -p go-netmon -f /x.yml stop bogus)"; then
+        fail "the fake stopped a service the compose file does not define: $out" || failed=1
+    fi
+    # Positive control: the real service names are accepted by both, and the
+    # running set says so -- otherwise the refusals are a stub refusing all.
+    if ! _fd compose -p go-netmon -f /x.yml start go-netmon webui >/dev/null; then
+        fail "the fake refused a legitimate 'compose start'" || failed=1
+    elif [ "$(tr '\n' ' ' <"$root/running")" != "go-netmon webui " ]; then
+        fail "'compose start' did not record the services it was given: $(cat "$root/running")" || failed=1
+    fi
+
+    # 7. EVERY TEMPLATE THIS STUB READS MUST BE PINNED BY A REFUSAL, not only
+    #    by a production-side mutation. The distinction is easy to miss and
+    #    review caught it: test_backup_records_the_daemon_and_compose_versions
+    #    goes red when PRODUCTION asks for a template the stub refuses, but the
+    #    old "version" arm printed 27.0.0 unconditionally -- so that test would
+    #    pass just as well against a stub that reads no template at all. One
+    #    mutation direction is not two.
+    mkdir -p "$root/volumes/go-netmon_webui-data/data"
+    printf 'go-netmon' >"$root/volumes/go-netmon_webui-data/project"
+    printf '%s\n' go-netmon:latest >"$root/images"
+
+    local case_desc bad_cmd
+    while IFS='|' read -r case_desc bad_cmd; do
+        [ -n "$case_desc" ] || continue
+        # shellcheck disable=SC2086  # deliberate: each entry is an argv, not one word
+        if out="$(_fd $bad_cmd)"; then
+            fail "$case_desc: the fake answered a template it does not model: $out" || failed=1
+        fi
+    done <<'CASES'
+top-level version|version --format {{.Bogus}}
+volume ls|volume ls --format {{.Bogus}}
+volume inspect|volume inspect --format {{.Bogus}} go-netmon_webui-data
+image inspect|image inspect --format {{.Bogus}} go-netmon:latest
+compose config value|compose -p go-netmon -f /x.yml config --format yaml
+CASES
+
+    # Positive control for all five: the template production really issues is
+    # answered, and answered with the right VALUE -- otherwise the refusals
+    # above are satisfied by a stub that refuses everything.
+    if ! out="$(_fd_out version --format '{{.Server.Version}}')" || [ "$out" != "27.0.0" ]; then
+        fail "the fake did not answer the version template production uses: $out" || failed=1
+    fi
+    # Asserting the VALUE, not merely non-empty output: a listing that returns
+    # something is satisfiable by a stub that returns anything.
+    if ! out="$(_fd_out volume ls --format '{{.Name}}')" \
+        || [ "$(printf '%s' "$out" | tr '\n' ' ')" != "go-netmon_go-netmon-data go-netmon_webui-data" ]; then
+        fail "'volume ls --format {{.Name}}' did not list the fixture's volumes: $out" || failed=1
+    fi
+    if ! out="$(_fd_out volume inspect --format '{{index .Labels "com.docker.compose.project"}}' go-netmon_webui-data)" \
+        || [ "$out" != "go-netmon" ]; then
+        fail "the fake did not answer the volume project template: $out" || failed=1
+    fi
+    if ! out="$(_fd_out image inspect --format '{{.Id}}' go-netmon:latest)" \
+        || [ "$out" != "sha256:$(printf '%s' 'go-netmon:latest' | sha256sum | cut -c1-64)" ]; then
+        fail "the fake did not answer the image id template: $out" || failed=1
+    fi
+
+    unset -f _fd _fd_out
+    rm -rf "$root"
+    [ "$failed" -eq 0 ]
 }
 
 # A guard is not a guard until it has been seen to refuse. This is the meta
