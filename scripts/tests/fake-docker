@@ -107,19 +107,6 @@ die() {
     exit 1
 }
 
-# resolve_mount extracts the volume name from the first "-v NAME:PATH[:opts]"
-# argument in the remaining argv.
-resolve_mount() {
-    local prev="" a
-    for a in "$@"; do
-        if [ "$prev" = "-v" ]; then
-            printf '%s' "${a%%:*}"
-            return 0
-        fi
-        prev="$a"
-    done
-    return 1
-}
 
 # --- docker compose -------------------------------------------------------
 
@@ -297,30 +284,136 @@ cmd_compose() {
 
 # --- docker run -----------------------------------------------------------
 
+# PARSES THE INVOCATION AND DISPATCHES ON WHAT IT SAYS, not on a substring of
+# the whole argv.
+#
+# The previous version resolved only the volume NAME from the first -v and then
+# matched a marker anywhere in "$*", so every other thing the invocation said
+# was ignored: the mount TARGET (/src vs /dst), :ro, --network none, --rm, -i,
+# and the helper image. Each of those is present deliberately, and each could
+# have been dropped or changed without a single test noticing -- including the
+# read-only mount that exists so a bug cannot write back through the export
+# path, and the pinned image that keeps a backup and the restore after it
+# agreeing about tar. Matching anywhere in the argv was worse still: the marker
+# could occur in a volume name or an image tag and still select the branch.
+#
+# So: the flags are parsed exhaustively, the mount is resolved as
+# name:target[:opts], the container command is compared verbatim, and the
+# argv each shape REQUIRES is asserted against the shape it claims to be.
+# Anything else is fatal. Same rule as the ps, inspect and compose arms.
+
+# run_shape names the operation an exact container command performs, or nothing
+# if the command is not one the tooling issues. The three are, verbatim, from
+# netmon-stack.sh's volume_bytes, volume_export and volume_import.
+run_shape() {
+    case "$*" in
+    "sh -c du -sb /src 2>/dev/null | cut -f1")                            printf 'size' ;;
+    "tar -C /src --numeric-owner -cf - .")                                printf 'export' ;;
+    "sh -c find /dst -mindepth 1 -delete && tar -C /dst --numeric-owner -xf -") printf 'import' ;;
+    esac
+}
+
 cmd_run() {
-    local vol dir script
-    vol="$(resolve_mount "$@")" || die "no -v mount in: $*"
+    local rm=0 interactive=0 network="" mount="" image=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        --rm) rm=1; shift ;;
+        -i | --interactive) interactive=1; shift ;;
+        --network) network="${2-}"; shift 2 ;;
+        --network=*) network="${1#--network=}"; shift ;;
+        -v | --volume)
+            [ -z "$mount" ] || die "run: two -v mounts given ('$mount' then '${2-}').
+  The tooling mounts exactly one volume per helper container; a second mount is
+  a shape this stub does not model."
+            mount="${2-}"
+            shift 2
+            ;;
+        --volume=*)
+            [ -z "$mount" ] || die "run: two -v mounts given ('$mount' then '${1#--volume=}')"
+            mount="${1#--volume=}"
+            shift
+            ;;
+        -*)
+            die "unsupported 'run' option '$1'. This stub understands --rm, -i,
+  --network and -v. A flag it ignores is a flag the caller believes it passed --
+  which is how --network none and :ro went unmodelled here for as long as they
+  did." ;;
+        *) image="$1"; shift; break ;;
+        esac
+    done
+
+    [ -n "$image" ] || die "run: no image named"
+    [ "$#" -gt 0 ] || die "run: no container command given"
+
+    # --- what every helper container must say ---------------------------
+
+    [ "$rm" -eq 1 ] || die "run: no --rm. Every helper container the tooling starts is
+  disposable; one that is not leaks a container per volume per backup."
+    [ "$network" = none ] || die "run: --network is '${network:-<none>}', want 'none'. The helper
+  containers stream volume data and must not be able to reach a network at all."
+    : "${NETMON_HELPER_IMAGE:?run: NETMON_HELPER_IMAGE is unset, so this stub cannot say
+  which image the tooling is pinned to. Refusing rather than accepting whatever
+  it was handed.}"
+    [ "$image" = "$NETMON_HELPER_IMAGE" ] || die "run: image '$image', want the pinned
+  '\$NETMON_HELPER_IMAGE' ($NETMON_HELPER_IMAGE). A backup and the restore that
+  follows it must not disagree about tar."
+
+    # --- the mount, as name:target[:opts] --------------------------------
+
+    [ -n "$mount" ] || die "run: no -v mount given"
+    local vol target opts rest dir
+    vol="${mount%%:*}"
+    rest="${mount#*:}"
+    [ "$rest" != "$mount" ] || die "run: -v '$mount' names no target. Docker takes
+  name:target[:opts]; a bare name is an anonymous volume, not this mount."
+    target="${rest%%:*}"
+    opts=""
+    [ "${rest#*:}" = "$rest" ] || opts="${rest#*:}"
+
     dir="$(vol_dir "$vol")"
     [ -d "$dir" ] || die "no such volume: $vol"
 
-    # Everything after the image name is the container command. The tooling
-    # issues exactly three shapes, matched explicitly rather than by guesswork.
-    script="$*"
+    # --- the shape, and the argv it requires -----------------------------
 
-    if [[ "$script" == *"du -sb"* ]]; then
-        du -sb "$dir" | cut -f1
-        return 0
-    fi
-    if [[ "$script" == *"find /dst -mindepth 1 -delete"* ]]; then
+    local shape
+    shape="$(run_shape "$@")"
+    [ -n "$shape" ] || die "unsupported run command: $*. This stub matches the three
+  the tooling issues, verbatim: the du size probe, the tar export and the
+  find-and-untar import. A command matched by substring is one whose difference
+  from the real thing nobody looked at."
+
+    case "$shape" in
+    size | export)
+        [ "$target" = /src ] || die "run: the $shape reads the volume, so it must be mounted at
+  /src; this one mounts it at '$target'."
+        [ "$opts" = ro ] || die "run: the $shape mounts '$vol' with options '${opts:-<none>}',
+  want 'ro'. The export path is read-only precisely so a bug cannot write back
+  through it; without it that guarantee is gone and nothing says so."
+        [ "$interactive" -eq 0 ] || die "run: the $shape takes no stdin, so -i is a shape this
+  stub does not model."
+        ;;
+    import)
+        [ "$target" = /dst ] || die "run: the import writes the volume, so it must be mounted
+  at /dst; this one mounts it at '$target'."
+        [ -z "$opts" ] || die "run: the import mounts '$vol' with options '$opts'. It has to
+  write, and a read-only import fails inside the container where the caller
+  cannot see it."
+        [ "$interactive" -eq 1 ] || die "run: the import reads the archive from stdin and no -i
+  was given. Without it the container gets no stdin, tar reads EOF, and the
+  volume is emptied and left empty -- a restore that destroys data and reports
+  success."
+        ;;
+    esac
+
+    case "$shape" in
+    size)   du -sb "$dir" | cut -f1 ;;
+    export) tar -C "$dir" --numeric-owner -cf - . ;;
+    import)
         find "$dir" -mindepth 1 -delete
         tar -C "$dir" --numeric-owner -xf -
-        return 0
-    fi
-    if [[ "$script" == *"tar -C /src"* ]]; then
-        tar -C "$dir" --numeric-owner -cf - .
-        return 0
-    fi
-    die "unsupported run command: $script"
+        ;;
+    esac
 }
 
 # --- docker volume --------------------------------------------------------

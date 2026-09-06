@@ -1046,6 +1046,47 @@ test_restore_plan_states_the_tree_overwrite() {
     assert_contains "tells the operator how to proceed" "$out" "Re-run with --yes" || return 1
 }
 
+# The restore plan's "current:" line is the only thing that tells an operator
+# how much data the destructive step is about to replace. It comes from
+# volume_bytes, which runs a helper container and swallows every failure
+# ("2>/dev/null || printf '0'"), so a broken invocation reports a volume holding
+# a year of metrics as 0 B -- and a restore about to destroy it reads as
+# harmless. Nothing asserted the value, so the whole path was invisible: with
+# the fake-docker run arm fixed to refuse an unmodelled invocation, dropping
+# :ro, dropping --network none or changing the helper image on the size probe
+# still left the suite green (#50, and the same measurement #46 made of six of
+# its nine arms).
+test_restore_plan_reports_what_a_volume_actually_holds() {
+    make_backup b1 || fail "backup failed" || return 1
+
+    # A volume with contents worth noticing. Seeded here rather than relying on
+    # the fixture's few bytes, so "0 B" and the real figure cannot round to the
+    # same string.
+    local vol="$FAKE_DOCKER_ROOT/volumes/go-netmon_prometheus-data/data"
+    head -c 40000 /dev/zero >"$vol/chunk-01" || fail "seeding the volume failed" || return 1
+
+    local out want
+    out="$("$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" 2>&1)" || true
+    want="$(du -sb "$vol" | cut -f1)"
+
+    assert_contains "reports the volume's real occupancy" "$out" \
+        "current: $(awk -v b="$want" 'BEGIN { printf "%.1f KB", b / 1024 }')" || return 1
+
+    # The positive control above would also pass if the figure happened to be
+    # right for the wrong reason, so the failing shape is named outright: 0 B
+    # for a populated volume is the answer a swallowed helper-container failure
+    # produces.
+    case "$out" in
+    *"current: 0 B"*)
+        fail "the plan reports a populated volume as 0 B, so a destructive restore reads as harmless
+--- output ---
+$out
+---------------"
+        return 1
+        ;;
+    esac
+}
+
 test_restore_replaces_the_mib_tree_wholesale() {
     make_backup b1 || fail "backup failed" || return 1
     local want
@@ -1261,6 +1302,110 @@ test_backup_reports_the_unlabelled_lookalike_volume() {
     *"go-netmon_webui-data  (project="*)
         fail "the report named a managed volume" || return 1 ;;
     esac
+}
+
+# The "docker run" arm was the last one answering by guesswork: it resolved the
+# volume NAME from the first -v and then matched a marker anywhere in the whole
+# argv, so the mount target, :ro, --network none, --rm, -i and the helper image
+# all decided nothing. Each is present in the production call deliberately, and
+# each could have been dropped without a test noticing (#50).
+#
+# Tested directly as well as through the scripts, because the production paths
+# issue only the three correct shapes: a refusal they never trigger is a
+# refusal nothing shows to be working.
+test_fake_docker_run_refuses_an_unmodelled_invocation() {
+    local root out failed=0
+    root="$(mktemp -d)"
+    mkdir -p "$root/volumes/vol/data"
+    printf 'contents\n' >"$root/volumes/vol/data/file"
+
+    local img="$NETMON_HELPER_IMAGE"
+    _fdr() { FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" run "$@" 2>&1; }
+
+    # --- positive controls, first: the three shapes production issues -----
+    #
+    # Before any refusal, so that everything below is the stub reading its
+    # argv and not a stub that refuses whatever it is handed.
+    if ! out="$(_fdr --rm --network none -v vol:/src:ro "$img" \
+        sh -c 'du -sb /src 2>/dev/null | cut -f1')" || [ -z "$out" ]; then
+        fail "the fake refused the size probe production issues: $out" || failed=1
+    fi
+    if ! FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" run --rm --network none -v vol:/src:ro "$img" \
+        tar -C /src --numeric-owner -cf - . >"$root/archive.tar" 2>"$root/err"; then
+        fail "the fake refused the export production issues: $(cat "$root/err")" || failed=1
+    fi
+    # Round trip, so the import's positive control is fed a real archive: an
+    # empty stdin fails inside tar and would report the stub refusing when it
+    # had not.
+    rm -f "$root/volumes/vol/data/file"
+    if ! out="$(FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" run --rm -i --network none \
+        -v vol:/dst "$img" \
+        sh -c 'find /dst -mindepth 1 -delete && tar -C /dst --numeric-owner -xf -' \
+        <"$root/archive.tar" 2>&1)"; then
+        fail "the fake refused the import production issues: $out" || failed=1
+    fi
+    assert_file "the round trip restored the volume" "$root/volumes/vol/data/file" || failed=1
+
+    # --- each ignored semantic, one at a time ----------------------------
+    if out="$(_fdr --network none -v vol:/src:ro "$img" tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake ran a helper container with no --rm: $out" || failed=1
+    fi
+    if out="$(_fdr --rm -v vol:/src:ro "$img" tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake ran a helper container with no --network none: $out" || failed=1
+    fi
+    if out="$(_fdr --rm --network bridge -v vol:/src:ro "$img" tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake ran a helper container on a network other than none: $out" || failed=1
+    fi
+    if out="$(_fdr --rm --network none -v vol:/src "$img" tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake exported through a mount that is not read-only: $out" || failed=1
+    fi
+    if out="$(_fdr --rm --network none -v vol:/dst:ro "$img" tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake exported a volume mounted at /dst: $out" || failed=1
+    fi
+    if out="$(_fdr --rm --network none -v vol "$img" tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake accepted a -v naming no target: $out" || failed=1
+    fi
+    if out="$(_fdr --rm --network none -v vol:/src:ro -v vol:/dst "$img" tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake accepted two -v mounts: $out" || failed=1
+    fi
+    if out="$(_fdr --rm --network none -v vol:/src:ro not-the-pinned-image \
+        tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake accepted an image other than \$NETMON_HELPER_IMAGE: $out" || failed=1
+    fi
+    if out="$(_fdr --rm --network none --user 0:0 -v vol:/src:ro "$img" \
+        tar -C /src --numeric-owner -cf - .)"; then
+        fail "the fake ignored a flag it does not model: $out" || failed=1
+    fi
+
+    # The import writes, so a read-only mount fails inside the container where
+    # the caller cannot see it, and without -i the container gets no stdin: tar
+    # reads EOF and the volume is emptied and LEFT empty. A restore that
+    # destroys data and reports success.
+    if out="$(_fdr --rm -i --network none -v vol:/dst:ro "$img" \
+        sh -c 'find /dst -mindepth 1 -delete && tar -C /dst --numeric-owner -xf -' </dev/null)"; then
+        fail "the fake imported through a read-only mount: $out" || failed=1
+    fi
+    if out="$(_fdr --rm --network none -v vol:/dst "$img" \
+        sh -c 'find /dst -mindepth 1 -delete && tar -C /dst --numeric-owner -xf -' </dev/null)"; then
+        fail "the fake imported with no -i, so the container had no stdin: $out" || failed=1
+    fi
+
+    # WHERE the text appears used to decide nothing: the marker was matched
+    # anywhere in "$*". This command CONTAINS "du -sb" and is not the command
+    # production issues -- it drops the 2>/dev/null and the cut, so a real
+    # container would print "<bytes>\t/src" and the caller would read a size of
+    # zero from a tab-separated line it could not parse.
+    if out="$(_fdr --rm --network none -v vol:/src:ro "$img" sh -c 'du -sb /src')"; then
+        fail "the fake answered a command that merely contains a modelled marker: $out" || failed=1
+    fi
+
+    # And the volume must still exist: every refusal above has to happen before
+    # anything is deleted, or a stub that refuses correctly still destroyed the
+    # data on the way.
+    assert_file "the volume survived every refusal" "$root/volumes/vol/data/file" || failed=1
+
+    rm -rf "$root"
+    return "$failed"
 }
 
 # Refusing AFTER answering, or after acting, is not refusing. Three arms had
