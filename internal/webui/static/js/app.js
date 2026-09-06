@@ -244,6 +244,12 @@ class MonitoringApp {
         // Key: "deviceId-mibName", Value: { metricQueries: Set(), statusQueries: Set(), objects: Map(query -> obj) }
         this.activeSubscriptions = new Map();
 
+        // Which module tabs have been rendered and subscribed, keyed
+        // "deviceId-mibName". A tab is loaded lazily the first time it is shown
+        // and never again, so a device opens by subscribing one tab rather than
+        // every module's panels at once. Reset when the tabs are rebuilt.
+        this.loadedMibTabs = new Set();
+
         // Track current selected device for re-subscription on reconnect
         this.currentDashboardDevice = null;
 
@@ -6897,7 +6903,11 @@ class MonitoringApp {
             this.restoredMibTab = null;
 
             this.createMibTabs(deviceId, this.deviceDashboards[deviceId].mibs);
-            this.loadMibChartsSequentially(deviceId, this.deviceDashboards[deviceId].mibs, 0, load);
+            // Render and subscribe only the tab the reader lands on. The rest
+            // load on first activation and stay subscribed after, so opening a
+            // device no longer subscribes every module's panels at once -- a
+            // ~200-query, multi-megabyte burst for tabs nobody has opened.
+            this.ensureMibTabLoaded(deviceId, this.activeMibTab, load);
         } catch (error) {
             console.error('Error loading device dashboards:', error);
             // The reader is looking at something else; a failure notice about
@@ -6956,27 +6966,6 @@ class MonitoringApp {
         return byModule;
     }
 
-    async loadMibChartsSequentially(deviceId, mibs, index, load) {
-        // Base case: all MIBs loaded
-        if (index >= mibs.length) {
-            return;
-        }
-
-        // A device with two hundred modules spends a long time in this loop,
-        // which is the whole window in which the reader can move on. Renders
-        // and subscribes for a device nobody is looking at any more stop here.
-        if (load !== this.dashboardLoad) {
-            return;
-        }
-
-        // Load current MIB
-        const mib = mibs[index];
-        await this.loadMibCharts(deviceId, mib.name, load);
-
-        // Load next MIB
-        await this.loadMibChartsSequentially(deviceId, mibs, index + 1, load);
-    }
-
     // createMibTabs builds the module rail and one pane per module.
     //
     // The rail is a filterable column, not a row of tabs: a device can carry
@@ -6992,6 +6981,14 @@ class MonitoringApp {
     createMibTabs(deviceId, mibs) {
         const tabList = document.getElementById('mibTabList');
         const tabContent = document.getElementById('mibTabContent');
+
+        // A rebuild drops every pane, so anything subscribed for this device is
+        // about to point at DOM that no longer exists. Release it and forget
+        // which tabs were loaded; the tabs the reader opens will subscribe
+        // again. On a fresh open there is nothing to release -- switching
+        // devices already dropped the previous one -- so this is a no-op there.
+        this.unsubscribeFromAllDashboards(deviceId);
+        this.loadedMibTabs = new Set();
 
         // Clear existing tabs
         tabList.innerHTML = '';
@@ -7173,6 +7170,11 @@ class MonitoringApp {
         this.activeMibTab = mibName;
         this.saveState();
 
+        // First time this tab is shown, render and subscribe it. An
+        // already-loaded tab just became visible; its subscription was never
+        // dropped, so there is nothing to do but resize its charts below.
+        this.ensureMibTabLoaded(deviceId, mibName);
+
         // CRITICAL FIX: Resize all charts in the newly visible tab
         // ECharts needs to be resized when its container becomes visible
         // Use multiple resize attempts with increasing delays to handle layout timing
@@ -7222,6 +7224,56 @@ class MonitoringApp {
     // REFACTORED: Dashboard rendering from DashboardSpec
     // Old functions removed: fetchTableMetadata(), isTableColumn()
     // ========================================
+
+    // ensureMibTabLoaded renders and subscribes one module's tab the first time
+    // it is shown, and never again.
+    //
+    // This is what makes subscription lazy: a device opens by loading only the
+    // active tab, and each other tab loads when the reader first clicks it.
+    // Subscriptions are kept once a tab has been opened, so returning to it is
+    // instant -- what lazy loading saves is the tabs the reader never opens,
+    // whose panels would otherwise all subscribe at device-open. The key is
+    // added before the async render so a second click cannot start it twice.
+    //
+    // A render that FAILS gives the key back, and says so in the pane. The key
+    // is the marker that says a tab needs no work, so leaving it behind after a
+    // failure makes the empty pane permanent: every later click on that tab
+    // returns at the line above, and the reader has no way to retry short of
+    // switching devices.
+    ensureMibTabLoaded(deviceId, mibName, load = this.dashboardLoad) {
+        if (!mibName) return;
+        const key = `${deviceId}-${mibName}`;
+        if (this.loadedMibTabs.has(key)) return;
+        this.loadedMibTabs.add(key);
+        this.loadMibCharts(deviceId, mibName, load).catch(error => {
+            console.error(`Error loading MIB tab ${mibName}:`, error);
+
+            // Both of these belong to the load that failed, so both are gated
+            // on it still being the current one. Releasing the key is the part
+            // that has to be: createMibTabs REPLACES loadedMibTabs with a new
+            // Set, so an ungated release could delete a live key out of the set
+            // belonging to a device the reader has since opened, and the next
+            // click would start a second render over an in-flight one. Nothing
+            // awaits between the guard and here today, so it cannot happen yet
+            // -- but that is an invariant spread over three functions, and one
+            // added await would make it happen.
+            if (load !== this.dashboardLoad) return;
+            this.loadedMibTabs.delete(key);
+
+            // The pane still says "Initializing...", and it will say that
+            // forever now that nothing is rendering into it. A toast is gone in
+            // three seconds and the reader who looks away misses it, so the
+            // durable half of the answer goes where they are already looking.
+            const pane = document.getElementById(`mib-tab-${mibName}`);
+            if (pane) {
+                pane.innerHTML = `<div class="empty-state">
+                    <h3>Could not load ${this.escapeHtml(mibName)}</h3>
+                    <p>Select the module again to retry.</p>
+                </div>`;
+            }
+            this.showNotification(`Failed to load ${mibName}`, 'error');
+        });
+    }
 
     // Render one module's tab from the answer the device fetch already holds.
     //
