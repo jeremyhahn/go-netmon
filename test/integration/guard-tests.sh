@@ -51,6 +51,39 @@ OUT=""
 # ... <id>". Anything else -- notably docker's unsupported "label!=" -- is
 # rejected the way the daemon rejects it, so a future rewrite reaching for a
 # filter that does not exist fails here instead of in production.
+#
+# MODEL IT OR REFUSE IT, which is the rule scripts/tests/fake-docker was given
+# in #46 and this stub was not. It parsed "ps" argv with "for a in \$@" over a
+# case with NO terminal arm, so an option it did not model fell through and was
+# ignored, and it used the EMPTY STRING as "no project filter seen" -- which the
+# matching loop reads as match-all. Measured on this suite before the fix, by
+# mutating the guard's ownership query three ways:
+#
+#   typo'd label key (...project_name=)   28 passed, 1 failed   caught
+#   negated filter spelled with -f        20 passed, 9 failed   caught
+#   --no-trunc, an unmodelled option      29 passed, 0 FAILED   IGNORED
+#
+# And the two that were caught were caught by ACCIDENT, not by the parser. The
+# negated form is caught because "for a in \$@" scans every argv token rather
+# than only filter values, so the sloppiness is what catches it. The typo'd key
+# is caught by a FIXTURE: match-all drags in containers from other projects and
+# test_guard_ignores_containers_in_other_projects sees a refusal that should not
+# have happened. The identical mutation against scripts/tests/fake-docker passed
+# silently, because that fixture set has no foreign container to drag in -- same
+# construction, opposite outcome, decided entirely by which fixtures exist.
+#
+# A control that holds by accident of the fixtures is a coincidence with a green
+# test. So the parsing is now exhaustive and positional, and the "seen" flag is
+# separate from the value -- an empty filter value means "match the containers
+# whose label is empty", not "match everything".
+#
+# What is deliberately NOT fatal: the "compose" arm answers "compose version"
+# and records everything else silently. That is its contract rather than an
+# oversight -- the suite drives up, down, run, port and logs through it and
+# asserts on the LOG of what was invoked, not on stub output. Measured: 33
+# distinct compose invocations reach it in one suite run and none of them wants
+# an answer. The top-level arm IS fatal now, measured safe the same way: no
+# invocation outside ps, inspect and compose occurs anywhere in the suite.
 make_fake_docker() {
     local bin="$1" root="$2"
     mkdir -p "$bin" "$root"
@@ -68,11 +101,65 @@ printf '%s\n' "\$*" >>"$root/log"
 # nothing. $root/log stays byte-identical, so nothing else is affected.
 printf '%s\t%s\n' "\$(pwd)" "\$*" >>"$root/cwd-log"
 
+# die refuses an invocation this stub does not model instead of answering it.
+# The guard standing behind this stub is what keeps an integration run from
+# deleting a deployed stack's volumes, so an unmodelled argument must cost a
+# red test, not a plausible default.
+die() {
+    printf 'fake-docker: %s\n' "\$*" >&2
+    exit 1
+}
+
 # A forced failure, for the fail-open case.
 if [ -f "$root/ps-status" ] && [ "\$1" = "ps" ]; then
     cat "$root/ps-error" 2>/dev/null || true
     exit "\$(cat "$root/ps-status")"
 fi
+
+# The filter state. The "seen" flag is SEPARATE from the value: using the empty
+# string for both is what made an unrecognised project filter mean match-all.
+want_project=""; want_project_seen=0
+want_config="";  want_config_seen=0
+
+# ps_filter validates ONE "docker ps" filter VALUE and records it. It is called
+# only for a token that actually FOLLOWED --filter/-f, because that is the only
+# place docker reads one; the old scan over every argv token would have accepted
+# a filter spelled as a bare positional, which docker treats as a container name.
+ps_filter() {
+    case "\$1" in
+        label!=*)
+            # Real docker rejects this outright.
+            echo "Error response from daemon: invalid filter 'label!'" >&2
+            exit 1
+            ;;
+        label=*!=*)
+            # The malformed negation, checked BEFORE the recognised keys so it
+            # is caught on any key rather than only on unrecognised ones. Real
+            # docker treats the whole tail as the label VALUE and matches
+            # nothing; say so loudly, so the bug cannot hide behind an empty
+            # result.
+            echo "fake-docker: refusing malformed label filter: \$1" >&2
+            exit 1
+            ;;
+        label=com.docker.compose.project=*)
+            [ "\$want_project_seen" -eq 0 ] || die "'docker ps' given two project filters"
+            want_project_seen=1
+            want_project="\${1#label=com.docker.compose.project=}"
+            ;;
+        label=com.docker.compose.project.config_files=*)
+            [ "\$want_config_seen" -eq 0 ] || die "'docker ps' given two config_files filters"
+            want_config_seen=1
+            want_config="\${1#label=com.docker.compose.project.config_files=}"
+            ;;
+        *)
+            die "unsupported 'docker ps' filter '\$1'. This stub understands only
+  label=com.docker.compose.project=<name> and
+  label=com.docker.compose.project.config_files=<path>. A mistyped label key
+  matches nothing on a real daemon, which looks exactly like 'no foreign
+  containers' to the caller."
+            ;;
+    esac
+}
 
 case "\$1" in
     ps)
@@ -81,56 +168,91 @@ case "\$1" in
         # and it is the input that made 2>&1 dangerous: the warning words end
         # up in the variable the caller parses as container ids.
         [ -f "$root/ps-warning" ] && cat "$root/ps-warning" >&2
-        want_project=""; want_config=""
-        for a in "\$@"; do
-            case "\$a" in
-                label!=*)
-                    echo "Error response from daemon: invalid filter 'label!'" >&2
-                    exit 1
+        shift
+        while [ "\$#" -gt 0 ]; do
+            case "\$1" in
+                -a|-q|-aq|-qa|--all|--quiet) ;;
+                --filter|-f)
+                    [ "\$#" -ge 2 ] || die "'docker ps \$1' with no filter value"
+                    shift
+                    ps_filter "\$1"
                     ;;
-                label=com.docker.compose.project=*)
-                    want_project="\${a#label=com.docker.compose.project=}"
-                    ;;
-                label=com.docker.compose.project.config_files=*)
-                    want_config="\${a#label=com.docker.compose.project.config_files=}"
-                    ;;
-                label=*!=*)
-                    # The malformed negation. Real docker treats the whole tail
-                    # as the label VALUE and matches nothing; say so loudly
-                    # instead, so the bug cannot hide behind an empty result.
-                    echo "fake-docker: refusing malformed label filter: \$a" >&2
-                    exit 1
+                --filter=*) ps_filter "\${1#--filter=}" ;;
+                *)
+                    die "unsupported 'docker ps' argument '\$1'. This stub models
+  -a/-q and --filter only. An option it does not model changes what a real
+  daemon returns, so answering anyway would let the guard's query drift without
+  a single test noticing."
                     ;;
             esac
+            shift
         done
         while read -r id project config; do
             [ -n "\$id" ] || continue
-            [ -z "\$want_project" ] || [ "\$project" = "\$want_project" ] || continue
-            [ -z "\$want_config" ] || [ "\$config" = "\$want_config" ] || continue
+            [ "\$want_project_seen" -eq 0 ] || [ "\$project" = "\$want_project" ] || continue
+            [ "\$want_config_seen" -eq 0 ] || [ "\$config" = "\$want_config" ] || continue
             echo "\$id"
         done <"$root/containers"
         exit 0
         ;;
     inspect)
-        id="\${@: -1}"
+        # The template DECIDES the answer, so it is compared exactly rather than
+        # matched as a substring of the whole argv. The old arm took the last
+        # argument as the id and chose the field by whether "config_files"
+        # appeared anywhere in the command line -- which a container id or an
+        # image tag containing that text would also have satisfied.
+        shift
+        fmt=""; fmt_seen=0; target=""; target_seen=0
+        while [ "\$#" -gt 0 ]; do
+            case "\$1" in
+                --format)
+                    [ "\$#" -ge 2 ] || die "'docker inspect --format' with no template"
+                    shift; fmt="\$1"; fmt_seen=1
+                    ;;
+                --format=*) fmt="\${1#--format=}"; fmt_seen=1 ;;
+                -*) die "unsupported 'docker inspect' option '\$1'" ;;
+                *)
+                    [ "\$target_seen" -eq 0 ] || die "'docker inspect' named two objects ('\$target' then '\$1')"
+                    target_seen=1; target="\$1"
+                    ;;
+            esac
+            shift
+        done
+        [ "\$target_seen" -eq 1 ] || die "'docker inspect' named no object"
+        [ "\$fmt_seen" -eq 1 ] || die "'docker inspect' without --format: this stub answers
+  only the two label templates the guard asks for, and a bare inspect returns a
+  JSON document it does not model."
+        case "\$fmt" in
+            '{{index .Config.Labels "com.docker.compose.project.config_files"}}') field=config ;;
+            '{{index .Config.Labels "com.docker.compose.project"}}')              field=project ;;
+            *) die "unsupported 'docker inspect --format' template: \$fmt" ;;
+        esac
         while read -r cid project config; do
-            if [ "\$cid" = "\$id" ]; then
-                case "\$*" in
-                    *config_files*) echo "\$config" ;;
-                    *) echo "\$project" ;;
+            if [ "\$cid" = "\$target" ]; then
+                case "\$field" in
+                    config)  echo "\$config" ;;
+                    project) echo "\$project" ;;
                 esac
                 exit 0
             fi
         done <"$root/containers"
-        echo "Error: No such object: \$id" >&2
+        echo "Error: No such object: \$target" >&2
         exit 1
         ;;
     compose)
+        # DELIBERATELY PERMISSIVE, unlike every other arm. The suite drives up,
+        # down, run, port and logs through here and asserts on \$root/log -- what
+        # was invoked -- rather than on anything this returns. Only "version"
+        # needs an answer.
         case "\$2" in version) echo "Docker Compose version v2.0.0" ;; esac
         exit 0
         ;;
+    *)
+        die "unsupported docker command '\$1'. Nothing outside ps, inspect and
+  compose is issued anywhere in this suite, so a new one is a change that
+  should be modelled here before it is trusted."
+        ;;
 esac
-exit 0
 EOF
     chmod +x "$bin/docker"
 }
@@ -167,6 +289,133 @@ expect_refused() {
         fail "$desc: refused but still issued a compose down"
         return 1
     fi
+}
+
+# --- the instrument -------------------------------------------------------
+
+# THE STUB'S OWN REFUSALS, pinned from the stub's side.
+#
+# Mutating the guard's query and watching the suite go red does not pin this.
+# That direction is satisfied by a stub which reads no argv at all -- it would
+# answer the mutated query too, and the tests that failed would fail for the
+# fixture's reasons rather than the parser's. #46 measured exactly this on the
+# other stub: every template fix looked demonstrated until the stub-side case
+# was written, and then five of them turned out not to be.
+#
+# So each refusal is asserted here directly, and each is paired with a positive
+# control that requires the real shape to return the right VALUE -- because a
+# stub that refuses everything makes the whole guard suite vacuous while looking
+# stricter than one that works.
+test_fake_docker_refuses_what_it_does_not_model() {
+    local bin root failed=0 out
+    bin="$(mktemp -d)"; root="$(mktemp -d)"
+    make_fake_docker "$bin" "$root"
+    local proj="go-netmon-integration-stubtest"
+    printf '%s %s %s\n' \
+        ours1   "$proj" "$COMPOSE_FILE" \
+        ours2   "$proj" "$COMPOSE_FILE" \
+        theirs1 "$proj" /elsewhere/docker-compose.yml \
+        >"$root/containers"
+    local d="$bin/docker"
+
+    # --- refusals ---------------------------------------------------------
+    # Each is a real shape somebody could write: an option docker has that this
+    # stub does not model, a mistyped key, a filter in a position docker does
+    # not read one from, the two negation spellings, a duplicate, and a missing
+    # value.
+    local -a bad_ps=(
+        "--no-trunc:an option the stub does not model"
+        "MISTYPED:a mistyped label key"
+        "POSITIONAL:a filter passed as a bare positional"
+        "NEGATED:the malformed label negation"
+        "LABELBANG:docker's invalid 'label!=' spelling"
+        "DUPLICATE:two project filters"
+        "NOVALUE:--filter with no value"
+    )
+    local case_desc
+    for case_desc in "${bad_ps[@]}"; do
+        local what="${case_desc%%:*}" desc="${case_desc#*:}"
+        case "$what" in
+            --no-trunc) out="$("$d" ps -aq --no-trunc --filter "label=com.docker.compose.project=$proj" 2>&1)" ;;
+            MISTYPED)   out="$("$d" ps -aq --filter "label=com.docker.compose.project_name=$proj" 2>&1)" ;;
+            POSITIONAL) out="$("$d" ps -aq "label=com.docker.compose.project=$proj" 2>&1)" ;;
+            NEGATED)    out="$("$d" ps -aq --filter "label=com.docker.compose.project.config_files!=$COMPOSE_FILE" 2>&1)" ;;
+            LABELBANG)  out="$("$d" ps -aq --filter "label!=com.docker.compose.project=$proj" 2>&1)" ;;
+            DUPLICATE)  out="$("$d" ps -aq --filter "label=com.docker.compose.project=a" --filter "label=com.docker.compose.project=b" 2>&1)" ;;
+            NOVALUE)    out="$("$d" ps -aq --filter 2>&1)" ;;
+        esac
+        # shellcheck disable=SC2181  # the status is of the case arm above, not of a simple command
+        if [ $? -eq 0 ]; then
+            fail "the stub answered 'docker ps' with $desc: $out" || failed=1
+        fi
+    done
+
+    if out="$("$d" inspect ours1 2>&1)"; then
+        fail "the stub answered 'docker inspect' with no --format: $out" || failed=1
+    fi
+    if out="$("$d" inspect --format '{{.Id}}' ours1 2>&1)"; then
+        fail "the stub answered an inspect template it does not model: $out" || failed=1
+    fi
+    if out="$("$d" inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' ours1 ours2 2>&1)"; then
+        fail "the stub answered an inspect naming two objects: $out" || failed=1
+    fi
+    if out="$("$d" volume ls 2>&1)"; then
+        fail "the stub answered a top-level command it does not model: $out" || failed=1
+    fi
+
+    # --- the sentinel -----------------------------------------------------
+    # An EMPTY project filter must select the containers whose project label is
+    # empty -- of which the fixture has none -- and not every container in it.
+    # The old arm stored "no filter seen" and "the value the caller asked for"
+    # in the same empty string, so this exact query returned all three ids: a
+    # sentinel a legal input can forge is not a sentinel.
+    if ! out="$("$d" ps -aq --filter "label=com.docker.compose.project=" 2>&1)"; then
+        fail "the stub refused an empty project filter, which is a legal query: $out" || failed=1
+    elif [ -n "$out" ]; then
+        fail "an empty project filter matched containers it should not have: $out" || failed=1
+    fi
+
+    # --- positive controls ------------------------------------------------
+    # The shapes the guard actually issues still answer, and answer CORRECTLY.
+    # Asserting only that they succeed would be satisfied by a stub that prints
+    # anything at all.
+    if ! out="$("$d" ps -aq --filter "label=com.docker.compose.project=$proj" 2>&1)" \
+        || [ "$(echo "$out" | tr '\n' ' ')" != "ours1 ours2 theirs1 " ]; then
+        fail "the project filter did not return the project's containers: $out" || failed=1
+    fi
+    if ! out="$("$d" ps -aq --filter "label=com.docker.compose.project.config_files=$COMPOSE_FILE" 2>&1)" \
+        || [ "$(echo "$out" | tr '\n' ' ')" != "ours1 ours2 " ]; then
+        fail "the config_files filter did not select by compose file: $out" || failed=1
+    fi
+    if ! out="$("$d" inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' theirs1 2>&1)" \
+        || [ "$out" != "/elsewhere/docker-compose.yml" ]; then
+        fail "inspect did not return the config_files label: $out" || failed=1
+    fi
+    if ! out="$("$d" inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' theirs1 2>&1)" \
+        || [ "$out" != "$proj" ]; then
+        fail "inspect did not return the project label: $out" || failed=1
+    fi
+    # The two templates must not be interchangeable: reading the argv as a
+    # substring returned the config field for both, which is what the exact
+    # comparison replaced.
+    if [ "$("$d" inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' ours1 2>&1)" \
+       = "$("$d" inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' ours1 2>&1)" ]; then
+        fail "the two inspect templates returned the same field" || failed=1
+    fi
+    # A container the fixture does not have is still an error, not an answer.
+    if out="$("$d" inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' nosuch 2>&1)"; then
+        fail "the stub answered for a container it does not have: $out" || failed=1
+    fi
+    # The compose arm stays DELIBERATELY permissive; the suite depends on it.
+    if ! out="$("$d" compose version 2>&1)" || [ "$out" != "Docker Compose version v2.0.0" ]; then
+        fail "the compose version arm stopped answering: $out" || failed=1
+    fi
+    if ! "$d" compose -p x -f /x.yml down -v --remove-orphans >/dev/null 2>&1; then
+        fail "the compose arm refused a command the suite relies on it recording" || failed=1
+    fi
+
+    rm -rf "$bin" "$root"
+    [ "$failed" -eq 0 ]
 }
 
 # --- guard rules ----------------------------------------------------------
