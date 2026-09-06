@@ -19,6 +19,43 @@
 #
 # So it lives here now, and every entry point calls it. A safety property that
 # has to be remembered separately at each call site is not a safety property.
+#
+# WHY THE OWNERSHIP CHECK IS SOURCED RATHER THAN REIMPLEMENTED (#44)
+#
+# This file used to carry its own copy of the ownership enumeration. The
+# argument for keeping it was real and is worth stating before it is dismissed:
+# if the harness sources the library it guards against, a bug in that library is
+# present on BOTH sides of every test that exercises the guard -- the check and
+# the thing checking it fail together -- so an independent second implementation
+# is one of the few ways a test can catch a library bug rather than inherit it.
+#
+# It does not hold here, and it is measurable rather than arguable. Inject a
+# fail-open defect into compose_foreign_containers, then run both suites:
+#
+#   defect in scripts/lib/compose-ownership.sh   backup 59/2 FAILED
+#                                                guard  29/0 passed
+#   defect in this file's own former copy        backup 61/0 passed
+#                                                guard  27/2 FAILED
+#
+# The two copies were covered by two DISJOINT suites. The guard suite was
+# already blind to a library defect -- it passed 29 of 29 with the library
+# failing open completely -- because it never executed the library at all. The
+# independence was not protecting anything, because you cannot lose a protection
+# you do not have.
+#
+# The argument would apply if guard-tests.sh used the library as its ORACLE,
+# comparing this guard's answer against the library's. It does not: its oracle
+# is fixtures with expected refusals written out by hand. So sourcing the
+# library does not contaminate the yardstick -- it just means a library defect
+# now turns BOTH suites red instead of one.
+#
+# Recorded as a project-agent decision, not an owner ruling. The reasoning is
+# above so the next reader can check it rather than take it; if the oracle in
+# guard-tests.sh ever becomes the library itself, this decision is wrong and
+# should be revisited.
+
+# shellcheck source=scripts/lib/compose-ownership.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib" && pwd)/compose-ownership.sh"
 
 # integration_directory_project prints the project name compose would infer if
 # no -p were given: the working directory's base name, lowercased, with
@@ -125,72 +162,35 @@ integration_require_safe_project() {
         return 1
     fi
 
-    # Ownership is established in two steps -- list the project's containers,
-    # then ask each one which compose file made it -- rather than with a single
-    # negated-label filter, because docker has no such filter. Measured against
-    # the daemon this runs on:
+    # Rule 3 is compose_foreign_containers, in scripts/lib/compose-ownership.sh
+    # -- THE single implementation of this property. This file carried a second
+    # one until #44 decided it should not; the header records why, and the
+    # library's header carries the same decision from its side.
     #
-    #   --filter "label=KEY!=VALUE"   parses KEY's value as the literal "!=VALUE",
-    #                                 matches nothing, and reports a clean bill
-    #                                 of health for a project full of foreign
-    #                                 containers -- a silent fail-open;
-    #   --filter "label!=KEY=VALUE"   is rejected outright: "invalid filter 'label!'".
-    #
-    # So the comparison is done here, where it can be read and tested, and both
-    # docker calls capture their exit status BEFORE their output is judged.
-    # A query that fails refuses; it never counts as "nothing foreign".
-    # docker's STDERR is kept out of the value. Merging it with 2>&1 put
-    # warning text into a variable that is then parsed as a list of container
-    # ids: on a host where "docker ps" exits 0 but warns (a config-load
-    # warning, a DOCKER_HOST or context deprecation -- reachable here, since
-    # this branch introduces a dind path), each warning word became a fake id
-    # and "docker inspect <word>" failed. The guard refused, so it stayed fail
-    # CLOSED, but it refused every entry point with a message naming a
-    # container that does not exist.
-    local ids status=0 err_file
-    err_file="$(mktemp)" || {
-        echo "compose-guard: could not create a temporary file to capture docker's errors." >&2
-        return 1
-    }
-    ids="$(docker ps -aq --filter "label=com.docker.compose.project=$project" 2>"$err_file")" || status=$?
+    # Exit 2 is "the question could not be answered", which is a REFUSAL and is
+    # deliberately not the same as an empty answer. Treating an unanswered
+    # question as a clean bill of health is one of the two defects that produced
+    # #41, and the library's header documents both. The library prints what
+    # actually failed -- which docker call, its exit status, its stderr -- and
+    # this adds what that means for this caller.
+    local foreign status=0
+    foreign="$(compose_foreign_containers docker "$project" "$compose_file")" || status=$?
     if [ "$status" -ne 0 ]; then
-        echo "compose-guard: could not list the containers in project '$project'." >&2
-        echo "  docker ps failed (exit $status): $(cat "$err_file")" >&2
-        echo "  Refusing to act on a project whose ownership could not be checked." >&2
-        rm -f "$err_file"
+        echo "compose-guard: refusing to act on a project whose ownership could not be checked." >&2
         return 1
     fi
 
-    # An ARRAY, because the report is the text a human reads to decide whether
-    # the refusal was right. Accumulated into a string and re-split by "for id
-    # in $foreign", every id and every path segment landed on its own line, a
-    # path containing a space split further, a container with no config_files
-    # label printed a bare "()", and the unquoted expansion was subject to
-    # globbing.
-    local id owner
-    local -a foreign=()
-    for id in $ids; do
-        status=0
-        owner="$(docker inspect \
-            --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' \
-            "$id" 2>"$err_file")" || status=$?
-        if [ "$status" -ne 0 ]; then
-            echo "compose-guard: could not read the compose file behind container $id." >&2
-            echo "  docker inspect failed (exit $status): $(cat "$err_file")" >&2
-            echo "  Refusing to act on a project whose ownership could not be checked." >&2
-            rm -f "$err_file"
-            return 1
-        fi
-        if [ "$owner" != "$compose_file" ]; then
-            foreign+=("$id (${owner:-<no config_files label>})")
-        fi
-    done
-
-    rm -f "$err_file"
-
-    if [ "${#foreign[@]}" -gt 0 ]; then
+    if [ -n "$foreign" ]; then
+        # read -r line by line rather than "for id in $foreign": the report is
+        # the text a human reads to decide whether the refusal was right, and an
+        # unquoted expansion puts every path segment on its own line, splits a
+        # compose path containing a space, and is subject to globbing.
         echo "Containers in project '$project' that were not created from $compose_file:" >&2
-        for id in "${foreign[@]}"; do echo "  $id" >&2; done
+        local id
+        while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            echo "  $id" >&2
+        done <<<"$foreign"
         echo "compose-guard: refusing to run: tearing this project down would remove" >&2
         echo "  containers it does not own." >&2
         return 1

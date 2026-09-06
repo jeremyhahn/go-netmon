@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# THE compose-project ownership check. One implementation; one caller today,
-# and a second that is an open question rather than an oversight -- see below.
+# THE compose-project ownership check. One implementation, and since #44 both
+# of the callers that need it.
 #
 # This library is sourced, never executed. Callers are responsible for
 # "set -euo pipefail".
@@ -19,16 +19,34 @@
 # and keeps no state, which is what would let the deployment tooling and the
 # test harness share it without sharing anything else.
 #
-# TODAY IT HAS ONE CALLER, not two. scripts/lib/netmon-stack.sh uses it;
-# test/integration/compose-guard.sh still carries its own enumeration. That is
-# not an oversight left un-noted: whether the integration guard should source
-# this is an open question, filed as #44, because a harness that sources the
-# library it guards against cannot catch a bug in that library -- its check and
-# the thing checking it would fail together. #45 tracks the concrete instance.
+# IT NOW HAS TWO CALLERS (#44): scripts/lib/netmon-stack.sh, guarding backup.sh
+# and restore.sh, and test/integration/compose-guard.sh, guarding the
+# integration harness. The decision is recorded in both files.
+#
+# The argument for leaving the harness its own copy was real and was taken
+# seriously: a harness that sources the library it guards against cannot catch a
+# bug in that library, because its check and the thing checking it fail
+# together. It was MEASURED rather than argued, by injecting a fail-open defect
+# into compose_foreign_containers and running both suites:
+#
+#   defect here                      backup 59/2 FAILED   guard 29/0 passed
+#   defect in the harness's copy      backup 61/0 passed   guard 27/2 FAILED
+#
+# The two copies sat behind two DISJOINT suites. The guard suite passed 29 of 29
+# with this library failing open completely, because it never executed this
+# library at all -- so the independence was not buying the protection it was
+# credited with. You cannot lose a protection you do not have. Sourcing it means
+# a defect here now reddens BOTH suites instead of one.
+#
+# The argument would bite if guard-tests.sh used this library as its ORACLE,
+# comparing the guard's answer against this one. It does not: its oracle is
+# hand-written fixtures and expected refusals. If that ever stops being true,
+# reopen #44 rather than trusting this paragraph.
 #
 # An earlier version of this comment said "both callers now use this", which was
 # not true when written. A header claiming a consolidation that did not happen
-# is the same defect as a guard that does not guard, and review caught it.
+# is the same defect as a guard that does not guard, and review caught it. It is
+# true now.
 #
 # THE TWO DEFECTS IT EXISTS TO NOT HAVE
 #
