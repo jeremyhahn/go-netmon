@@ -286,6 +286,71 @@ test_teardown_removes_the_dind_profile_and_volumes() {
     esac
 }
 
+# --- the scope of the run -------------------------------------------------
+
+# go_test_command prints the "go test" command line the runner handed to
+# compose run, which is the only place the suite's scope is decided.
+go_test_command() {
+    grep -oE 'go test .*' "$1" | head -1
+}
+
+# tagged_dirs prints every directory holding a file behind //go:build
+# integration.
+#
+# Derived here independently of tagged-packages.sh -- a different traversal, not
+# a call to the code under test -- because a test that asks the implementation
+# what the answer is agrees with it by construction, including when both are
+# wrong.
+tagged_dirs() {
+    local root file
+    root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    while IFS= read -r file; do
+        dirname "${file#"$root"/}"
+    done < <(find "$root" -name '*.go' -type f \
+        -exec grep -l '^//go:build integration' {} +) | sort -u
+}
+
+# The defect this guards: the scope was the literal "./test/integration/...",
+# which does not match ./internal/..., so internal/mib/parser's two tagged
+# files were never compiled and never run by any target or CI job (#30). A
+# package that grows a tagged file and is not run is a suite a reader counts as
+# coverage and nothing executes.
+test_the_run_covers_every_integration_tagged_package() {
+    local log="$TMP/scope.log"
+    run_harness "$log" fff666
+
+    local cmd
+    cmd="$(go_test_command "$log")"
+    [ -n "$cmd" ] || fail "the runner issued no go test command at all" || return 1
+
+    local dir missing=()
+    while IFS= read -r dir; do
+        case "$cmd" in
+            *"./$dir/..."*) ;;
+            *) missing+=("$dir") ;;
+        esac
+    done < <(tagged_dirs)
+
+    if [ ${#missing[@]} -ne 0 ]; then
+        fail "these packages hold integration-tagged tests but the run does not include them: ${missing[*]}; command was: $cmd" || return 1
+    fi
+}
+
+# Pinned separately from the derived check above, so that a discovery which
+# silently returns a shorter list still fails here by name. This is the package
+# #30 found sitting unrun.
+test_the_run_includes_the_mib_parser_suite() {
+    local log="$TMP/parser.log"
+    run_harness "$log" ggg777
+
+    local cmd
+    cmd="$(go_test_command "$log")"
+    case "$cmd" in
+        *"./internal/mib/parser/..."*) ;;
+        *) fail "the MIB parser's integration tests are not in the run: $cmd"; return 1 ;;
+    esac
+}
+
 # Every compose call must name the project explicitly. One that does not gets
 # the directory default -- "go-netmon", a deployed stack's project.
 test_every_compose_call_names_the_project() {

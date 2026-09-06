@@ -48,6 +48,23 @@ func unitsByObject(oids []*mib.OIDMetadata) map[string]string {
 	return units
 }
 
+// untypedAccessible names the readable objects that came back with no type.
+//
+// A readable object with no type is one whose IMPORT did not resolve. It is
+// still classified as a metric and still marked pollable, so the poller issues
+// a request for it and the value is rendered as a bare integer. The names are
+// returned rather than a count because the failure is only actionable if it
+// says which objects lost their type.
+func untypedAccessible(oids []*mib.OIDMetadata) []string {
+	var untyped []string
+	for _, oid := range oids {
+		if oid.Type == "" && (oid.Access == "read-only" || oid.Access == "read-write") {
+			untyped = append(untyped, oid.Name)
+		}
+	}
+	return untyped
+}
+
 // TestUnitsSurviveAcrossAWholeModule pins the UNITS clause for every object in
 // IP-MIB that declares one.
 //
@@ -261,13 +278,7 @@ func TestInetAddressMIBResolvesIPMIBZoneColumns(t *testing.T) {
 	}
 
 	// Every readable object in the module must now carry a type.
-	var untyped []string
-	for _, oid := range oids {
-		if oid.Type == "" && (oid.Access == "read-only" || oid.Access == "read-write") {
-			untyped = append(untyped, oid.Name)
-		}
-	}
-	if len(untyped) != 0 {
+	if untyped := untypedAccessible(oids); len(untyped) != 0 {
 		t.Errorf("%d readable IP-MIB objects have no type: %v", len(untyped), untyped)
 	}
 }

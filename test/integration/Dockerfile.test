@@ -18,10 +18,16 @@ RUN go mod download
 # Copy the entire project
 COPY . .
 
-# Build the test binary. The integration build tag is required: integration_test.go
-# carries it, so without the tag the package compiles to the tests that need no
-# services at all and the end-to-end test is silently left out.
-RUN go test -c -tags=integration ./test/integration -o /integration-test
+# Compile the whole tree under the integration tag, so the image build fails on
+# a tagged file that does not compile.
+#
+# This replaces "go test -c -tags=integration ./test/integration": that compiled
+# ONE package, so internal/mib/parser's tagged file went uncompiled for months
+# while every check stayed green, because go build, go vet and go test are all
+# scoped to the tag set they are given (#30). vet over ./... under the tag is
+# the whole matrix -- integration is the repository's only build tag.
+RUN go vet -tags=integration ./...
 
-# Default command runs all integration tests
-CMD ["go", "test", "-v", "-tags=integration", "./test/integration"]
+# Default command runs every package holding integration-tagged tests, not one
+# named directory. See test/integration/tagged-packages.sh.
+CMD ["bash", "-c", "go test -v -tags=integration $(test/integration/tagged-packages.sh)"]

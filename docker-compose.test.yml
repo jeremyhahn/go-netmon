@@ -103,7 +103,11 @@ services:
       - SNMP_PORT=161
     networks:
       - test-network
-    command: go test -v -tags=integration ./test/integration/...
+    # run-tests.sh overrides this with the same package set. It is spelled here
+    # too so that a bare "docker compose run integration-test" runs the whole
+    # tagged suite rather than the one directory somebody happened to name --
+    # the omission that left internal/mib/parser unrun (#30).
+    command: ["bash", "-c", "go test -v -tags=integration $(test/integration/tagged-packages.sh)"]
 
 networks:
   test-network:

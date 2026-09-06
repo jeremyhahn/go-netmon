@@ -24,6 +24,28 @@ Three comprehensive tests:
 - `TestSNMPConnectivity` - SNMP device connectivity
 - `TestPrometheusConnectivity` - Prometheus endpoint validation
 
+### 2a. Which packages the suite runs
+
+The runner does **not** run a fixed directory. It runs every package holding a
+file behind `//go:build integration`, discovered by
+`test/integration/tagged-packages.sh`:
+
+```
+./internal/mib/parser/...
+./test/integration/...
+```
+
+The scope used to be the literal `./test/integration/...`, which does not match
+`./internal/...`. `internal/mib/parser`'s two tagged files were therefore never
+compiled and never executed by any target or CI job, and one of them had not
+compiled since the day it was written — invisible because `go build`, `go vet`
+and `go test` are all scoped to the tag set they are given (#30). `make
+vet-tags` now compiles the tree under every tag the repository defines, and
+`make test-integration-harness` asserts that the runner's scope covers every
+tagged package.
+
+Adding a tagged test file to a new package is therefore enough to have it run.
+
 ### 3. Test Infrastructure
 
 **Files Created:**
@@ -174,7 +196,7 @@ make integration-logs
 make integration-shell
 
 # Inside shell:
-$ go test -v -tags=integration ./test/integration/...
+$ go test -v -tags=integration $(test/integration/tagged-packages.sh)
 $ snmpwalk -v2c -c public snmp-simulator system
 $ curl http://prometheus:9090/-/healthy
 ```
@@ -295,7 +317,7 @@ make test-integration
 # Or manually
 docker compose -p go-netmon-integration-manual -f docker-compose.test.yml run --rm \
   -e LOG_LEVEL=debug \
-  integration-test go test -v -tags=integration ./test/integration/...
+  integration-test bash -c 'go test -v -tags=integration $(test/integration/tagged-packages.sh)'
 ```
 
 ## Extending Tests

@@ -188,9 +188,9 @@ func TestIntegration_StandardModulesParseCompletely(t *testing.T) {
 
 			assertOIDsResolved(t, tt.module, oids)
 
-			if got := untypedAccessible(oids); got != tt.untypedAccessible {
-				t.Errorf("%s left %d readable objects untyped, want %d; a readable object with no type is one whose IMPORT did not resolve, and it is still marked pollable",
-					tt.module, got, tt.untypedAccessible)
+			if untyped := untypedAccessible(oids); len(untyped) != tt.untypedAccessible {
+				t.Errorf("%s left %d readable objects untyped (%v), want %d; a readable object with no type is one whose IMPORT did not resolve, and it is still marked pollable",
+					tt.module, len(untyped), untyped, tt.untypedAccessible)
 			}
 
 			t.Logf("%s: %d objects", tt.module, len(oids))

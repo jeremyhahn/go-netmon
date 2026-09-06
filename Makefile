@@ -1,4 +1,4 @@
-.PHONY: deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard
+.PHONY: deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags
 
 # Variables
 BINARY_NAME=go-netmon
@@ -134,7 +134,7 @@ validate-mibs: build-cli ## Check that each bundled MIB tree parses and resolves
 	@echo "Validating the Dell tree..."
 	@$(BUILD_DIR)/$(CLI) mib validate --quiet mibs/r640 mibs/standard
 
-ci-fast: check-tracked fmt-check vet lint test-toolchain test-teardown test-integration-harness test-integration-guard test build-all validate-mibs ## Everything that does not need Docker
+ci-fast: check-tracked fmt-check vet vet-tags lint test-toolchain test-teardown test-integration-harness test-integration-guard test build-all validate-mibs ## Everything that does not need Docker
 	@echo "ci-fast: passed"
 
 ci: ci-fast integration-test ## Everything a pull request must pass
@@ -321,6 +321,24 @@ fmt-check: ## Fail if any file is not gofmt-clean (CI runs this, not fmt)
 vet: ## Run go vet
 	@echo "Running go vet..."
 	$(GOCMD) vet ./...
+
+# BUILD_TAGS is every build tag this repository defines. Today that is one, so
+# the whole tag matrix is "no tags" (vet, above) plus this.
+BUILD_TAGS ?= integration
+
+vet-tags: ## Run go vet under every build tag the repository defines
+	@# go build, go vet and go test are all scoped to the tag set they are
+	@# given. A file behind //go:build integration is not part of the package
+	@# under the default tags, so it can fail to compile indefinitely while
+	@# every default-tagged check reports green -- which is exactly what
+	@# internal/mib/parser/parser_oid_integration_test.go did, from the day it
+	@# was written until #30. A package enumeration cannot find it either:
+	@# "go list ./..." reports the same 36 packages with and without the tag.
+	@# Only compiling under the tag does.
+	@for tag in $(BUILD_TAGS); do \
+		echo "Running go vet -tags=$$tag..."; \
+		$(GOCMD) vet -tags="$$tag" ./... || exit 1; \
+	done
 
 # --- Backup and restore ---------------------------------------------------
 #

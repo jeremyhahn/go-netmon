@@ -208,7 +208,17 @@ fi
 # having transferred an empty context, while the "up --build" above built its
 # services correctly in the same job. This uses that working path.
 
-TEST_ARGS=(go test -v -tags=integration ./test/integration/...)
+# The packages to run are DISCOVERED from the build constraint, not listed --
+# see tagged-packages.sh for what a hardcoded "./test/integration/..." cost.
+mapfile -t INTEGRATION_PKGS < <("$SCRIPT_DIR/tagged-packages.sh")
+if [ ${#INTEGRATION_PKGS[@]} -eq 0 ]; then
+    echo "No package holds an integration-tagged test file. Refusing to report a" >&2
+    echo "green integration run for a suite that does not exist." >&2
+    exit 1
+fi
+echo "Integration-tagged packages: ${INTEGRATION_PKGS[*]}"
+
+TEST_ARGS=(go test -v -tags=integration "${INTEGRATION_PKGS[@]}")
 if [ -n "${1:-}" ]; then
     echo "Running integration tests matching: $1"
     TEST_ARGS+=(-run "$1")
