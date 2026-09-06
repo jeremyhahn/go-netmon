@@ -163,6 +163,12 @@ fi
 # deploy.sh checks every unit afterwards and prints the journal for the ones
 # that are down, which is far more use to an operator than this script dying
 # with the reason still sitting in the journal unread.
+#
+# `systemctl restart go-netmon-webui` BLOCKS until the service reports itself
+# ready, because that unit is Type=notify — minutes, on a cold MIB catalog.
+# That wait is the point: "started" here now means "serving", where it used to
+# mean "forked". A restart that appears to hang is the web UI still parsing;
+# `journalctl -fu go-netmon-webui` shows it working.
 start_unit() {
     local u="$1"
     if systemctl restart "$u"; then

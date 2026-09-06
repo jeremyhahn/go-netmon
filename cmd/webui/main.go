@@ -3,9 +3,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/logging"
 	"github.com/jeremyhahn/go-netmon/internal/mib/loader"
 	"github.com/jeremyhahn/go-netmon/internal/mib/storage"
+	"github.com/jeremyhahn/go-netmon/internal/sdnotify"
 	"github.com/jeremyhahn/go-netmon/internal/webui"
 	"github.com/jeremyhahn/go-netmon/internal/webui/alarm"
 	"github.com/jeremyhahn/go-netmon/internal/webui/api"
@@ -67,6 +70,22 @@ func runUntilSignal() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The service manager, if there is one. A process started any other way
+	// gets a notifier that discards what it is told, so nothing below has to
+	// ask whether it is running under systemd.
+	notifier, err := sdnotify.New()
+	if err != nil {
+		return fmt.Errorf("failed to open the systemd notification socket: %w", err)
+	}
+	defer func() {
+		if closeErr := notifier.Close(); closeErr != nil {
+			log.Printf("Error closing the notification socket: %v", closeErr)
+		}
+	}()
+	if notifier.Supervised() {
+		log.Println("Supervised by systemd; readiness will be reported once the listener is bound")
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -74,13 +93,19 @@ func runUntilSignal() error {
 		sig := <-sigChan
 		log.Printf("Received shutdown signal: %v", sig)
 		log.Println("Initiating graceful shutdown...")
+		// Tell the manager the service is on its way down before the shutdown
+		// starts, so a slow drain reads as deactivating rather than as a
+		// service that has silently stopped answering.
+		if notifyErr := notifier.Stopping(); notifyErr != nil {
+			log.Printf("Failed to report shutdown to systemd: %v", notifyErr)
+		}
 		cancel()
 	}()
 
-	return run(ctx)
+	return run(ctx, notifier)
 }
 
-func run(ctx context.Context) error {
+func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 	// Load MIB configuration (or use defaults)
 	cfg, err := config.Load()
 	if err != nil {
@@ -232,14 +257,38 @@ func run(ctx context.Context) error {
 
 	go reloadOnSignal(ctx, server)
 
-	// Start the server
-	log.Printf("Starting Web UI server on %s", *listenAddr)
+	// Bind before announcing anything. Everything above this line — the MIB
+	// catalog above all — happens with nothing listening, and on a cold
+	// catalog that is minutes. Binding is the point at which the service
+	// becomes usable, so it is the point the readiness signal belongs at, and
+	// the point the log line an operator greps for belongs at.
+	// listenErr rather than err: the outer err is still live here, and
+	// shadowing it would hide a failure to bind behind a name that already
+	// means something else in this function.
+	listener, listenErr := server.Listen(ctx, *listenAddr)
+	if listenErr != nil {
+		return listenErr
+	}
+
+	log.Printf("Listening on %s — the web UI is ready to serve", listener.Addr())
 	log.Printf("Open http://localhost%s in your browser", *listenAddr)
+
+	// READY=1 goes out only now. Sending it any earlier is the defect this
+	// replaces: systemd would call the unit active while the port refused
+	// every connection, and a deploy check could not tell that from a wedge.
+	if notifyErr := notifier.Ready(); notifyErr != nil {
+		return fmt.Errorf("failed to report readiness to systemd: %w", notifyErr)
+	}
 
 	// Start server in a goroutine
 	errChan := make(chan error, 1)
 	go func() {
-		if err := server.Start(ctx, *listenAddr); err != nil {
+		// A graceful shutdown closes the server and Serve reports that as
+		// ErrServerClosed. That is the expected end of a stop, not a failure:
+		// exiting non-zero on it would make every `systemctl restart` look
+		// like a failed one, which is the class of lie this change exists to
+		// remove.
+		if err := server.Serve(ctx, listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errChan <- err
 		}
 	}()

@@ -193,3 +193,18 @@ func (e *PageRangeError) Error() string {
 	return "offset " + strconv.Itoa(e.Offset) + " is past the end of " +
 		strconv.Itoa(e.Matched) + " matching record(s)"
 }
+
+// ListenError reports that the web UI could not bind its listen address.
+//
+// It is a startup failure and not a request failure: nothing the service does
+// afterwards is reachable, so it is returned rather than logged.
+type ListenError struct {
+	Addr string
+	Err  error
+}
+
+func (e *ListenError) Error() string {
+	return "webui: listen on " + strconv.Quote(e.Addr) + ": " + e.Err.Error()
+}
+
+func (e *ListenError) Unwrap() error { return e.Err }

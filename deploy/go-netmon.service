@@ -49,20 +49,22 @@ Environment=GOMAXPROCS=4
 # WAIT FOR THE DEVICE LIST, do not race it. The poller's own config sync gives
 # up after five attempts spanning about 30 seconds and then continues with the
 # local config — which lists no devices — so losing that race does not fail
-# loudly, it silently monitors nothing. The web UI needs far longer than 30
-# seconds on first start because it parses the whole MIB catalog before it
-# listens, so After= alone is not enough: systemd considers a Type=simple
-# service started the moment it forks, not when it serves.
-ExecStartPre=/bin/sh -c 'until curl -fsS -o /dev/null http://127.0.0.1:8080/api/poller/config; do sleep 5; done'
-
+# loudly, it silently monitors nothing.
+#
+# After= is now enough to win that race, and it was not before. The web UI unit
+# is Type=notify (see deploy/go-netmon-webui.service), so systemd does not
+# consider it started until it has bound :8080 and said so; ordering after it
+# therefore means ordering after it can answer. This unit used to poll that
+# port itself in an ExecStartPre loop, purely because a Type=simple web UI
+# counted as started the moment it forked. That workaround is gone with the
+# defect it worked around.
+#
+# Wants= rather than Requires= is unchanged: a web UI that genuinely fails to
+# start releases this unit to come up and serve its own API rather than holding
+# it down alongside.
 ExecStart=/usr/local/bin/go-netmon
 Restart=always
 RestartSec=5s
-
-# Generous, because the wait above is bounded by the web UI's MIB parse and
-# that is minutes on a cold catalog. Hitting this means the web UI is not
-# coming up at all, which is worth failing over rather than waiting forever.
-TimeoutStartSec=900
 
 # RUNAWAY GUARD. The box has 4 GB and shares it with the web UI, Prometheus and
 # go-sysmon. A MIB parse over a large module set is the memory-hungry path, and

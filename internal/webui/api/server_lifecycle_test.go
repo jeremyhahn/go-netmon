@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -112,6 +113,98 @@ func TestStartServesAndShutsDown(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Start did not return after its context was canceled")
+	}
+}
+
+// TestListenBindsWithoutServing is the whole point of splitting Listen from
+// Serve: between the two the port is taken but nothing answers on it, and that
+// gap is where the readiness signal is sent. If binding did not really happen
+// in Listen, a service could report itself ready before anything could connect
+// — which is the defect this replaces, moved into the process.
+func TestListenBindsWithoutServing(t *testing.T) {
+	s := newTestServer(t)
+
+	listener, err := s.Listen(context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	addr := listener.Addr().String()
+	if _, _, splitErr := net.SplitHostPort(addr); splitErr != nil {
+		t.Fatalf("listener address %q is not host:port: %v", addr, splitErr)
+	}
+
+	// The address is genuinely held: a second bind of it must fail.
+	second, err := net.Listen("tcp", addr)
+	if err == nil {
+		_ = second.Close()
+		t.Fatal("Listen did not actually bind the address")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Serve(ctx, listener) }()
+
+	// Once Serve has the listener, the same address answers HTTP.
+	deadline := time.Now().Add(5 * time.Second)
+	var resp *http.Response
+	for time.Now().Before(deadline) {
+		// Any HTTP answer proves the socket is being served; this server is
+		// built without assets, so the router's 404 is the expected reply.
+		resp, err = http.Get("http://" + addr + "/")
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("no answer from the served listener: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after its context was canceled")
+	}
+}
+
+// A port already in use is the one startup failure that has to be reported
+// rather than logged: nothing the service does afterwards is reachable.
+func TestListenReportsAnAddressItCannotBind(t *testing.T) {
+	s := newTestServer(t)
+
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("test listener: %v", err)
+	}
+	defer func() { _ = held.Close() }()
+
+	listener, err := s.Listen(context.Background(), held.Addr().String())
+	if err == nil {
+		_ = listener.Close()
+		t.Fatal("Listen accepted an address already in use")
+	}
+	if listener != nil {
+		t.Error("Listen returned a listener alongside an error")
+	}
+
+	var listenErr *ListenError
+	if !errors.As(err, &listenErr) {
+		t.Fatalf("error = %T (%v), want *ListenError", err, err)
+	}
+	if listenErr.Addr != held.Addr().String() {
+		t.Errorf("ListenError.Addr = %q, want %q", listenErr.Addr, held.Addr())
+	}
+	if listenErr.Unwrap() == nil {
+		t.Error("ListenError lost the cause")
 	}
 }
 

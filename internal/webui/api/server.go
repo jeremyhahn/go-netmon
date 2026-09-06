@@ -11,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -410,14 +411,40 @@ func (s *Server) routes() {
 	}
 }
 
-// Start starts the server
-func (s *Server) Start(ctx context.Context, addr string) error {
+// Listen binds addr without serving on it.
+//
+// Binding is separated from serving because the moment the socket accepts is
+// the moment the service becomes usable, and that moment has to be observable
+// from outside the process: it is what the readiness notification to systemd
+// reports. A caller that binds and then serves can say "ready" exactly once,
+// between the two, with nothing left in the startup path that could still fail.
+//
+// It also moves the one startup failure worth failing the service for — the
+// port is already taken — to a returned error, rather than leaving it to
+// surface as a serve error minutes into a start.
+//
+// ctx governs the bind itself, not the listener's lifetime: a bind that cannot
+// complete is abandoned with the context, and the returned listener outlives it.
+func (s *Server) Listen(ctx context.Context, addr string) (net.Listener, error) {
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "tcp", addr)
+	if err != nil {
+		return nil, &ListenError{Addr: addr, Err: err}
+	}
+	return listener, nil
+}
+
+// Serve serves the API on an already-bound listener until ctx is canceled.
+//
+// The shutdown below closes the listener, so a caller that hands one over must
+// not close it itself.
+func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	// Start the WebSocket hub
 	go s.hub.Run(ctx)
 
-	server := newHTTPServer(addr, s.router)
+	server := newHTTPServer(listener.Addr().String(), s.router)
 
-	log.Printf("Web UI server starting on %s", addr)
+	log.Printf("Web UI server serving on %s", listener.Addr())
 
 	// #nosec G118 -- the shutdown deadline must not inherit ctx: this goroutine
 	// only wakes once ctx is already canceled.
@@ -430,7 +457,17 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		}
 	}()
 
-	return server.ListenAndServe()
+	return server.Serve(listener)
+}
+
+// Start binds addr and serves on it: Listen followed by Serve, for a caller
+// with nothing to do in between.
+func (s *Server) Start(ctx context.Context, addr string) error {
+	listener, err := s.Listen(ctx, addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, listener)
 }
 
 // newHTTPServer builds the listener the web UI serves on.

@@ -36,7 +36,7 @@ Options:
 
 Environment equivalents:
   HOST USER WITH_PROMETHEUS PROMETHEUS_BIN SKIP_BUILD FORCE_CONFIG
-  NO_START DRY_RUN SSH_OPTS
+  NO_START DRY_RUN SSH_OPTS WEBUI_READY_TIMEOUT
 
 Examples:
   deploy.sh --host monitor.example --user ops --with-prometheus
@@ -196,6 +196,32 @@ if [[ -n "$dry_run" || -n "$no_start" ]]; then
     exit 0
 fi
 
+# webui_ready_timeout bounds the wait for the web UI to answer. It matches
+# TimeoutStartSec in deploy/go-netmon-webui.service so that this script never
+# gives up on a start systemd is still prepared to wait for — the two giving
+# different answers about the same start is its own kind of false report.
+webui_ready_timeout="${WEBUI_READY_TIMEOUT:-900}"
+
+# wait_serving polls a URL on the target until it answers 200, or until the
+# timeout. It is what "deployed" is allowed to mean.
+wait_serving() {
+    local url="$1" timeout="$2" deadline code started
+    started=$SECONDS
+    deadline=$(( started + timeout ))
+
+    while (( SECONDS < deadline )); do
+        code="$(run_remote "curl -s -o /dev/null -w '%{http_code}' --max-time 5 '$url'" 2>/dev/null || true)"
+        if [[ "$code" == "200" ]]; then
+            step "$url answered 200 after $(( SECONDS - started ))s"
+            return 0
+        fi
+        sleep 5
+    done
+
+    step "$url did not answer 200 within ${timeout}s (last status: ${code:-none})"
+    return 1
+}
+
 say "Verifying"
 # The units are Restart=always, so a service that is going to fail will be
 # mid-restart rather than inactive. Give it a moment to settle before judging.
@@ -213,11 +239,33 @@ for u in $units; do
     fi
 done
 
+# THE PORT, NOT THE UNIT. `systemctl is-active` was the only check this script
+# made, and for the web UI it was worse than no check at all: the unit was
+# Type=simple, so it reported active for the ~3.5 minutes the process spent
+# parsing MIBs with nothing listening, and this script printed "Deployed" into
+# that window. The unit is Type=notify now and is-active is honest again — but
+# what a deploy has to assert is that the service SERVES, and the only thing
+# that can assert that is a request that gets an answer. Both checks stay: the
+# unit check catches a process that died, the request catches everything else.
+not_serving=
+if [[ -z "$failed" ]]; then
+    step "waiting for the web UI to serve (up to ${webui_ready_timeout}s; a cold MIB catalog takes minutes)"
+    if ! wait_serving "http://127.0.0.1:8080/" "$webui_ready_timeout"; then
+        failed=1
+        not_serving=go-netmon-webui.service
+    fi
+fi
+
 if [[ -n "$failed" ]]; then
     echo
-    echo "One or more units are not running. Recent logs:" >&2
+    echo "The deployment is not serving. Recent logs:" >&2
     for u in $units; do
-        run_remote "systemctl is-active --quiet $u" && continue
+        # A unit that is up but not answering has to have its journal printed
+        # too: that is the whole shape of failure this check exists to catch,
+        # and it is invisible to is-active.
+        if [[ "$u" != "$not_serving" ]] && run_remote "systemctl is-active --quiet $u"; then
+            continue
+        fi
         echo "--- $u ---" >&2
         run_remote "sudo journalctl -u $u -n 30 --no-pager" >&2 || true
     done

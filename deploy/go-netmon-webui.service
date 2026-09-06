@@ -26,7 +26,20 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+# Type=notify, not simple. A simple unit is "active" the moment the process
+# forks, and this process parses its MIB catalog before it binds :8080 -- 203
+# seconds on monitor-01 with 176 modules imported. For that whole window systemd
+# reported a healthy service with a stable PID and NRestarts=0 while every
+# connection to the port was refused, which is exactly what a successful deploy
+# looks like and exactly what a wedged process looks like. On 2026-09-06 a good
+# deploy was read as hung and rolled back on that signal, doubling the outage.
+#
+# With notify the unit stays "activating" until the binary sends READY=1, which
+# it sends after the listener is bound (cmd/webui/main.go). `systemctl restart`
+# then blocks until the service is really serving, and `is-active` means
+# answering rather than forked.
+Type=notify
+NotifyAccess=main
 User=go-netmon
 Group=go-netmon
 
@@ -62,6 +75,19 @@ ExecReload=/bin/kill -HUP $MAINPID
 
 Restart=always
 RestartSec=5s
+
+# The MIB parse is the whole start-up, and it is minutes on a cold catalog.
+# systemd's 90-second default would kill a start that was going to succeed, so
+# Type=notify without this line would turn a slow start into a restart loop --
+# strictly worse than the defect it replaces. 900s is well clear of the 203s
+# measured on monitor-01; a start that reaches it is genuinely stuck and failing the
+# unit is the right answer.
+TimeoutStartSec=900
+
+# No WatchdogSec. A watchdog is a claim that the process can tell it has
+# STOPPED serving, and nothing here checks that -- a ping from a timer would
+# only prove the goroutine sending it still runs. READY=1 is the fix for this
+# defect; a liveness check is a separate piece of work with its own design.
 
 # This service does parse MIB modules — it builds its own catalog at startup,
 # which is what makes a cold start take minutes — but it parses them one at a
