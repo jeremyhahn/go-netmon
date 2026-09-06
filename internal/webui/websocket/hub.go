@@ -636,19 +636,6 @@ func (h *Hub) Subscribe(client *Client, query string) bool {
 }
 
 // Unsubscribe removes a client from a query subscription
-// announce records the frame shapes a browser says it can apply.
-//
-// Announcements only ever ADD: a reconnecting page re-subscribes tab by tab,
-// and a later subscribe carrying no capability list must not retract what an
-// earlier one established.
-func (c *Client) announce(supports []string) {
-	for _, capability := range supports {
-		if capability == CapabilityAllSteady {
-			c.supportsAllSteady.Store(true)
-		}
-	}
-}
-
 func (h *Hub) Unsubscribe(client *Client, query string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -742,6 +729,19 @@ type Client struct {
 	// rather than sharing the one that guards closing.
 	seenMu sync.Mutex
 	seen   map[string]held
+}
+
+// announce records the frame shapes a browser says it can apply.
+//
+// Announcements only ever ADD: a reconnecting page re-subscribes tab by tab,
+// and a later subscribe carrying no capability list must not retract what an
+// earlier one established.
+func (c *Client) announce(supports []string) {
+	for _, capability := range supports {
+		if capability == CapabilityAllSteady {
+			c.supportsAllSteady.Store(true)
+		}
+	}
 }
 
 // NewClient creates a new client
