@@ -292,6 +292,12 @@ type PrometheusExporter struct {
 	// inFlight is the size of the batch the sender is writing right now. It
 	// has left the queue and has not been delivered, so it belongs to neither
 	// count without being named.
+	//
+	// A batch is written as several bounded requests, so part of it may in fact
+	// have landed while this still counts the whole. That over-reports the
+	// backlog for the length of one send and never under-reports it, which is
+	// the direction a backlog gauge has to err: reporting less than is
+	// outstanding is how a stall reads as quiet.
 	inFlight int
 	wake     chan struct{}
 
@@ -578,13 +584,60 @@ func (e *PrometheusExporter) Flush(ctx context.Context) error {
 // exit path updates the exporter's health signals (gonetmon_exports_total,
 // last-success timestamp, consecutive failure count) and logs loudly on
 // failure -- a stalled or failing exporter must never be silent.
-// send writes one batch to the remote-write endpoint. It touches no shared
-// state, so it is safe to call without the buffer lock held.
-func (e *PrometheusExporter) send(ctx context.Context, batch []*Sample) error {
-	writeRequest := &prompb.WriteRequest{
-		Timeseries: e.samplesToTimeSeries(batch),
+// send writes a batch to the remote-write endpoint as one or more BOUNDED
+// requests, and returns how many samples were delivered before the first
+// failure. It touches no shared state, so it is safe to call without the buffer
+// lock held.
+//
+// It used to send the batch as a single request, whatever its size. batch_size
+// decided when a flush was TRIGGERED and nothing at all decided how much went
+// into a request, so a slow endpoint, a burst of devices finishing together, or
+// a retry backlog all shipped as one protobuf -- and the backlog floor alone is
+// 100,000 samples. A request too large to be accepted is then refused at the
+// same size on every retry, so it can never drain and everything queues behind
+// it (#63).
+//
+// The count returned is what makes a partial delivery survivable: the caller
+// puts back batch[delivered:] and nothing else, so a prefix the endpoint
+// accepted is not offered to it again on the next attempt. It is a prefix of
+// the SORTED batch, which is why send reorders its argument -- see
+// orderForSplitting.
+func (e *PrometheusExporter) send(ctx context.Context, batch []*Sample) (int, error) {
+	if len(batch) == 0 {
+		return 0, nil
 	}
 
+	// A batch that fits in one request has no boundary to choose, and that is
+	// the ordinary case. Taking it here keeps the path every sample travels
+	// exactly as cheap as it was -- the request is built once and sent, plus
+	// one Size() call -- rather than paying for a sort that would decide
+	// nothing.
+	if count, request := e.nextRequest(batch); count == len(batch) {
+		if err := e.post(ctx, request); err != nil {
+			return 0, err
+		}
+		return count, nil
+	}
+
+	// It does not fit, so there will be a boundary. Ordered before one is
+	// chosen: see orderForSplitting -- a boundary cut in buffer order can put a
+	// series' newer reading in the earlier request and its older one in the
+	// later, and the later request is then refused whole.
+	orderForSplitting(batch)
+
+	delivered := 0
+	for delivered < len(batch) {
+		count, request := e.nextRequest(batch[delivered:])
+		if err := e.post(ctx, request); err != nil {
+			return delivered, err
+		}
+		delivered += count
+	}
+	return delivered, nil
+}
+
+// post writes one already-bounded request to the endpoint.
+func (e *PrometheusExporter) post(ctx context.Context, writeRequest *prompb.WriteRequest) error {
 	data, err := writeRequest.Marshal()
 	if err != nil {
 		return &MarshalError{Cause: err}
@@ -1109,23 +1162,13 @@ func (e *PrometheusExporter) TableIndexCache() *TableIndexCache {
 // describing an arbitrary subset of metrics is worse than one that is a
 // refresh behind.
 //
-// Chunking here is by sample count only. Bounding a request by its encoded
-// size is a property every send should have, not just this one, and is
-// tracked separately.
+// Chunking is no longer this function's business. It used to cut the catalog
+// into batch_size pieces itself, because one emission is around 20,000 series
+// and nothing else bounded a request -- and it deliberately did not attempt a
+// byte bound, on the grounds that bounding a request by its encoded size
+// belongs to every send rather than to one caller. It does now (#63), so this
+// hands the whole catalog to send and gets both bounds for free.
 func (e *PrometheusExporter) SendCatalog(ctx context.Context, samples []*Sample) error {
-	chunk := e.batchSize
-	if chunk <= 0 {
-		chunk = defaultBatchSize
-	}
-
-	for start := 0; start < len(samples); start += chunk {
-		end := start + chunk
-		if end > len(samples) {
-			end = len(samples)
-		}
-		if err := e.send(ctx, samples[start:end]); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := e.send(ctx, samples)
+	return err
 }

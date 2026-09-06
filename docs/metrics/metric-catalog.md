@@ -314,8 +314,10 @@ already has.
 ## Delivery: the catalog does not share a batch with telemetry
 
 `PrometheusExporter.SendCatalog` bypasses the sample buffer entirely and sends
-the catalog in chunks of `batch_size`, synchronously, reporting whether
-Prometheus took it.
+the catalog synchronously, reporting whether Prometheus took it. It is split
+into bounded requests on the way out, by sample count and by encoded size, like
+every other write — it used to do its own count-only chunking, because at the
+time nothing else bounded a request (#63).
 
 That is a correctness property, not an optimization. Sharing one buffer meant a
 rejected catalog write put device samples back with it — delaying them and,

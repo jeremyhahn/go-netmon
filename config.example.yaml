@@ -9,6 +9,15 @@ global:
 
 prometheus:
   remote_write_url: "http://prometheus:9090/api/v1/write"
+
+  # batch_size bounds BOTH when a flush is triggered and how many samples one
+  # remote-write request may carry. It used to bound only the trigger: Flush
+  # took the whole buffer and sent it as one request, so a retry backlog -- at
+  # least 100,000 samples -- shipped as a single protobuf that the endpoint
+  # would refuse at the same size on every attempt (#63). A request is
+  # additionally bounded by its encoded size, because a sample is not a fixed
+  # width: an ifAlias or an entPhysicalName is whatever somebody typed into the
+  # box.
   batch_size: 1000
   flush_interval: 10
 

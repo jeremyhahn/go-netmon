@@ -644,6 +644,29 @@ func (e *PrometheusExporter) giveUp() {
 	}
 }
 
+// keepWhatLanded takes an accepted prefix off a batch that failed partway
+// through, so that neither the retry nor the discard that follows reaches
+// samples the endpoint already holds.
+//
+// A batch is several requests now (#63), so a failure can arrive with part of
+// it delivered. Offering that part again is not merely wasteful: the endpoint's
+// head has moved to the end of it, so on the next attempt those samples are
+// behind their own head -- and the request carrying them is refused whole,
+// taking the undelivered remainder with it. A retry that redelivers is a retry
+// that cannot succeed.
+func (e *PrometheusExporter) keepWhatLanded(batch *pending, delivered int) {
+	if delivered <= 0 {
+		return
+	}
+
+	e.recordSent(batch.samples[:delivered])
+	e.published.record(batch.samples[:delivered])
+	batch.samples = batch.samples[delivered:]
+
+	log.Printf("[metrics] %d of this batch's samples were accepted before %s failed; only the remaining %d are still owed",
+		delivered, e.remoteWriteURL, len(batch.samples))
+}
+
 // drain writes queued batches until the queue is empty or one is refused.
 //
 // It stops on the first refusal rather than carrying on to the next batch:
@@ -714,7 +737,7 @@ func (e *PrometheusExporter) drainUntil(deadline time.Time) {
 		// that is already on the wire. context.Background() here meant the
 		// shutdown deadline could only ever stop the loop between batches.
 		ctx, cancel := context.WithTimeout(e.sendCtx, sendTimeout)
-		err := e.send(ctx, batch.samples)
+		delivered, err := e.send(ctx, batch.samples)
 		cancel()
 
 		if err == nil {
@@ -727,6 +750,8 @@ func (e *PrometheusExporter) drainUntil(deadline time.Time) {
 			batch.finish(nil)
 			continue
 		}
+
+		e.keepWhatLanded(batch, delivered)
 
 		if !retryable(err) {
 			e.queueMu.Lock()
