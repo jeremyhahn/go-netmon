@@ -14,7 +14,7 @@
 # the only file that needs the stack is not compiled in. Three targets therefore
 # reported success while running no tests at all.
 
-.PHONY: test test-all test-e2e test-snmp test-prometheus test-pipeline test-index clean
+.PHONY: test test-all test-e2e test-snmp test-prometheus test-pipeline test-index test-ordering clean
 
 RUN_TESTS := ./run-tests.sh
 
@@ -43,6 +43,12 @@ test-pipeline:
 # Table index extraction from the loaded MIBs.
 test-index:
 	@$(RUN_TESTS) TestTableIndexExtraction
+
+# The #69 ordering disorder, driven deliberately (#75). Four tests: what the
+# real receiver does with disorder inside one request and across two, and what
+# the exporter does when two overlapping polls of one device produce each.
+test-ordering:
+	@$(RUN_TESTS) 'TestDisorderInsideOneRequestIsDiscardedWithoutASound|TestOneReadingBehindTheHeadRefusesTheWholeRequest|TestOverlappingPollsAreRepairedAndNothingIsLost|TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever'
 
 # Remove any test stack left behind. run-tests.sh cleans up on every exit path;
 # this target is for a run killed hard enough to skip the trap.

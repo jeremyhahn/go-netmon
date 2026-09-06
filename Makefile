@@ -1,4 +1,4 @@
-.PHONY: deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags
+.PHONY: integration-test-ordering deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags
 
 # Variables
 BINARY_NAME=go-netmon
@@ -95,6 +95,13 @@ test-integration: ## Run integration tests in Docker environment
 # per-package targets already use that order (integration-test-parser). Both
 # names now work rather than one of them being a documented command that fails.
 integration-test: test-integration ## Alias for test-integration (documented name)
+
+# The #69 ordering reproduction (#75), on its own. It is a separate exercise
+# from the deploy check in scripts/measure-export-health.sh, which answers
+# "did this deploy break anything" -- a different question, with a different
+# acceptable runtime. This one produces the disorder rather than waiting for it.
+integration-test-ordering: ## Run the #69 ordering-disorder reproduction (#75)
+	@$(MAKE) -C test/integration test-ordering
 
 test-e2e: ## Run the Playwright browser suite against a running stack
 	@echo "Running end-to-end browser tests..."
