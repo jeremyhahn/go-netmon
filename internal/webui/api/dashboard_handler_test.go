@@ -334,7 +334,8 @@ type mockMIBLoaderForDashboard struct {
 	storage interface{}
 }
 
-func (m *mockMIBLoaderForDashboard) LoadModule(string) error { return nil }
+func (m *mockMIBLoaderForDashboard) LoadModule(string) error          { return nil }
+func (m *mockMIBLoaderForDashboard) EnsureModuleCurrent(string) error { return nil }
 
 func (m *mockMIBLoaderForDashboard) GetParser() interface{} { return nil }
 

@@ -542,7 +542,8 @@ type failingLoader struct {
 	err error
 }
 
-func (l *failingLoader) LoadModule(string) error { return l.err }
+func (l *failingLoader) LoadModule(string) error          { return l.err }
+func (l *failingLoader) EnsureModuleCurrent(string) error { return l.err }
 
 // TestReimportLeavesRecordAloneWhenObjectReloadFails checks the ordering
 // choice: the record is only rewritten once the objects it summarizes have

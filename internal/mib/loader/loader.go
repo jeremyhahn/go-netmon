@@ -4,6 +4,7 @@ package loader
 
 import (
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,9 +81,12 @@ func (l *Loader) Load() error {
 	}
 	log.Printf("Loaded %d built-in profiles", len(l.profileManager.ListProfiles()))
 
-	// Load auto-load modules
+	// EnsureModuleCurrent rather than LoadModule. Load runs once, at startup,
+	// which is the one point at which asking whether a file has changed since
+	// it was parsed gives a trustworthy answer, and on a warm store the answer
+	// is no for every module.
 	for _, moduleName := range l.config.AutoLoad {
-		if err := l.LoadModule(moduleName); err != nil {
+		if err := l.EnsureModuleCurrent(moduleName); err != nil {
 			log.Printf("Warning: failed to load module %s: %v", moduleName, err)
 			// Continue loading other modules
 			continue
@@ -124,6 +128,13 @@ func (l *Loader) HasModule(moduleName string) bool {
 // module's objects have to be in the store before any of them can be selected.
 // A module that is already there is left alone — reparsing it would cost tens
 // of milliseconds and produce the same objects.
+//
+// It deliberately does not look at the file on disk. Once this process has
+// parsed anything, gosmi holds the outcome for the life of the process and only
+// Parser.Reload clears it, so a stale-file check here would reparse into the
+// cached result and stamp the store as current — burying the operator's edit
+// rather than picking it up. Startup, where the cache is empty, is the one
+// place that check is sound, and EnsureModuleCurrent is where it lives.
 func (l *Loader) EnsureModule(moduleName string) error {
 	// The common case is a module that is already present, and answering that
 	// without the lock is what keeps one slow parse from serializing every
@@ -142,6 +153,75 @@ func (l *Loader) EnsureModule(moduleName string) error {
 	}
 
 	return l.loadModule(moduleName)
+}
+
+// EnsureModuleCurrent loads moduleName unless the store already holds a copy at
+// least as new as the file it was parsed from. IT IS A STARTUP OPERATION and
+// must be called before this process has parsed anything else; see below.
+//
+// The store outlives the process. Every module a service has ever imported is
+// still in it after a restart, so reparsing them all is work with no result:
+// the same files produce the same objects. That reparse is the whole of the web
+// UI's cold start — 203 seconds on monitor-01 across 176 modules, all of it with
+// nothing listening. Skipping what has not changed reduces a restart to opening
+// the store.
+//
+// A MIB file edited on disk still takes effect on the next start, which is what
+// the unconditional reparse bought and what this has to keep: a file written
+// since the parse that produced the stored copy is parsed again.
+//
+// The precondition is gosmi's, not this package's. Loading a module caches its
+// outcome for the life of the process — that is what Parser.Reload exists to
+// undo — so once anything has been parsed, "the file changed" no longer implies
+// "a reparse will read the file". At startup the cache is empty and everything
+// that enters it comes from the files as they are now, so the check is sound
+// exactly there.
+func (l *Loader) EnsureModuleCurrent(moduleName string) error {
+	if l.moduleIsCurrent(moduleName) {
+		return nil
+	}
+
+	l.loadMu.Lock()
+	defer l.loadMu.Unlock()
+
+	if l.moduleIsCurrent(moduleName) {
+		return nil
+	}
+
+	return l.loadModule(moduleName)
+}
+
+// moduleIsCurrent reports whether the store holds moduleName parsed from a file
+// that has not been written since.
+func (l *Loader) moduleIsCurrent(moduleName string) bool {
+	info, err := l.storage.GetModule(moduleName)
+	if err != nil {
+		return false
+	}
+	return !moduleFileIsNewer(info)
+}
+
+// moduleFileIsNewer reports whether the file a stored module was parsed from
+// has been written since that parse.
+//
+// Anything it cannot answer counts as not newer, and both cases are deliberate.
+// A module with no recorded path was not read from a file this process can
+// find. A path that will not stat is a file that has been moved or removed, so
+// reparsing it could only fail — and because loadModule parses before it
+// writes, a failure would leave the store exactly as it is. The stored copy is
+// then the best answer available, and returning it beats logging a failure per
+// module on every start.
+func moduleFileIsNewer(info *mib.ModuleInfo) bool {
+	if info.Path == "" {
+		return false
+	}
+
+	fi, err := os.Stat(info.Path)
+	if err != nil {
+		return false
+	}
+
+	return fi.ModTime().After(info.LoadedAt)
 }
 
 // LoadModule parses a MIB module and replaces whatever the store holds for it.

@@ -80,7 +80,16 @@ type Server struct {
 
 // MIBLoader provides MIB loading capabilities
 type MIBLoader interface {
+	// LoadModule parses a module and replaces whatever the store holds for it.
+	// It is the explicit reload: what an import or a re-import performs.
 	LoadModule(moduleName string) error
+
+	// EnsureModuleCurrent parses a module only if the store does not already
+	// hold a copy at least as new as the file it came from. It is a startup
+	// operation: the store outlives the process, so a restart should pay for
+	// what has changed and nothing else.
+	EnsureModuleCurrent(moduleName string) error
+
 	GetParser() interface{}  // Returns *parser.Parser (actual concrete type)
 	GetStorage() interface{} // Returns *storage.Storage (actual concrete type)
 }
@@ -508,9 +517,17 @@ func (s *Server) LoadStoredMIBs(ctx context.Context) error {
 	successCount := 0
 	var loadErrors []string
 
+	// EnsureModuleCurrent, not LoadModule. This loop is the whole cold start:
+	// on monitor-01 it reparsed all 176 imported modules on every restart, which is
+	// the 203 seconds the web UI spent before it bound its port. The parsed
+	// catalog is in Pebble and survives the process, so there is nothing to
+	// rebuild unless a MIB file has been edited — and those are still reparsed.
+	//
+	// This runs once, from the startup path in cmd/webui, which is the
+	// precondition EnsureModuleCurrent documents.
 	for _, mib := range mibs {
 		if s.mibLoader != nil {
-			if err := s.mibLoader.LoadModule(mib.Name); err != nil {
+			if err := s.mibLoader.EnsureModuleCurrent(mib.Name); err != nil {
 				errMsg := fmt.Sprintf("failed to load MIB module %s: %v", mib.Name, err)
 				log.Printf("Warning: %s", errMsg)
 				loadErrors = append(loadErrors, errMsg)

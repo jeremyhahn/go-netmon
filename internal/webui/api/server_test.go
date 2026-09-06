@@ -23,6 +23,12 @@ func (m *mockMIBLoaderWithTracking) LoadModule(moduleName string) error {
 	return nil
 }
 
+// EnsureModule delegates to LoadModule: this stub has no store to consult,
+// so "already loaded and current" is not a state it can be in.
+func (m *mockMIBLoaderWithTracking) EnsureModuleCurrent(moduleName string) error {
+	return m.LoadModule(moduleName)
+}
+
 func (m *mockMIBLoaderWithTracking) GetParser() interface{} {
 	return nil
 }
