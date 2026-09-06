@@ -186,6 +186,10 @@ type Config struct {
 	// back to the same defaults internal/config applies.
 	Polling PollingConfig
 
+	// StreamInterval is how often the websocket hub pushes a round of updates.
+	// Zero uses websocket.DefaultStreamInterval.
+	StreamInterval time.Duration
+
 	// Logger receives the server's diagnostics. A nil Logger discards them.
 	Logger *slog.Logger
 
@@ -216,7 +220,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	logger := logging.OrDiscard(cfg.Logger)
-	hub := ws.NewHub(cfg.QueryFunc, logger)
+	hub := ws.NewHub(cfg.QueryFunc, logger, ws.WithStreamInterval(cfg.StreamInterval))
 
 	s := &Server{
 		router:          mux.NewRouter(),

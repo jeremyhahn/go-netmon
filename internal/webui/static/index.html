@@ -6,7 +6,7 @@
     <title>Network Monitor</title>
     <meta name="color-scheme" content="dark light">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/css/style.css?v=20260905-011">
+    <link rel="stylesheet" href="/css/style.css?v=20260906-001">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <script>
         // Apply the stored theme before first paint so the page never flashes
@@ -116,6 +116,13 @@
                         </select>
                     </div>
                 </div>
+                <!-- What the reader is actually being served, in the two terms
+                     that decide it: how often this device is polled (the
+                     poller's configuration, not this page's to change) and how
+                     often this browser re-reads. Written out because a page
+                     that shows a time range but not a cadence invites the
+                     reader to assume its own (#99). -->
+                <p id="dashboardCadence" class="toolbar-sub" aria-live="polite"></p>
             </div>
 
             <!-- Device Status Banner (shown when there are errors) -->
@@ -305,13 +312,21 @@
             </div>
             <div class="card settings-card">
                 <div class="settings-form">
+                    <!-- The Prometheus URL used to be offered here as an
+                         editable field. It is server configuration -- this
+                         browser never talks to Prometheus, it talks to the web
+                         UI -- so the input could not have taken effect whatever
+                         was typed into it. A control that cannot do what it
+                         says is worse than no control. -->
                     <label>
-                        <span>Prometheus URL</span>
-                        <input type="text" id="prometheusUrl" value="http://localhost:9091">
-                    </label>
-                    <label>
-                        <span>Update interval (seconds)</span>
-                        <input type="number" id="updateInterval" value="5" min="1" max="60">
+                        <span>Refresh interval (seconds)</span>
+                        <input type="number" id="updateInterval" value="30" min="1" max="60">
+                        <small class="field-hint">
+                            How often this browser re-reads the dashboard on screen. It is
+                            stored per browser and changes nothing for anyone else. Devices
+                            are polled on their own schedule, set by the poller's
+                            configuration; a device's cadence is shown on its dashboard.
+                        </small>
                     </label>
                     <div class="form-actions">
                         <button id="saveSettings" class="primary-btn">Save settings</button>
@@ -635,6 +650,6 @@ make restore FROM=backups/netmon-20260811T173450Z YES=1</code></pre>
         })();
     </script>
     <script src="/js/chart-theme.js?v=20260810-006"></script>
-    <script src="/js/app.js?v=20260905-011"></script>
+    <script src="/js/app.js?v=20260906-001"></script>
 </body>
 </html>

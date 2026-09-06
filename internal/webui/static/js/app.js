@@ -153,7 +153,20 @@ const ZERO_TIME_CEILING = Date.UTC(1971, 0, 1);
 // How often the dashboard re-reads whichever surface is on screen. One cadence,
 // shared: the fleet overview and a selected device's dashboards take turns on
 // this tick rather than each running a timer of their own.
-const DASHBOARD_REFRESH_MS = 30000;
+//
+// This was a fixed 30000 until #99, while the Settings view offered an "update
+// interval" input that nothing read. The number is now the default for that
+// input rather than the whole story, and it stays 30 so a browser that has
+// never touched the setting behaves exactly as it did.
+const DEFAULT_REFRESH_SECONDS = 30;
+
+// The bounds the input advertises, enforced here as well: a value typed past
+// the spinner, or restored from a localStorage someone edited, still has to
+// land somewhere a browser can honour. One second is the floor because the
+// re-read is several requests; a minute is the ceiling because past that the
+// page reads as broken rather than slow.
+const MIN_REFRESH_SECONDS = 1;
+const MAX_REFRESH_SECONDS = 60;
 
 class MonitoringApp {
     constructor() {
@@ -191,6 +204,15 @@ class MonitoringApp {
         this.currentDevice = null;
         this.currentProfile = null;
         this.devices = [];
+
+        // How often this browser re-reads what is on screen, in seconds, and
+        // the timer running at that cadence. Per browser: it is stored in this
+        // browser's localStorage and reaches no one else. Changing it never
+        // touches how often a device is polled -- that is the poller's
+        // configuration, and a viewer does not get to retune collection for
+        // every other viewer (#99).
+        this.refreshIntervalSec = DEFAULT_REFRESH_SECONDS;
+        this.refreshTimer = null;
         this.profiles = [];
         this.mibs = [];
         this.deviceDashboards = {}; // { deviceId: { mibs: [{name}], dashboards: Map(module -> {panels, warnings}) } }
@@ -500,8 +522,41 @@ class MonitoringApp {
     // screen and only that one: the fleet overview while no device is selected,
     // the selected device's dashboards otherwise. Both surfaces share this
     // cadence so neither gets a timer of its own competing with the other.
+    // clampRefreshSeconds turns anything a caller offers -- a typed string, a
+    // restored localStorage value, a blank field -- into a cadence this browser
+    // can actually run at. Invalid input falls back rather than throwing: the
+    // dashboard must keep refreshing whatever is in the box.
+    clampRefreshSeconds(value) {
+        // An emptied box arrives as "", and a state file written before this
+        // setting existed has no value at all. Number() reads both as 0, which
+        // would clamp to the one-second floor -- but a blank field is a reader
+        // asking for the default, not for the fastest refresh on offer.
+        if (value === null || value === undefined) return DEFAULT_REFRESH_SECONDS;
+        if (typeof value === 'string' && value.trim() === '') return DEFAULT_REFRESH_SECONDS;
+
+        const seconds = Math.round(Number(value));
+        if (!Number.isFinite(seconds)) return DEFAULT_REFRESH_SECONDS;
+        return Math.min(MAX_REFRESH_SECONDS, Math.max(MIN_REFRESH_SECONDS, seconds));
+    }
+
+    // applyRefreshInterval adopts a new cadence and restarts the timer on it.
+    // Returns the value actually applied, which is what the caller should
+    // report -- a request for 900 seconds is honoured as 60, and saying "saved"
+    // without saying that is how the old Save button came to lie.
+    applyRefreshInterval(value) {
+        this.refreshIntervalSec = this.clampRefreshSeconds(value);
+        this.startDashboardRefresh();
+        this.renderFleetHeader();
+        this.renderDashboardCadence();
+        return this.refreshIntervalSec;
+    }
+
     startDashboardRefresh() {
-        setInterval(async () => {
+        // Restarting is the normal case, not just startup: changing the
+        // interval has to replace the timer rather than add a second one
+        // running alongside it at the old rate.
+        if (this.refreshTimer !== null) clearInterval(this.refreshTimer);
+        this.refreshTimer = setInterval(async () => {
             if (!this.currentDashboardDevice) {
                 // /api/devices/status is one request but it fans out to the
                 // poller per device, so it is not asked for while the overview
@@ -542,7 +597,46 @@ class MonitoringApp {
             } catch (error) {
                 console.error('Error polling for MIB data:', error);
             }
-        }, DASHBOARD_REFRESH_MS);
+        }, this.refreshIntervalSec * 1000);
+    }
+
+    // renderDashboardCadence states what the reader is being served: how often
+    // the selected device is polled, and how often this browser re-reads.
+    //
+    // This is the whole of what #99 asked for on the poller's side. The poll
+    // interval is the owner's configuration, shown here and NOT editable from
+    // this page: a display preference must not repoint collection, and one
+    // viewer must not retune a device for every other viewer. So the dashboard
+    // is made to match the poller, rather than the poller made to follow a
+    // dropdown.
+    renderDashboardCadence() {
+        const line = document.getElementById('dashboardCadence');
+        if (!line) return;
+
+        // The fleet header already states the re-read cadence for the overview,
+        // so repeating it here would be two sentences saying one thing.
+        if (!this.currentDashboardDevice) {
+            line.textContent = '';
+            return;
+        }
+
+        const wanted = String(this.currentDashboardDevice);
+        const device = this.devices.find(d => String(d.id) === wanted);
+        const polled = Number(device?.effective_poll_interval);
+
+        const mine = `this browser re-reads every ${this.refreshIntervalSec}s`;
+        if (!Number.isFinite(polled) || polled <= 0) {
+            line.textContent = `Poll interval unknown for this device; ${mine}.`;
+            return;
+        }
+
+        // Said plainly when the two disagree, because that gap is exactly the
+        // confusion the issue was filed about: a reader watching a card refresh
+        // every 5s assumes the device answered five seconds ago.
+        const inherited = device?.poll_interval === null || device?.poll_interval === undefined;
+        const source = inherited ? ' (the configured default)' : '';
+        line.textContent =
+            `Polled every ${polled}s${source} — new readings cannot arrive faster than that; ${mine}.`;
     }
 
     // deviceNameFor resolves a device id to the name its metrics are labelled
@@ -1834,7 +1928,7 @@ class MonitoringApp {
         header.textContent = this.fleet.fetchedAt === null
             ? 'Reading device status…'
             : `Poller state for ${noun} · read ${age}, `
-                + `refreshing every ${Math.round(DASHBOARD_REFRESH_MS / 1000)}s`;
+                + `refreshing every ${this.refreshIntervalSec}s`;
     }
 
     // A chip per state, each one a filter over the table below. Healthy is
@@ -5884,6 +5978,10 @@ class MonitoringApp {
             // request fell back to its fleet-wide form.
             this.devices = data.devices || [];
 
+            // effective_poll_interval arrives with this list, so the cadence
+            // line can only be truthful once it has landed.
+            this.renderDashboardCadence();
+
             // Populate legacy device selector (if it exists)
             const select = document.getElementById('deviceSelect');
             if (select) {
@@ -6383,12 +6481,14 @@ class MonitoringApp {
 
             if (deviceId) {
                 this.currentDashboardDevice = deviceId;
+                this.renderDashboardCadence();
                 this.loadDeviceDashboards(deviceId);
                 this.saveState();
             } else {
                 // Clearing the selection goes back to the fleet, not to a blank
                 // frame asking to be told what to look at.
                 this.currentDashboardDevice = null;
+                this.renderDashboardCadence();
                 this.hideDeviceStatusBanner();
                 this.showFleetOverview();
                 this.saveState();
@@ -6467,7 +6567,17 @@ class MonitoringApp {
         const saveSettings = document.getElementById('saveSettings');
         if (saveSettings) {
             saveSettings.addEventListener('click', () => {
-                this.showNotification('Settings saved!', 'success');
+                // This used to announce a save and do nothing at all: it read no
+                // field, stored nothing, and changed no behaviour. It now applies
+                // the interval, persists it, and names the value that took
+                // effect -- which differs from what was typed whenever the input
+                // is out of range, and saying "saved" without saying so is the
+                // same lie in a smaller form.
+                const input = document.getElementById('updateInterval');
+                const applied = this.applyRefreshInterval(input ? input.value : this.refreshIntervalSec);
+                if (input) input.value = applied;
+                this.saveState();
+                this.showNotification(`Dashboard now refreshes every ${applied}s.`, 'success');
             });
         }
 
@@ -8994,6 +9104,10 @@ class MonitoringApp {
                 const state = JSON.parse(savedState);
                 this.currentView = state.currentView || 'dashboard';
                 this.currentTimeRange = state.currentTimeRange || '6h';
+                // Clamped on the way in as well as on the way out: this value
+                // came from storage a previous version wrote, or a person edited.
+                this.refreshIntervalSec = this.clampRefreshSeconds(
+                    state.refreshIntervalSec ?? DEFAULT_REFRESH_SECONDS);
                 // Store selected device ID for restoration after devices load
                 this.restoredDeviceId = state.selectedDeviceId;
                 this.restoredMibTab = state.activeMibTab;
@@ -9009,6 +9123,7 @@ class MonitoringApp {
             const state = {
                 currentView: this.currentView,
                 currentTimeRange: this.currentTimeRange,
+                refreshIntervalSec: this.refreshIntervalSec,
                 selectedDeviceId: deviceSelect ? deviceSelect.value : null,
                 activeMibTab: this.activeMibTab,
             };
@@ -9023,6 +9138,19 @@ class MonitoringApp {
         if (this.currentView !== 'dashboard') {
             this.switchView(this.currentView);
         }
+
+        // Put the restored values back on the controls that display them.
+        //
+        // These were loaded into fields and never written back to the elements,
+        // so a browser that had chosen "Last 30 days" came back showing "Last 6
+        // hours" while holding 30d -- the control and the state it represents
+        // disagreeing silently, which is the same defect class as a control
+        // that drives nothing (#99).
+        const timeRange = document.getElementById('dashboardTimeRange');
+        if (timeRange) timeRange.value = this.currentTimeRange;
+
+        const refresh = document.getElementById('updateInterval');
+        if (refresh) refresh.value = this.refreshIntervalSec;
 
         // Restore device and tab selection after devices are loaded
         if (this.restoredDeviceId) {

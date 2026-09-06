@@ -48,6 +48,18 @@ mib:
     - "SNMPv2-MIB"
     - "IF-MIB"
 
+webui:
+  # How often the web UI pushes a round of metric updates to every connected
+  # browser, in seconds. One hub serves every open browser, so this is a server
+  # setting rather than something a viewer can change: a dashboard control would
+  # change the rate for everyone else too. A viewer's own refresh cadence lives
+  # in their browser, under Settings, and reaches no one but them.
+  #
+  # Devices are polled on their own schedule -- per device, or
+  # global.default_poll_interval above. Nothing here changes that: pushing more
+  # often than a device is polled re-sends readings that have not moved.
+  stream_interval: 5
+
 logging:
   # debug turns on per-OID and per-query tracing; info keeps it silent.
   level: "info"

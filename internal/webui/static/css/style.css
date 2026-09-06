@@ -2264,6 +2264,10 @@ input.mib-search-input { width: 340px; min-width: 0; }
 .drop-text { font-size: var(--t-md); font-weight: 550; color: var(--text); }
 .drop-hint { font-size: var(--t-sm); color: var(--text-muted); }
 
+/* A note under a settings input saying what the setting reaches. Block so it
+   sits below the field rather than beside it, since the text is a sentence. */
+.field-hint { display: block; margin-top: 4px; font-size: var(--t-sm); color: var(--text-muted); }
+
 .selected-files-container { margin-bottom: var(--s-4); }
 .selected-files-container h4 {
     display: flex;

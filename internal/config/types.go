@@ -12,6 +12,7 @@ type Config struct {
 	API        APIConfig        `yaml:"api"`
 	Metrics    MetricsConfig    `yaml:"metrics"`
 	MIB        MIBConfig        `yaml:"mib"`
+	WebUI      WebUIConfig      `yaml:"webui"`
 	Devices    []Device         `yaml:"devices"`
 	MIBModules []MIBModule      `yaml:"mib_modules"`
 	Logging    LoggingConfig    `yaml:"logging"`
@@ -52,6 +53,20 @@ type AlarmRule struct {
 	// alarm is raised, as a duration ("5m"). It is what separates a condition
 	// from a blip. Empty means raise it on the first evaluation.
 	For string `yaml:"for"`
+}
+
+// WebUIConfig contains settings for the web UI process. The poller reads this
+// file too and ignores this section, the same way the web UI ignores the
+// poller's devices.
+type WebUIConfig struct {
+	// StreamInterval is how often the web UI pushes a round of metric updates
+	// to every connected browser, in seconds.
+	//
+	// It is a server setting rather than a dashboard control on purpose: one
+	// hub serves every open browser, so a viewer who could change it would be
+	// changing it for all of them. What a viewer controls is their own
+	// browser's refresh, which never leaves their browser.
+	StreamInterval int `yaml:"stream_interval"`
 }
 
 // GlobalConfig contains global application settings

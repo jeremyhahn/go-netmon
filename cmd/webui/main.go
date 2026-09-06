@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/logging"
@@ -186,6 +187,9 @@ func run(ctx context.Context) error {
 			SNMPTimeout:     cfg.Global.SNMPTimeout,
 			SNMPRetries:     cfg.Global.SNMPRetries,
 		},
+
+		// How often every connected browser is pushed a round of updates.
+		StreamInterval: time.Duration(cfg.WebUI.StreamInterval) * time.Second,
 
 		// The conditions the bell reports. They come from the same file the
 		// poller reads, and SIGHUP below re-reads it without a restart --

@@ -83,6 +83,12 @@ func setDefaults(config *Config) {
 		config.Global.SNMPRetries = 3
 	}
 
+	// Web UI defaults. Five seconds is what the hub ticked at when the value
+	// was a literal, so a configuration that omits the key behaves as before.
+	if config.WebUI.StreamInterval == 0 {
+		config.WebUI.StreamInterval = 5
+	}
+
 	// Prometheus defaults
 	if config.Prometheus.BatchSize == 0 {
 		config.Prometheus.BatchSize = 1000

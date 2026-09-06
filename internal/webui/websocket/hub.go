@@ -36,6 +36,16 @@ const MaxQueriesInFlight = 32
 // page can say the dashboard is too large instead of quietly missing cards.
 const MaxSubscriptionsPerClient = 2048
 
+// DefaultStreamInterval is how often a hub re-reads its subscribed queries and
+// pushes what changed, when its caller does not say.
+//
+// It was a bare literal in Run until #99. That made it the one cadence in the
+// system nobody could state: the dashboard showed a refresh rate it did not
+// control, the poller ran at per-device intervals of the owner's choosing, and
+// this sat between them at five seconds because five seconds was typed here.
+// Naming it does not change what it does -- it makes the number answerable.
+const DefaultStreamInterval = 5 * time.Second
+
 // Hub maintains the set of active clients and broadcasts messages to them
 type Hub struct {
 	// Registered clients
@@ -52,6 +62,13 @@ type Hub struct {
 
 	// Prometheus query function
 	queryFunc QueryFunc
+
+	// streamInterval is how often Run pushes a round. It is fixed at
+	// construction: every connected browser shares this hub, so a cadence one
+	// viewer could change is a cadence every other viewer gets changed under
+	// them. Per-viewer refresh is the browser's own business and stays in the
+	// browser.
+	streamInterval time.Duration
 
 	// Subscriptions map: OID -> list of clients
 	subscriptions map[string][]*Client
@@ -198,8 +215,8 @@ type ServerMessage struct {
 //
 // A nil logger discards those records, so a caller that has not configured
 // logging pays nothing for them.
-func NewHub(queryFunc QueryFunc, logger *slog.Logger) *Hub {
-	return &Hub{
+func NewHub(queryFunc QueryFunc, logger *slog.Logger, opts ...HubOption) *Hub {
+	h := &Hub{
 		clients:       make(map[*Client]bool),
 		broadcast:     make(chan []byte, 256),
 		register:      make(chan *Client),
@@ -209,7 +226,36 @@ func NewHub(queryFunc QueryFunc, logger *slog.Logger) *Hub {
 		states:        newQueryStates(),
 		steady:        newSteadyQueryRounds(),
 		logger:        logging.OrDiscard(logger),
+
+		streamInterval: DefaultStreamInterval,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// HubOption adjusts a Hub at construction.
+type HubOption func(*Hub)
+
+// WithStreamInterval sets how often the hub pushes a round.
+//
+// A non-positive duration is ignored rather than rejected, so a caller wiring
+// an unset configuration field through gets DefaultStreamInterval instead of a
+// hub that spins.
+func WithStreamInterval(d time.Duration) HubOption {
+	return func(h *Hub) {
+		if d > 0 {
+			h.streamInterval = d
+		}
+	}
+}
+
+// StreamInterval is the cadence this hub pushes at. It is what the UI reports
+// so an operator reads the rate actually in force rather than one a page
+// hard-codes to match.
+func (h *Hub) StreamInterval() time.Duration {
+	return h.streamInterval
 }
 
 // RegisterClient adds a client to the hub
@@ -219,7 +265,7 @@ func (h *Hub) RegisterClient(client *Client) {
 
 // Run starts the hub
 func (h *Hub) Run(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second) // Stream updates every 5 seconds
+	ticker := time.NewTicker(h.streamInterval)
 	defer ticker.Stop()
 
 	for {
