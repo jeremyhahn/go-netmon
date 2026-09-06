@@ -8,6 +8,9 @@ on:
   workflow_dispatch:
 
 # Cancel superseded runs on the same branch; only the newest matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   # The go.mod directive pins the toolchain, so CI follows whatever the project
