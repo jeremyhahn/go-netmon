@@ -1,5 +1,11 @@
-# Build stage
-FROM golang:1.27.0-alpine AS builder
+# Build stage.
+#
+# Pinned to the patch AND to the manifest digest. "1.27-alpine" floats onto
+# every Go patch release and every alpine rebuild underneath it; the tag alone
+# still floats, because a tag is a mutable pointer the registry can re-aim with
+# no commit behind it. The digest is the index (multi-arch) digest, so the pin
+# does not cost the manifest list.
+FROM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -19,11 +25,38 @@ COPY . .
 # Build the application
 RUN make build && make build-mib-importer && make build-webui
 
-# Runtime stage
-FROM alpine:latest
+# Runtime stage.
+#
+# PINNED BY DIGEST, and then UPGRADED ON PURPOSE. Two separate defects lived
+# here, and each fix alone leaves the other half open:
+#
+#  1. "FROM alpine:latest" means the artifact can change with no commit behind
+#     it -- whether a build is vulnerable depends on the day it ran, and on the
+#     build host the cached "latest" was two months old, so a rebuild would not
+#     even have produced that day's latest. A version TAG narrows this and does
+#     not close it: alpine:3.24 is a mutable pointer, and the image it names in
+#     six months is not the image it names today.
+#  2. A pinned base never receives security patches on its own. Measured
+#     2026-08-28: the image built from this file carried libcrypto3/libssl3
+#     3.5.7-r0 while 3.5.8-r0 was published, which trivy reports as
+#     CVE-2026-14456 HIGH. The Go binaries in the same image scan CLEAN -- a
+#     binary-only scan cannot see this by construction, which is why it sat
+#     here unnoticed.
+#
+# The digest does not freeze the patches, which is why both halves fit
+# together: "apk upgrade --no-cache" re-reads the alpine mirror's CURRENT
+# package index at build time, whatever layer the build started from. The
+# digest fixes only the starting layer's identity. So the base is auditable and
+# the packages are current, and the pin is bumped deliberately in a reviewed
+# commit.
+#
+# Digest below is docker.io/library/alpine:3.24 as of 2026-09-06 (alpine
+# 3.24.1); it is the index digest, so linux/arm64 still resolves.
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata curl
+RUN apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates tzdata curl
 
 # Create non-root user
 RUN addgroup -g 1000 netmon && \
