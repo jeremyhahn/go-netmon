@@ -78,6 +78,22 @@ const minExportStallThreshold = time.Minute
 // scrape. Absence then means the build does not have it, which is a fact worth
 // acting on. This is the same empty-answer disguise as a query that matches
 // nothing and returns success: the shape this package exists to remove.
+// There is deliberately NO "dropped" outcome among the export statuses.
+//
+// There was, and it counted SAMPLES while its two siblings counted FLUSHES --
+// one metric, one label set, two units. Every obvious question asked of it was
+// therefore nonsense: sum(gonetmon_exports_total) adds flushes to samples, and
+// rate(...{status="dropped"}) / rate(...{status="success"}), which is how
+// anyone would ask "what fraction are we losing", divides samples by flushes
+// and returns something shaped like a ratio. #69's own measurement had to carry
+// a paragraph warning that its two headline figures were not comparable, which
+// is the tell.
+//
+// A flush is not "dropped" in the first place; samples are. So the count lives
+// where it means something -- gonetmon_export_dropped_samples_total{reason},
+// which carries the same total, in samples, attributed to a cause. Nothing is
+// lost by the removal: sum(gonetmon_export_dropped_samples_total) is exactly
+// what the removed child held.
 const (
 	dropAged       = "aged"
 	dropDepth      = "depth"
@@ -87,13 +103,48 @@ const (
 
 	exportSuccess = "success"
 	exportError   = "error"
-	exportDropped = "dropped"
 )
 
 var (
 	dropReasons    = []string{dropAged, dropDepth, dropRejected, dropSuperseded, dropShutdown}
-	exportOutcomes = []string{exportSuccess, exportError, exportDropped}
+	exportOutcomes = []string{exportSuccess, exportError}
 )
+
+// dropPhrase says, in words, what each reason means. It is the ONE place that
+// wording lives.
+//
+// It is what a DroppedError reports and what the counter's help text is built
+// from, so the sentence in a log and the sentence on /metrics are the same
+// sentence about the same event. They used to be two separately maintained
+// strings and the log's was simply wrong: every discard, whatever its reason,
+// reported "to bound queue memory", so a poll superseded by a newer one sent
+// its reader looking for memory pressure that was not there.
+var dropPhrase = map[string]string{
+	dropAged:       "stamped further back than the age horizon",
+	dropDepth:      "the queue exceeded its sample bound",
+	dropRejected:   "the endpoint refused them for a reason that cannot be retried",
+	dropSuperseded: "another reading already owns that point of the series",
+	dropShutdown:   "the process stopped with samples still queued",
+}
+
+// droppedSamplesHelp is the help text for gonetmon_export_dropped_samples_total,
+// built from dropReasons and dropPhrase so that a reason cannot be added
+// without being described.
+func droppedSamplesHelp() string {
+	var help strings.Builder
+	help.WriteString("Samples discarded before reaching remote write, by reason: ")
+	for i, reason := range dropReasons {
+		if i > 0 {
+			help.WriteString(", ")
+		}
+		help.WriteString(reason)
+		help.WriteString(" (")
+		help.WriteString(dropPhrase[reason])
+		help.WriteString(")")
+	}
+	help.WriteString(". Every reason publishes 0 from the first scrape, so absence means the build does not have it.")
+	return help.String()
+}
 
 // Self-instrumentation for the Prometheus exporter. These are package-level
 // so that every PrometheusExporter instance (including ones created
@@ -104,7 +155,7 @@ var (
 	exportsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gonetmon_exports_total",
-			Help: "Total number of metric export outcomes, by status (success, error, dropped). Every status publishes 0 from the first scrape, so absence means the build does not have it.",
+			Help: "Total FLUSHES to remote write, by outcome (success, error). Samples discarded are counted in gonetmon_export_dropped_samples_total, which is in samples and so cannot be compared with this. Every outcome publishes 0 from the first scrape, so absence means the build does not have it.",
 		},
 		[]string{"status"},
 	)
@@ -117,7 +168,7 @@ var (
 	droppedSamples = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gonetmon_export_dropped_samples_total",
-			Help: "Samples discarded before reaching remote write, by reason: aged (stamped further back than the age horizon), depth (the queue exceeded its sample bound), rejected (the endpoint refused them for a reason that cannot be retried), superseded (another reading already owns that point of the series), shutdown (the process stopped with samples still queued). Every reason publishes 0 from the first scrape, so absence means the build does not have it.",
+			Help: droppedSamplesHelp(),
 		},
 		[]string{"reason"},
 	)

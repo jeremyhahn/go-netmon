@@ -1,4 +1,4 @@
-# HELP gonetmon_exports_total Total number of metric export outcomes, by status (success, error, dropped).
+# HELP gonetmon_exports_total Total FLUSHES to remote write, by outcome (success, error).
 # TYPE gonetmon_exports_total counter
 gonetmon_exports_total{status="success"} 900
 # HELP gonetmon_export_dropped_samples_total Samples discarded before reaching remote write, by reason.

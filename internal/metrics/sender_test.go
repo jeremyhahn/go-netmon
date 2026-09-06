@@ -142,9 +142,6 @@ func TestASampleTooOldToLandIsDroppedRatherThanRetriedForever(t *testing.T) {
 		t.Errorf("Flush reported %d discarded, want 1", discarded.Samples)
 	}
 
-	if dropped := testutil.ToFloat64(own.exports.WithLabelValues("dropped")); dropped != 1 {
-		t.Errorf("dropped %v samples, want 1: the one older than the horizon", dropped)
-	}
 	if aged := testutil.ToFloat64(own.dropped.WithLabelValues("aged")); aged != 1 {
 		t.Errorf("counted %v samples dropped for AGE, want 1: a clock problem and a "+
 			"backpressure problem must not share one number", aged)
@@ -1549,7 +1546,7 @@ func TestEveryLabelledExportCounterPublishesZeroBeforeAnythingHappens(t *testing
 	// alerting contract and not an implementation detail.
 	for name, want := range map[string][]string{
 		"zero_children_dropped_total": {"aged", "depth", "rejected", "superseded", "shutdown"},
-		"zero_children_exports_total": {"success", "error", "dropped"},
+		"zero_children_exports_total": {"success", "error"},
 	} {
 		got := published[name]
 		if len(got) != len(want) {
@@ -1630,7 +1627,7 @@ func assertSharedChildrenPublished(t *testing.T) {
 	// dropReasons, the assertion would move whenever the thing it checks does.
 	for name, want := range map[string][]string{
 		"gonetmon_export_dropped_samples_total": {"aged", "depth", "rejected", "superseded", "shutdown"},
-		"gonetmon_exports_total":                {"success", "error", "dropped"},
+		"gonetmon_exports_total":                {"success", "error"},
 	} {
 		got := published[name]
 		for _, label := range want {

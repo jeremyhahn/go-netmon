@@ -114,21 +114,52 @@ type pending struct {
 	// attempted. Flush waits on it; the poll path does not.
 	done chan error
 
-	// discarded counts samples thrown away AHEAD of this barrier, so the Flush
-	// waiting on it learns that what it was responsible for never reached the
-	// endpoint. A flush that returns nil must mean "delivered", never "thrown
-	// away" -- that is the silent loss this whole package exists to end, and
-	// it would otherwise reappear at the far end of the pipe.
-	discarded int
+	// discarded counts samples thrown away AHEAD of this barrier, BY REASON, so
+	// the Flush waiting on it learns that what it was responsible for never
+	// reached the endpoint. A flush that returns nil must mean "delivered",
+	// never "thrown away" -- that is the silent loss this whole package exists
+	// to end, and it would otherwise reappear at the far end of the pipe.
+	//
+	// By reason rather than as a total, because the total alone was what the
+	// caller got and it was reported as backpressure regardless: a Flush whose
+	// readings had been superseded by a later poll was told the queue was full.
+	// The reason is known at the discard and is worth exactly as much to the
+	// caller as it is to the counter it is already recorded on.
+	discarded map[string]int
+}
+
+// charge records samples discarded ahead of this barrier, under the reason they
+// were discarded for.
+func (p *pending) charge(reason string, samples int) {
+	if p.discarded == nil {
+		p.discarded = make(map[string]int, 1)
+	}
+	p.discarded[reason] += samples
 }
 
 // finishBarrier completes a barrier, reporting anything discarded ahead of it.
+//
+// The reason is passed on only when there is ONE. A Flush that waited behind
+// several different discards has several answers, and naming one of them would
+// be a guess presented as a fact -- which is the same defect this carries the
+// reason to fix, in the other direction.
 func (p *pending) finishBarrier() {
-	if p.discarded > 0 {
-		p.finish(&DroppedError{Samples: p.discarded})
+	total := 0
+	for _, samples := range p.discarded {
+		total += samples
+	}
+	if total == 0 {
+		p.finish(nil)
 		return
 	}
-	p.finish(nil)
+
+	reason := ""
+	if len(p.discarded) == 1 {
+		for named := range p.discarded {
+			reason = named
+		}
+	}
+	p.finish(&DroppedError{Samples: total, Reason: reason})
 }
 
 // enqueue hands a batch to the sender and reports whether it was accepted.
@@ -368,7 +399,6 @@ func (e *PrometheusExporter) discardLocked(samples int, reason string, behind in
 		return nil
 	}
 
-	e.counts.exports.WithLabelValues(exportDropped).Add(float64(samples))
 	e.counts.dropped.WithLabelValues(reason).Add(float64(samples))
 
 	if e.closed.Load() {
@@ -377,11 +407,11 @@ func (e *PrometheusExporter) discardLocked(samples int, reason string, behind in
 
 	for i := behind; i < len(e.queue); i++ {
 		if len(e.queue[i].samples) == 0 {
-			e.queue[i].discarded += samples
+			e.queue[i].charge(reason, samples)
 		}
 	}
 
-	return &DroppedError{Samples: samples}
+	return &DroppedError{Samples: samples, Reason: reason}
 }
 
 // takeLocked removes and returns the batch at the head of the queue.
@@ -490,6 +520,32 @@ func (e *PrometheusExporter) partition(samples []*Sample) (sendable, refused []*
 			len(refused), len(samples), e.remoteWriteURL, len(sendable))
 	}
 	return sendable, refused
+}
+
+// admissible returns what of a batch the endpoint can still take, and what its
+// waiter is owed for the rest.
+//
+// The rest is discarded as "superseded" here rather than sent, because a
+// request is refused whole: one reading the endpoint has moved past would cost
+// every other reading traveling with it.
+//
+// The second return is an error rather than a *DroppedError deliberately. A nil
+// pointer in an error interface is not nil, and a caller passing this to a
+// waiter would hand it a failure that is not there.
+func (e *PrometheusExporter) admissible(samples []*Sample) ([]*Sample, error) {
+	sendable, refused := e.partition(samples)
+	if len(refused) == 0 {
+		return sendable, nil
+	}
+
+	e.queueMu.Lock()
+	dropped := e.discardLocked(len(refused), dropSuperseded, 0)
+	e.queueMu.Unlock()
+
+	if dropped == nil {
+		return sendable, nil
+	}
+	return sendable, dropped
 }
 
 // instant identifies one point of one series: the series key and the
@@ -641,17 +697,15 @@ func (e *PrometheusExporter) drainUntil(deadline time.Time) {
 		// its own. Sending it costs every other sample in the batch: Prometheus
 		// rejects the whole write on the first unacceptable sample, and the
 		// non-retryable path then discards all of them.
-		sendable, refused := e.partition(batch.samples)
-		if len(refused) > 0 {
-			e.queueMu.Lock()
-			_ = e.discardLocked(len(refused), dropSuperseded, 0)
-			e.queueMu.Unlock()
-		}
+		sendable, owed := e.admissible(batch.samples)
 		if len(sendable) == 0 {
 			e.queueMu.Lock()
 			e.inFlight = 0
 			e.queueMu.Unlock()
-			batch.finish(&DroppedError{Samples: len(refused)})
+			// The error the discard path produced, rather than a second one
+			// built here: the reason is what the waiter needs, and a duplicate
+			// construction is where it went missing.
+			batch.finish(owed)
 			continue
 		}
 		batch.samples = sendable

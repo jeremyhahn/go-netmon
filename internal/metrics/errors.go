@@ -92,15 +92,36 @@ func (e *ClosedError) Error() string {
 	return fmt.Sprintf("metrics: exporter is closed; refused %d sample(s) rather than queue them where nothing can send them", e.Samples)
 }
 
-// DroppedError reports samples discarded before they were ever written,
-// because the queue holding them had to be bounded. It is what a caller
-// waiting on a batch is told when its batch never reached the endpoint.
+// DroppedError reports samples discarded before they were ever written. It is
+// what a caller waiting on a batch is told when its batch never reached the
+// endpoint, and what Close returns when shutdown gave up on one.
+//
+// Reason is why, and it is the same vocabulary as
+// gonetmon_export_dropped_samples_total{reason}: a reader who finds one of
+// these in a log and that counter on a dashboard is looking at the same event
+// described the same way.
+//
+// It was not carried, and the message named "bound queue memory" whatever had
+// actually happened -- so a poll superseded by a newer one, or a batch the
+// endpoint refused outright, reported backpressure. That is the wrong fault,
+// stated confidently, in a package whose whole claim is that nothing leaves
+// without something observable saying so. Saying so incorrectly is worse than
+// the silence it replaced, because it is acted on.
+//
+// Reason is empty where a discard genuinely has more than one -- a Flush
+// waiting behind several, or a shutdown that gave up on a mixed queue -- and
+// the message then says only what is known rather than picking one.
 type DroppedError struct {
 	Samples int
+	Reason  string
 }
 
 func (e *DroppedError) Error() string {
-	return fmt.Sprintf("metrics: dropped %d sample(s) awaiting write to bound queue memory", e.Samples)
+	if phrase, named := dropPhrase[e.Reason]; named {
+		return fmt.Sprintf("metrics: dropped %d sample(s) before they were written: %s (%s)",
+			e.Samples, phrase, e.Reason)
+	}
+	return fmt.Sprintf("metrics: dropped %d sample(s) before they were written", e.Samples)
 }
 
 // RemoteWriteError reports a Prometheus remote-write endpoint that

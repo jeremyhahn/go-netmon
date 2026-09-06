@@ -37,6 +37,25 @@ reason says which fault:
 | `rejected` | The endpoint refused a request for a reason that cannot be retried — a 4xx other than 429. | Look at the log line; it carries the endpoint's own words. This should be rare now that unacceptable samples are removed before sending. |
 | `shutdown` | The process stopped with samples still queued. | Expected if the endpoint was down at shutdown. The count is also returned from `Close`, and appears in the log as `DATA LOSS: N sample(s) never reached Prometheus`. |
 
+### Samples are not flushes
+
+```
+gonetmon_exports_total{status="success"|"error"}   # FLUSHES
+gonetmon_export_dropped_samples_total{reason=...}  # SAMPLES
+```
+
+These two are in different units and must never be divided by one another.
+`gonetmon_exports_total` counts remote-write requests and their outcome; the
+drop counter counts individual readings. A request that was never made — every
+reading in it given up on before the wire — is neither a success nor an error,
+so it appears in neither.
+
+`gonetmon_exports_total` used to carry a third child, `status="dropped"`, which
+counted samples among its flush-counting siblings. Anything summed or divided
+across that metric was therefore meaningless, and #69's own measurement had to
+carry a paragraph saying so. It is gone; `sum(gonetmon_export_dropped_samples_
+total)` is the number it held.
+
 ## Is anything out of order
 
 Two counters, because they are two different facts:

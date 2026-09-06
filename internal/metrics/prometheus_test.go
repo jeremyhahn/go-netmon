@@ -573,7 +573,9 @@ func TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly(t *testing.T) {
 			"batch in flight), got %d", ceiling, cap, exporter.BufferedSamples())
 	}
 
-	if testutil.ToFloat64(own.exports.WithLabelValues("dropped")) == 0 {
+	// Read by reason, which is where samples are counted. gonetmon_exports_total
+	// is in flushes and has no "dropped" child to consult.
+	if testutil.ToFloat64(own.dropped.WithLabelValues(dropDepth)) == 0 {
 		t.Error("Expected the dropped-samples counter to increase once the buffer cap was exceeded")
 	}
 
