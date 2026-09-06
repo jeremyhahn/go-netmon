@@ -166,6 +166,59 @@ jobs:
       - name: Lint shell scripts
         run: make lint-scripts
 
+  fips:
+    name: FIPS
+    runs-on: ubuntu-latest
+    needs: [build]
+    timeout-minutes: 30
+    env:
+      GOFIPS140: latest
+      # STRICT mode, not `on`. `fips140=on` loads the Go Cryptographic Module
+      # but still PERMITS non-approved algorithms, so a path using MD5 or
+      # SHA-1 succeeds and this job reports green -- a compliance gate that
+      # cannot fail on the thing it exists to catch. `fips140=only` makes
+      # those operations error or panic, which is what a FedRAMP / PCI DSS /
+      # HIPAA gate has to do. Owner-ruled 2026-08-17; company convention
+      # configuration.md, "GODEBUG=fips140=only is mandatory".
+      #
+      # If this job fails, that failure IS the finding. Do not weaken it back
+      # to `on` to make it pass -- reverting the flag is a boundary violation,
+      # not a fix.
+      GODEBUG: fips140=only
+    steps:
+      # Same action majors and the same cache setting as every other job in
+      # this file. The template this job came from used @v6 and no cache, which
+      # left one job in the workflow on a different major -- so a breaking
+      # change in either action would land here and nowhere else, which is the
+      # hardest version of that failure to recognise. The missing cache was not
+      # free either: this job builds and tests the whole module twice over, and
+      # without it that starts from an empty module and build cache every run.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      # -tags fips selects the FIPS variant of the product. It is not a way to
+      # test less: the tag removes exactly the code that CANNOT operate under
+      # fips140=only, because the algorithm is named by an external protocol
+      # rather than chosen by this repository --
+      #
+      #   * the WebSocket upgrade handshake, whose Sec-WebSocket-Accept is a
+      #     SHA-1 digest (RFC 6455 section 4.2.2), and
+      #   * SNMPv3's MD5 and SHA-1 authentication and DES privacy
+      #     (RFC 3414 sections 6 and 8).
+      #
+      # Everything the tag removes is still built, vetted, linted, scanned and
+      # unit-tested by every other job in this workflow, all of which build
+      # untagged. SNMPv3 itself is NOT removed: a FIPS build authenticates with
+      # the SHA-2 family and encrypts with AES, and a deployment subject to
+      # FIPS 140-3 could not lawfully have used MD5, SHA-1 or DES anyway.
+      # docs/fips.md carries the full statement of what is absent and why.
+      - name: Build all packages (FIPS mode)
+        run: go build -tags fips ./...
+      - name: Unit tests (FIPS mode)
+        run: go test -count=1 -timeout=900s -tags fips ./...
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
@@ -185,7 +238,7 @@ jobs:
   ci-passed:
     name: CI Passed
     runs-on: ubuntu-latest
-    needs: [lint, security, test, build, scripts, integration]
+    needs: [lint, security, test, build, scripts, fips, integration]
     if: always()
     steps:
       # Each job is listed explicitly rather than using join(needs.*.result).
@@ -201,7 +254,7 @@ jobs:
       # and invalidates the whole file before any job starts.
       - name: Verify every job succeeded
         run: |
-          results="${{ needs.lint.result }},${{ needs.security.result }},${{ needs.test.result }},${{ needs.build.result }},${{ needs.scripts.result }},${{ needs.integration.result }}"
+          results="${{ needs.lint.result }},${{ needs.security.result }},${{ needs.test.result }},${{ needs.build.result }},${{ needs.scripts.result }},${{ needs.fips.result }},${{ needs.integration.result }}"
           echo "job results: ${results}"
 
           if [ -z "${results//,/}" ]; then

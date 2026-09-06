@@ -46,7 +46,7 @@ func TestNewClient_ValidSNMPv3(t *testing.T) {
 		Address:      "203.0.113.1",
 		SNMPVersion:  "3",
 		Username:     "admin",
-		AuthProtocol: "SHA",
+		AuthProtocol: "SHA256",
 		AuthPassword: "authpass",
 		PrivProtocol: "AES",
 		PrivPassword: "privpass",
@@ -75,8 +75,8 @@ func TestNewClient_ValidSNMPv3(t *testing.T) {
 		t.Errorf("Expected username 'admin', got %s", secParams.UserName)
 	}
 
-	if secParams.AuthenticationProtocol != gosnmp.SHA {
-		t.Errorf("Expected SHA auth protocol, got %v", secParams.AuthenticationProtocol)
+	if secParams.AuthenticationProtocol != gosnmp.SHA256 {
+		t.Errorf("Expected SHA256 auth protocol, got %v", secParams.AuthenticationProtocol)
 	}
 
 	if secParams.PrivacyProtocol != gosnmp.AES {

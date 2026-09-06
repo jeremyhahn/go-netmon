@@ -1,6 +1,7 @@
 package snmp
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -96,29 +97,80 @@ func securityLevel(auth gosnmp.SnmpV3AuthProtocol, priv gosnmp.SnmpV3PrivProtoco
 	}
 }
 
+// The protocol registries. Map-based rather than a switch so that the set a
+// build offers is data, and so that the two build configurations differ by
+// which entries exist rather than by a second copy of the lookup.
+//
+// These hold the FIPS 140-3 approved protocols, which every build has.
+// SNMPv3's MD5 and SHA (which is SHA-1, RFC 3414 §6) and DES are added by
+// v3_legacy.go, compiled only when the fips tag is absent; v3_fips.go instead
+// records them as omitted, so a FIPS build can say what happened to them
+// rather than calling the operator's setting invalid.
+var (
+	authProtocols = map[string]gosnmp.SnmpV3AuthProtocol{
+		"":       gosnmp.NoAuth,
+		"NONE":   gosnmp.NoAuth,
+		"SHA224": gosnmp.SHA224,
+		"SHA256": gosnmp.SHA256,
+		"SHA384": gosnmp.SHA384,
+		"SHA512": gosnmp.SHA512,
+	}
+
+	privProtocols = map[string]gosnmp.SnmpV3PrivProtocol{
+		"":        gosnmp.NoPriv,
+		"NONE":    gosnmp.NoPriv,
+		"AES":     gosnmp.AES,
+		"AES128":  gosnmp.AES,
+		"AES192":  gosnmp.AES192,
+		"AES256":  gosnmp.AES256,
+		"AES192C": gosnmp.AES192C,
+		"AES256C": gosnmp.AES256C,
+	}
+
+	// omittedProtocols names protocols this build knows about and does not
+	// provide, mapped to the explanation the operator gets. Empty in an
+	// ordinary build: nothing is omitted there.
+	omittedProtocols = map[string]string{}
+)
+
+// acceptedNames lists a registry's keys, sorted, with the empty key rendered
+// as the words that describe it. It is derived from the map rather than
+// written out, so the error message cannot claim to accept a protocol the
+// build does not have -- which is exactly what a hardcoded list would do in
+// the FIPS build.
+func acceptedNames[T comparable](m map[string]T) string {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		if k == "" || k == "NONE" {
+			continue
+		}
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ") + ", or empty for none"
+}
+
+// protocolError reports a protocol this build cannot use, distinguishing a
+// name that is wrong from one that is merely absent here.
+func protocolError[T comparable](field, name, key string, accepted map[string]T) error {
+	if reason, ok := omittedProtocols[key]; ok {
+		return &V3ConfigError{Field: field, Value: name, Reason: reason}
+	}
+	return &V3ConfigError{Field: field, Value: name, Reason: "want " + acceptedNames(accepted)}
+}
+
+// protocolKey normalises an operator-supplied protocol name.
+func protocolKey(name string) string {
+	return strings.ToUpper(strings.TrimSpace(name))
+}
+
 // authProtocol maps a name to gosnmp's constant. Empty means no authentication.
 func authProtocol(name string) (gosnmp.SnmpV3AuthProtocol, error) {
-	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case "", "NONE":
-		return gosnmp.NoAuth, nil
-	case "MD5":
-		return gosnmp.MD5, nil
-	case "SHA":
-		return gosnmp.SHA, nil
-	case "SHA224":
-		return gosnmp.SHA224, nil
-	case "SHA256":
-		return gosnmp.SHA256, nil
-	case "SHA384":
-		return gosnmp.SHA384, nil
-	case "SHA512":
-		return gosnmp.SHA512, nil
-	default:
-		return gosnmp.NoAuth, &V3ConfigError{
-			Field: "auth_protocol", Value: name,
-			Reason: "want SHA, SHA224, SHA256, SHA384, SHA512, MD5, or empty for none",
-		}
+	key := protocolKey(name)
+	if p, ok := authProtocols[key]; ok {
+		return p, nil
 	}
+	return gosnmp.NoAuth, protocolError("auth_protocol", name, key, authProtocols)
 }
 
 // privProtocol maps a name to gosnmp's constant. Empty means no privacy.
@@ -127,27 +179,11 @@ func authProtocol(name string) (gosnmp.SnmpV3AuthProtocol, error) {
 // configured for AES256 and a poller sending AES128 authenticate and then fail
 // to decrypt, which reads as a wrong passphrase.
 func privProtocol(name string) (gosnmp.SnmpV3PrivProtocol, error) {
-	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case "", "NONE":
-		return gosnmp.NoPriv, nil
-	case "DES":
-		return gosnmp.DES, nil
-	case "AES", "AES128":
-		return gosnmp.AES, nil
-	case "AES192":
-		return gosnmp.AES192, nil
-	case "AES256":
-		return gosnmp.AES256, nil
-	case "AES192C":
-		return gosnmp.AES192C, nil
-	case "AES256C":
-		return gosnmp.AES256C, nil
-	default:
-		return gosnmp.NoPriv, &V3ConfigError{
-			Field: "priv_protocol", Value: name,
-			Reason: "want AES, AES192, AES256, DES, or empty for none",
-		}
+	key := protocolKey(name)
+	if p, ok := privProtocols[key]; ok {
+		return p, nil
 	}
+	return gosnmp.NoPriv, protocolError("priv_protocol", name, key, privProtocols)
 }
 
 // V3ConfigError reports a v3 setting this cannot use.

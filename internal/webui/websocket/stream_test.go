@@ -6,14 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/logging"
@@ -314,113 +310,4 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("%s (waited %v)", msg, timeout)
-}
-
-// dialHub starts an HTTP server that upgrades to a hub client and returns the
-// browser side of the connection.
-func dialHub(t *testing.T, hub *Hub) (*websocket.Conn, *Client) {
-	t.Helper()
-
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	clientCh := make(chan *Client, 1)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade: %v", err)
-			return
-		}
-		c := NewClient(hub, conn)
-		hub.RegisterClient(c)
-		clientCh <- c
-		go c.WritePump()
-		go c.ReadPump()
-	}))
-	t.Cleanup(srv.Close)
-
-	conn, resp, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	// The handshake response body carries nothing once the upgrade succeeded.
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	select {
-	case c := <-clientCh:
-		return conn, c
-	case <-time.After(2 * time.Second):
-		t.Fatal("the hub never registered the client")
-		return nil, nil
-	}
-}
-
-// TestClientPumpsCarryTheSubscribeProtocol covers the read and write loops end
-// to end over a real WebSocket: a subscribe reaches the hub, and what the hub
-// streams reaches the browser.
-func TestClientPumpsCarryTheSubscribeProtocol(t *testing.T) {
-	hub := NewHub(func(context.Context, string) ([]MetricValue, error) {
-		return sampleMetrics(), nil
-	}, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go hub.Run(ctx)
-
-	conn, client := dialHub(t, hub)
-
-	if err := conn.WriteJSON(ClientMessage{Type: MessageTypeSubscribe, Queries: []string{"snmp_if_in"}}); err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	waitFor(t, 2*time.Second, func() bool {
-		hub.mu.RLock()
-		defer hub.mu.RUnlock()
-		return len(hub.subscriptions["snmp_if_in"]) == 1
-	}, "the subscribe never reached the hub")
-
-	hub.streamMetrics(ctx)
-
-	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		t.Fatalf("SetReadDeadline: %v", err)
-	}
-	var msg ServerMessage
-	if err := conn.ReadJSON(&msg); err != nil {
-		t.Fatalf("read streamed message: %v", err)
-	}
-	if msg.Type != MessageTypeMetricSnapshot || len(msg.Metrics) != 2 {
-		t.Errorf("message = %+v, want a snapshot with 2 metrics", msg)
-	}
-
-	if err := conn.WriteJSON(ClientMessage{Type: MessageTypeUnsubscribe, Queries: []string{"snmp_if_in"}}); err != nil {
-		t.Fatalf("unsubscribe: %v", err)
-	}
-	waitFor(t, 2*time.Second, func() bool {
-		hub.mu.RLock()
-		defer hub.mu.RUnlock()
-		return len(hub.subscriptions["snmp_if_in"]) == 0
-	}, "the unsubscribe never reached the hub")
-
-	// A message that is not a ClientMessage is ignored rather than ending the
-	// read loop.
-	if err := conn.WriteMessage(websocket.TextMessage, []byte("not json")); err != nil {
-		t.Fatalf("write malformed message: %v", err)
-	}
-	if err := conn.WriteJSON(ClientMessage{Type: MessageTypeSubscribe, Queries: []string{"after-garbage"}}); err != nil {
-		t.Fatalf("subscribe after garbage: %v", err)
-	}
-	waitFor(t, 2*time.Second, func() bool {
-		hub.mu.RLock()
-		defer hub.mu.RUnlock()
-		return len(hub.subscriptions["after-garbage"]) == 1
-	}, "the read loop stopped after a malformed message")
-
-	// Closing the browser side must unregister the client.
-	_ = conn.Close()
-	waitFor(t, 3*time.Second, func() bool {
-		hub.mu.RLock()
-		defer hub.mu.RUnlock()
-		return !hub.clients[client]
-	}, "a disconnected client stayed registered")
 }

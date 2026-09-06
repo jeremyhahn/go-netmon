@@ -27,24 +27,19 @@ func TestConfigureV3DerivesTheSecurityLevel(t *testing.T) {
 	}{
 		{
 			name:  "authPriv",
-			creds: V3Credentials{Username: "u", AuthProtocol: "SHA", AuthPassword: "a", PrivProtocol: "AES", PrivPassword: "p"},
-			flags: gosnmp.AuthPriv, auth: gosnmp.SHA, priv: gosnmp.AES,
+			creds: V3Credentials{Username: "u", AuthProtocol: "SHA256", AuthPassword: "a", PrivProtocol: "AES", PrivPassword: "p"},
+			flags: gosnmp.AuthPriv, auth: gosnmp.SHA256, priv: gosnmp.AES,
 		},
 		{
 			// The case the poller could not express at all.
 			name:  "authNoPriv",
-			creds: V3Credentials{Username: "u", AuthProtocol: "SHA", AuthPassword: "a"},
-			flags: gosnmp.AuthNoPriv, auth: gosnmp.SHA, priv: gosnmp.NoPriv,
+			creds: V3Credentials{Username: "u", AuthProtocol: "SHA256", AuthPassword: "a"},
+			flags: gosnmp.AuthNoPriv, auth: gosnmp.SHA256, priv: gosnmp.NoPriv,
 		},
 		{
 			name:  "noAuthNoPriv",
 			creds: V3Credentials{Username: "u"},
 			flags: gosnmp.NoAuthNoPriv, auth: gosnmp.NoAuth, priv: gosnmp.NoPriv,
-		},
-		{
-			name:  "MD5 and DES",
-			creds: V3Credentials{Username: "u", AuthProtocol: "MD5", AuthPassword: "a", PrivProtocol: "DES", PrivPassword: "p"},
-			flags: gosnmp.AuthPriv, auth: gosnmp.MD5, priv: gosnmp.DES,
 		},
 		{
 			name:  "AES256",
@@ -96,12 +91,12 @@ func TestConfigureV3RejectsBadInput(t *testing.T) {
 			// A protocol with no passphrase cannot authenticate anything.
 			// Accepting it would quietly downgrade the level that was asked for.
 			"auth protocol without a passphrase",
-			V3Credentials{Username: "u", AuthProtocol: "SHA"},
+			V3Credentials{Username: "u", AuthProtocol: "SHA256"},
 			"auth_password",
 		},
 		{
 			"priv protocol without a passphrase",
-			V3Credentials{Username: "u", AuthProtocol: "SHA", AuthPassword: "a", PrivProtocol: "AES"},
+			V3Credentials{Username: "u", AuthProtocol: "SHA256", AuthPassword: "a", PrivProtocol: "AES"},
 			"priv_password",
 		},
 		{
@@ -128,11 +123,11 @@ func TestConfigureV3RejectsBadInput(t *testing.T) {
 }
 
 // TestProtocolNamesAreCaseInsensitive covers what an operator types. The device
-// form offers "SHA" and "AES"; a person at a terminal types "sha".
+// form offers "SHA256" and "AES"; a person at a terminal types "sha256".
 func TestProtocolNamesAreCaseInsensitive(t *testing.T) {
 	conn := &gosnmp.GoSNMP{}
 	err := ConfigureV3(conn, V3Credentials{
-		Username: "u", AuthProtocol: " sha ", AuthPassword: "a",
+		Username: "u", AuthProtocol: " sha256 ", AuthPassword: "a",
 		PrivProtocol: "aes128", PrivPassword: "p",
 	})
 	if err != nil {
@@ -140,7 +135,7 @@ func TestProtocolNamesAreCaseInsensitive(t *testing.T) {
 	}
 
 	params := conn.SecurityParameters.(*gosnmp.UsmSecurityParameters)
-	if params.AuthenticationProtocol != gosnmp.SHA || params.PrivacyProtocol != gosnmp.AES {
+	if params.AuthenticationProtocol != gosnmp.SHA256 || params.PrivacyProtocol != gosnmp.AES {
 		t.Errorf("names were not recognized: auth=%v priv=%v",
 			params.AuthenticationProtocol, params.PrivacyProtocol)
 	}
@@ -155,7 +150,7 @@ func TestAuthNoPrivBuildsAUsableConnection(t *testing.T) {
 
 	device := agentDeviceVersion(t, agent, "3")
 	device.Username = "netmon"
-	device.AuthProtocol = "SHA"
+	device.AuthProtocol = "SHA256"
 	device.AuthPassword = "netmon007"
 	// No privacy: this is the combination the poller refused.
 

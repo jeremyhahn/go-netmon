@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/gorilla/websocket"
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/logging"
@@ -54,7 +53,6 @@ type Server struct {
 	pollerClient    PollerClient
 	promClient      *PrometheusClient
 	goNetmonBaseURL string
-	upgrader        websocket.Upgrader
 
 	// pollingConfig is the poller's global timing. It is what lets a device
 	// that inherits the default report the interval it is really polled at.
@@ -238,13 +236,6 @@ func NewServer(cfg Config) (*Server, error) {
 		pollingConfig:   cfg.Polling,
 		logger:          logger,
 		assets:          cfg.Assets,
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			CheckOrigin: func(_ *http.Request) bool {
-				return true // Allow all origins in development
-			},
-		},
 	}
 
 	// The evaluator needs the server to reach Prometheus, so it is built after
@@ -309,8 +300,10 @@ func noCacheMiddleware(next http.Handler) http.Handler {
 
 // routes sets up all HTTP routes
 func (s *Server) routes() {
-	// WebSocket endpoint
-	s.router.HandleFunc("/ws", s.handleWebSocket)
+	// WebSocket endpoint. Registered from websocket.go or websocket_fips.go:
+	// the handshake RFC 6455 specifies is a SHA-1 digest, so the real handler
+	// is absent from FIPS builds and a declaring one takes its place.
+	s.registerWebSocketRoute()
 
 	// API routes
 	api := s.router.PathPrefix("/api").Subrouter()
@@ -538,21 +531,6 @@ func (s *Server) LoadAndRegisterDevices(ctx context.Context) error {
 
 	log.Printf("Successfully registered %d/%d devices with poller", successCount, len(devices))
 	return nil
-}
-
-// handleWebSocket upgrades HTTP to WebSocket
-func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := s.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
-		return
-	}
-
-	wsClient := ws.NewClient(s.hub, conn)
-	s.hub.RegisterClient(wsClient)
-
-	go wsClient.WritePump()
-	go wsClient.ReadPump()
 }
 
 // handleGetMIB returns detailed MIB information (legacy provider-based)
