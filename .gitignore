@@ -33,6 +33,18 @@
 .DS_Store
 Thumbs.db
 
+# Review tooling scratch.
+#
+# The Serena indexer that the local review tooling activates writes .serena/
+# into the repository it is reviewing and does not clean up after itself — a
+# review round was observed creating it and then being blocked by its own
+# sandbox from removing it, so it comes back every round. Its inner .gitignore
+# covers only /cache and /project.local.yml, leaving .serena/.gitignore and
+# .serena/project.yml exposed to any broad `git add`. Nothing from it has been
+# committed here only because commits stage explicit paths, which is a habit
+# and not a guard.
+.serena/
+
 # Local configuration.
 #
 # config.yaml is this deployment's own settings and is bind-mounted into the
