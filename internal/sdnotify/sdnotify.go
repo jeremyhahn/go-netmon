@@ -90,6 +90,17 @@ func (n *Notifier) Ready() error {
 	return n.send("READY=1")
 }
 
+// Status sets the one-line description the service manager shows for this
+// service — `systemctl status` prints it, and it is the only thing a process
+// that has not finished starting can say to somebody who is looking at it.
+//
+// Newlines are replaced with spaces: the protocol is newline-separated
+// VAR=value pairs, so a status carrying one would be read as a second, unknown
+// assignment and the rest of the text silently dropped.
+func (n *Notifier) Status(text string) error {
+	return n.send("STATUS=" + strings.NewReplacer("\n", " ", "\r", " ").Replace(text))
+}
+
 // Stopping tells the service manager the service has begun shutting down, so
 // that a slow graceful shutdown reads as deactivating rather than as a service
 // that has stopped responding for no stated reason.

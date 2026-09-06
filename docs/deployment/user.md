@@ -147,6 +147,14 @@ Raise the logging level by editing `logging.level` in
 `/etc/go-netmon/config.yaml` and restarting; `debug` turns on per-OID tracing
 and is loud.
 
+**Restarting the web UI takes the dashboard down** for as long as its MIB
+catalog takes to parse — minutes, on a cold catalog. It is `Type=notify`, so it
+reports `activating` until it is really serving and `systemctl status` shows how
+far the load has got. Read
+[../operations/restart-and-startup.md](../operations/restart-and-startup.md)
+before restarting it during an incident, and use `systemctl reload
+go-netmon-webui` when all you are changing is an alarm threshold.
+
 ## 7. When something is wrong
 
 **The poller exits immediately.** Look for

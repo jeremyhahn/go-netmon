@@ -76,6 +76,11 @@ type Server struct {
 	// catalog holds the metric catalog between reads, so a dashboard load is
 	// not behind four Prometheus queries and 26,000 rows of JSON.
 	catalog *catalogCache
+
+	// startupProgress is told how far LoadStoredMIBs has got. That loop is the
+	// bulk of a cold start and runs with nothing listening, so it is the one
+	// stretch where a service has to be able to say it is still working.
+	startupProgress mib.LoadProgress
 }
 
 // MIBLoader provides MIB loading capabilities
@@ -207,6 +212,11 @@ type Config struct {
 	// build with no bell.
 	AlarmRules []alarm.Rule
 
+	// StartupProgress is told how far the stored-MIB load has got, module by
+	// module. Nil reports nowhere, which is what every caller but the service
+	// binary wants.
+	StartupProgress mib.LoadProgress
+
 	// Assets is the static asset tree the UI is served from, rooted so that
 	// the landing page is "index.html".
 	//
@@ -246,6 +256,7 @@ func NewServer(cfg Config) (*Server, error) {
 		pollingConfig:   cfg.Polling,
 		logger:          logger,
 		assets:          cfg.Assets,
+		startupProgress: cfg.StartupProgress,
 	}
 
 	// The evaluator needs the server to reach Prometheus, so it is built after
@@ -525,7 +536,7 @@ func (s *Server) LoadStoredMIBs(ctx context.Context) error {
 	//
 	// This runs once, from the startup path in cmd/webui, which is the
 	// precondition EnsureModuleCurrent documents.
-	for _, mib := range mibs {
+	for i, mib := range mibs {
 		if s.mibLoader != nil {
 			if err := s.mibLoader.EnsureModuleCurrent(mib.Name); err != nil {
 				errMsg := fmt.Sprintf("failed to load MIB module %s: %v", mib.Name, err)
@@ -536,6 +547,10 @@ func (s *Server) LoadStoredMIBs(ctx context.Context) error {
 				successCount++
 			}
 		}
+		// This is the minutes-long stretch of a cold start, and it happens
+		// before the listener exists. Reported per module, failures included:
+		// what an operator needs to see is that it is moving.
+		s.reportStartupProgress(i+1, len(mibs), mib.Name)
 	}
 
 	log.Printf("Loaded %d of %d MIBs into storage", successCount, len(mibs))
@@ -545,6 +560,14 @@ func (s *Server) LoadStoredMIBs(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// reportStartupProgress tells the configured reporter, if there is one, how far
+// the startup load has got.
+func (s *Server) reportStartupProgress(done, total int, module string) {
+	if s.startupProgress != nil {
+		s.startupProgress(done, total, module)
+	}
 }
 
 // LoadAndRegisterDevices loads all devices from the database and registers them with the poller

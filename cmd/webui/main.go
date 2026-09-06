@@ -16,6 +16,7 @@ import (
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/logging"
+	"github.com/jeremyhahn/go-netmon/internal/mib"
 	"github.com/jeremyhahn/go-netmon/internal/mib/loader"
 	"github.com/jeremyhahn/go-netmon/internal/mib/storage"
 	"github.com/jeremyhahn/go-netmon/internal/sdnotify"
@@ -67,6 +68,12 @@ func main() {
 // runUntilSignal owns the cancellable context so that main can exit through
 // log.Fatal without stranding a deferred cancel.
 func runUntilSignal() error {
+	// When the process began, so that the line marking the end of startup can
+	// say how long the service was unable to serve. That number is the whole
+	// of #84: a restart is an outage of the dashboard, and it should be stated
+	// by the service rather than discovered during an incident.
+	started := time.Now()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -102,10 +109,10 @@ func runUntilSignal() error {
 		cancel()
 	}()
 
-	return run(ctx, notifier)
+	return run(ctx, notifier, started)
 }
 
-func run(ctx context.Context, notifier *sdnotify.Notifier) error {
+func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) error {
 	// Load MIB configuration (or use defaults)
 	cfg, err := config.Load()
 	if err != nil {
@@ -127,6 +134,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 
 	// Initialize MIB loader
 	log.Println("Initializing MIB loader...")
+	status(notifier, "opening the MIB catalog")
 	mibLoader, err := loader.New(&cfg.MIB)
 	if err != nil {
 		return fmt.Errorf("failed to initialize MIB loader: %w", err)
@@ -140,6 +148,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 
 	// Load MIB modules
 	log.Println("Loading MIB modules...")
+	mibLoader.SetProgress(mibProgress(notifier, "auto-loading MIB modules"))
 	if loadErr := mibLoader.Load(); loadErr != nil {
 		return fmt.Errorf("failed to load MIBs: %w", loadErr)
 	}
@@ -204,6 +213,10 @@ func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 		Assets:          staticAssets,
 		Logger:          logger,
 
+		// What the unit's status line says through the longest stretch of a
+		// cold start.
+		StartupProgress: mibProgress(notifier, "loading imported MIB modules"),
+
 		// The poller's global timing. The web UI does not poll, but it has to
 		// report the interval a device that inherits the default is polled at,
 		// and it has to know the SNMP budget an interval can undercut.
@@ -235,6 +248,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 
 	// Load stored MIBs from database into MIB storage
 	log.Println("Loading stored MIBs from database...")
+	status(notifier, "loading imported MIB modules")
 	if err := server.LoadStoredMIBs(ctx); err != nil {
 		log.Printf("Warning: failed to load stored MIBs: %v", err)
 	}
@@ -262,6 +276,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 	// catalog that is minutes. Binding is the point at which the service
 	// becomes usable, so it is the point the readiness signal belongs at, and
 	// the point the log line an operator greps for belongs at.
+	status(notifier, "binding "+*listenAddr)
 	// listenErr rather than err: the outer err is still live here, and
 	// shadowing it would hide a failure to bind behind a name that already
 	// means something else in this function.
@@ -270,7 +285,11 @@ func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 		return listenErr
 	}
 
-	log.Printf("Listening on %s — the web UI is ready to serve", listener.Addr())
+	// The line to grep for, and the one that was missing. Everything before it
+	// happened with nothing listening, so the elapsed time it reports is how
+	// long the dashboard was down for this restart.
+	log.Printf("Listening on %s — the web UI is ready to serve (startup took %s, during which it served nothing)",
+		listener.Addr(), time.Since(started).Truncate(time.Millisecond))
 	log.Printf("Open http://localhost%s in your browser", *listenAddr)
 
 	// READY=1 goes out only now. Sending it any earlier is the defect this
@@ -279,6 +298,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 	if notifyErr := notifier.Ready(); notifyErr != nil {
 		return fmt.Errorf("failed to report readiness to systemd: %w", notifyErr)
 	}
+	status(notifier, "serving on "+listener.Addr().String())
 
 	// Start server in a goroutine
 	errChan := make(chan error, 1)
@@ -300,6 +320,39 @@ func run(ctx context.Context, notifier *sdnotify.Notifier) error {
 		return nil
 	case err := <-errChan:
 		return fmt.Errorf("server error: %w", err)
+	}
+}
+
+// status sets the unit's status line, the one thing a service that has not
+// finished starting can say to somebody looking at it with `systemctl status`.
+// A failure to report is worth a line in the journal and nothing more: it costs
+// visibility, not correctness.
+func status(notifier *sdnotify.Notifier, text string) {
+	if err := notifier.Status(text); err != nil {
+		log.Printf("Failed to report startup status to systemd: %v", err)
+	}
+}
+
+// mibProgress builds a reporter that keeps the unit's status line current
+// through a module load that takes minutes.
+//
+// It writes only to the service manager. The journal already carries a line per
+// module, and a second copy of it there would bury the load it describes.
+//
+// The returned reporter is called from the goroutine running the load and is
+// not safe for concurrent use, which is what the load loops do.
+func mibProgress(notifier *sdnotify.Notifier, phase string) mib.LoadProgress {
+	reporting := true
+	return func(done, total int, module string) {
+		if !reporting {
+			return
+		}
+		if err := notifier.Status(fmt.Sprintf("%s: %d/%d (%s)", phase, done, total, module)); err != nil {
+			// Said once and then given up on. A broken notification socket
+			// would otherwise put a line in the journal per module.
+			log.Printf("Progress reporting to systemd stopped after %d/%d: %v", done, total, err)
+			reporting = false
+		}
 	}
 }
 

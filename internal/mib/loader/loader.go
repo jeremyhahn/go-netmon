@@ -30,6 +30,11 @@ type Loader struct {
 	// or being handed a notification per module.
 	revision atomic.Uint64
 
+	// progress, when set, is told after each module of a bulk load. It is
+	// installed by the startup path before Load runs and not touched again, so
+	// it needs no synchronization of its own.
+	progress mib.LoadProgress
+
 	// loadMu serializes parsing. The parser is a facade over gosmi, which
 	// keeps its loaded modules in package-global state, so two callers loading
 	// two *different* modules at once corrupt that state just as surely as two
@@ -67,6 +72,23 @@ func New(cfg *config.MIBConfig) (*Loader, error) {
 	}, nil
 }
 
+// SetProgress installs a reporter told after each module of a bulk load.
+//
+// Call it before Load, from the goroutine that will call Load: it is for a
+// startup path that has somewhere to report progress to, and a loader already
+// serving requests is past the point where anything would listen.
+func (l *Loader) SetProgress(p mib.LoadProgress) {
+	l.progress = p
+}
+
+// report tells the installed reporter, if there is one, that done of total
+// modules are through.
+func (l *Loader) report(done, total int, module string) {
+	if l.progress != nil {
+		l.progress(done, total, module)
+	}
+}
+
 // Load loads all configured MIBs.
 //
 // The auto-load list is a bootstrap, not a limit: it is what the poller holds
@@ -85,12 +107,15 @@ func (l *Loader) Load() error {
 	// which is the one point at which asking whether a file has changed since
 	// it was parsed gives a trustworthy answer, and on a warm store the answer
 	// is no for every module.
-	for _, moduleName := range l.config.AutoLoad {
+	for i, moduleName := range l.config.AutoLoad {
 		if err := l.EnsureModuleCurrent(moduleName); err != nil {
 			log.Printf("Warning: failed to load module %s: %v", moduleName, err)
 			// Continue loading other modules
-			continue
 		}
+		// Reported for the failures too: an operator watching a start needs to
+		// see it moving, and a module that would not parse is still a module
+		// this loop is done with.
+		l.report(i+1, len(l.config.AutoLoad), moduleName)
 	}
 
 	// Get storage statistics

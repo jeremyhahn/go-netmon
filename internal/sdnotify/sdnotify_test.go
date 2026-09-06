@@ -59,6 +59,43 @@ func TestDialReadyDeliversTheStateDatagram(t *testing.T) {
 	assert.Equal(t, "STOPPING=1", sd.next())
 }
 
+// The status line is what a service that has not finished starting says to
+// somebody looking at it, so what it carries has to arrive intact.
+func TestStatusDeliversTheText(t *testing.T) {
+	sd := newListener(t)
+
+	notifier, err := Dial(sd.addr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = notifier.Close() })
+
+	require.NoError(t, notifier.Status("loading imported MIB modules: 42/176 (IF-MIB)"))
+	assert.Equal(t, "STATUS=loading imported MIB modules: 42/176 (IF-MIB)", sd.next())
+}
+
+// The protocol is newline-separated VAR=value pairs, so a newline inside the
+// text would be read as a second assignment and the rest of the line dropped.
+func TestStatusFlattensNewlines(t *testing.T) {
+	sd := newListener(t)
+
+	notifier, err := Dial(sd.addr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = notifier.Close() })
+
+	require.NoError(t, notifier.Status("parsing\nIF-MIB\r\nand more"))
+	assert.Equal(t, "STATUS=parsing IF-MIB  and more", sd.next())
+}
+
+func TestStatusOnAnUnsupervisedNotifierIsANoOp(t *testing.T) {
+	t.Setenv(SocketEnv, "")
+
+	notifier, err := New()
+	require.NoError(t, err)
+
+	assert.NoError(t, notifier.Status("anything"))
+	var nilNotifier *Notifier
+	assert.NoError(t, nilNotifier.Status("anything"))
+}
+
 func TestNewUsesTheEnvironmentSocket(t *testing.T) {
 	sd := newListener(t)
 	t.Setenv(SocketEnv, sd.addr)

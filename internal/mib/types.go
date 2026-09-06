@@ -106,6 +106,19 @@ type ModuleInfo struct {
 	Tags         map[string]string `json:"tags,omitempty"`
 }
 
+// LoadProgress reports how far a bulk module load has got: how many modules
+// are done, how many there are in total, and the one just finished.
+//
+// It exists because the load it reports on is minutes long and happens before
+// the service can answer anything. Without it, "still parsing" and "wedged and
+// never going to serve" are the same observation from outside the process, and
+// the two have already been confused on a production appliance.
+//
+// Reporting is the caller's business: a service under systemd turns this into
+// the unit's status line, a test counts the calls, and a nil LoadProgress
+// reports nowhere.
+type LoadProgress func(done, total int, module string)
+
 // TableInfo contains information about an SNMP table
 type TableInfo struct {
 	OID         string   `json:"oid"`
