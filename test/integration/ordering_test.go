@@ -576,6 +576,18 @@ func poll(run string, start time.Time, spread time.Duration) []*metrics.Sample {
 // orderingDevice is the device label this file's series carry.
 const orderingDevice = "ordering-test-router"
 
+// dropReasons is every reason a sample can be discarded for, and the set this
+// file sums to get "how much was thrown away".
+//
+// Spelled out rather than read from the package under test, which these tests
+// cannot import anyway: this is the second, independent statement of an
+// alerting contract, and a reason added to the exporter without being added
+// here is a reason this file's totals quietly stop counting. That failure is
+// the same shape as the one the whole exercise is about, so it is worth the
+// duplication -- see counterValue on why an absent counter is an error here
+// and never a zero.
+var dropReasons = []string{"aged", "depth", "rejected", "superseded", "shutdown"}
+
 // exportCounts is the exporter's self-instrumentation at one instant. Read
 // before and after, because the counters are process-global and every test in
 // this binary shares them.
@@ -590,6 +602,22 @@ type exportCounts struct {
 
 // exportCounters reads the exporter's counters from the process registry --
 // the same numbers /metrics publishes, which is what an operator would look at.
+//
+// The dropped total is SUMMED from gonetmon_export_dropped_samples_total's
+// reasons rather than read from gonetmon_exports_total{status="dropped"}.
+//
+// That child no longer exists, and its removal is the point of #136: it counted
+// SAMPLES while its two siblings count FLUSHES, so anything summed or divided
+// across that metric was nonsense -- rate(...{dropped})/rate(...{success}),
+// which is how anyone asks "what fraction are we losing", divided samples by
+// flushes. The per-reason counter carries exactly what it held, in samples, and
+// says which fault as well.
+//
+// This file read the old child because it was written on a branch cut before
+// that one landed, and the two were merged without ever being run together.
+// Nothing was weakened in fixing it: the total means the same thing, and the
+// assertion that actually fails when the per-series sort is removed is the
+// stored-sample count read back out of Prometheus, not this.
 func exportCounters(t *testing.T) exportCounts {
 	t.Helper()
 
@@ -602,14 +630,19 @@ func exportCounters(t *testing.T) exportCounts {
 	if counts.outOfOrder, err = counterValue("gonetmon_export_out_of_order_total", nil); err != nil {
 		t.Fatalf("%v", err)
 	}
-	if counts.droppedTotal, err = counterValue("gonetmon_exports_total", map[string]string{"status": "dropped"}); err != nil {
-		t.Fatalf("%v", err)
-	}
-	if counts.superseded, err = counterValue("gonetmon_export_dropped_samples_total", map[string]string{"reason": "superseded"}); err != nil {
-		t.Fatalf("%v", err)
-	}
-	if counts.rejected, err = counterValue("gonetmon_export_dropped_samples_total", map[string]string{"reason": "rejected"}); err != nil {
-		t.Fatalf("%v", err)
+	for _, reason := range dropReasons {
+		dropped, err := counterValue("gonetmon_export_dropped_samples_total", map[string]string{"reason": reason})
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		counts.droppedTotal += dropped
+
+		switch reason {
+		case "superseded":
+			counts.superseded = dropped
+		case "rejected":
+			counts.rejected = dropped
+		}
 	}
 	if counts.errors, err = counterValue("gonetmon_exports_total", map[string]string{"status": "error"}); err != nil {
 		t.Fatalf("%v", err)
