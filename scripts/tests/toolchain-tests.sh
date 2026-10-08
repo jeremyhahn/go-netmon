@@ -76,7 +76,7 @@ fake_golangci() {
     cat >"$path" <<EOF
 #!/bin/sh
 if [ "\$1" = "version" ]; then
-    echo "golangci-lint has version $version built with go1.26.6"
+    echo "golangci-lint has version $version built with go1.27.1"
     exit $exit_status
 fi
 exit 0
@@ -102,7 +102,7 @@ EOF
         # shellcheck disable=SC2016  # writing a script; $dir expands when IT runs, not here
         printf 'cat > "$dir/golangci-lint" <<INNER\n'
         printf '#!/bin/sh\n'
-        printf 'echo "golangci-lint has version %s built with go1.26.6"\n' "$version"
+        printf 'echo "golangci-lint has version %s built with go1.27.1"\n' "$version"
         printf 'exit %s\n' "$exit_status"
         printf 'INNER\n'
         # shellcheck disable=SC2016  # same: $dir belongs to the generated script
@@ -123,7 +123,7 @@ test_lint_accepts_the_pinned_version() {
 test_lint_refuses_a_mismatched_version() {
     local dir="$TMPDIR_TEST/mismatch"
     mkdir -p "$dir"
-    fake_golangci "$dir/golangci-lint" "2.13.1" 0
+    fake_golangci "$dir/golangci-lint" "2.0.0" 0
     expect_failure "mismatched version refused" lint "GOLANGCI_LINT=$dir/golangci-lint" || return 1
     expect_output "mismatched version names both" "but this repository pins $WANT_VERSION"
 }
@@ -182,10 +182,10 @@ test_install_fails_when_the_download_fails() {
 test_install_fails_when_the_installer_delivers_the_wrong_version() {
     local dir="$TMPDIR_TEST/wrongversion"
     mkdir -p "$dir"
-    fake_installer "$TMPDIR_TEST/installer.sh" "2.13.1"
+    fake_installer "$TMPDIR_TEST/installer.sh" "2.0.0"
     expect_failure "wrong delivered version refused" install-tools \
         "GOBIN_DIR=$dir" "GOLANGCI_LINT_INSTALLER_URL=file://$TMPDIR_TEST/installer.sh" || return 1
-    expect_output "wrong delivered version names both" "reports '2.13.1', want '$WANT_VERSION'"
+    expect_output "wrong delivered version names both" "reports '2.0.0', want '$WANT_VERSION'"
 }
 
 # The install-path half of the exit-status regression: a delivered binary can

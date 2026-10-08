@@ -130,7 +130,7 @@ integration_require_disposable_project "$PROJECT_NAME" "$COMPOSE_FILE" || exit 1
 # --- teardown -------------------------------------------------------------
 
 cleanup_done=0
-# shellcheck disable=SC2317  # invoked through trap, which shellcheck cannot see
+# shellcheck disable=SC2317,SC2329  # invoked through trap, which shellcheck cannot see
 cleanup() {
     # A single-shot guard. Without it an interrupt runs cleanup from the INT
     # trap and then again from the EXIT trap, and the second "down -v" reports

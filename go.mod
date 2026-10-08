@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-netmon
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/cockroachdb/pebble v1.1.5

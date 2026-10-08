@@ -29,7 +29,7 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      # No "go install" step here. golangci-lint v2.13.2 and actionlint v1.7.7
+      # No "go install" step here. golangci-lint v2.14.0 and actionlint v1.7.12
       # come from the runner image (ci-runner:latest, which "ubuntu-latest" maps
       # to), at pins asserted when that image is built -- the build fails closed
       # if a tool's self-report disagrees with its pin, and /etc/ci-runner-tools.txt
@@ -45,7 +45,7 @@ jobs:
       # the Makefile (GOLANGCI_LINT_VERSION), and "make lint" refuses to run a
       # binary whose version does not match it -- so if the image ever bakes a
       # different version this job fails with that mismatch named, rather than
-      # linting with the wrong one. That guard is why v2.13.2 is required at all:
+      # linting with the wrong one. That guard is why v2.14.0 is required at all:
       # v2.12.2 cannot lint Go 1.27, its buildir SSA pass panics on stdlib
       # "poll" and reports a red gate with zero findings.
       #
@@ -81,7 +81,7 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      # govulncheck v1.7.0 comes from the runner image, for the reason spelled
+      # govulncheck v1.8.0 comes from the runner image, for the reason spelled
       # out in the lint job above. It was installed here at "@latest", which
       # made the scanner version -- and therefore the finding set -- whatever
       # the proxy served that morning; the baked copy is pinned and recorded.
@@ -175,7 +175,7 @@ jobs:
       #
       # It was excluded until now for a real reason: shellcheck was not in the
       # runner image, and installing it at job time is what that image exists to
-      # prevent. The image carries shellcheck 0.9.0 now, so the reason is gone.
+      # prevent. The image carries shellcheck 0.11.0 now, so the reason is gone.
       #
       # Findings are suppressed per site with a reason on the line, never with
       # --severity or a .shellcheckrc: a blanket silences the next real finding

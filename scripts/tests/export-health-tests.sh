@@ -187,7 +187,7 @@ test_a_missing_series_aborts_the_post_deploy_arm() {
     # The old build published none of the per-reason counters. Every
     # expectation would pass against it -- "must not move" is satisfied by a
     # series that is not there -- so the arm has to stop before evaluating one.
-    # shellcheck disable=SC2317  # invoked indirectly, through assert_counters_present
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly, through assert_counters_present
     fetch_metrics() { cat "$FIXTURES/metrics-old-build.txt"; }
     if out="$(assert_counters_present 2>&1)"; then
         fail "assert_counters_present accepted a build with no per-reason counters"
@@ -199,7 +199,7 @@ test_a_missing_series_aborts_the_post_deploy_arm() {
 
 test_every_series_present_passes_the_preflight() {
     load_measure
-    # shellcheck disable=SC2317  # invoked indirectly, through assert_counters_present
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly, through assert_counters_present
     fetch_metrics() { cat "$FIXTURES/metrics-new-build.txt"; }
     assert_ok "the new build publishes every expected series" assert_counters_present || return 1
 }
@@ -208,7 +208,7 @@ test_a_running_image_that_is_not_the_deployed_one_aborts() {
     load_measure
     local out
     EXPECT_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
-    # shellcheck disable=SC2317  # invoked indirectly, through assert_build
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly, through assert_build
     running_image_sha() { printf 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n'; }
     if out="$(assert_build 2>&1)"; then
         fail "assert_build accepted an image that is not the deployed one"
@@ -221,7 +221,7 @@ test_an_unreadable_running_image_aborts_rather_than_assuming() {
     load_measure
     local out
     EXPECT_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
-    # shellcheck disable=SC2317  # invoked indirectly, through assert_build
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly, through assert_build
     running_image_sha() { printf '%s\n' "$ABSENT"; }
     if out="$(assert_build 2>&1)"; then
         fail "assert_build passed when it could not read the running image"
@@ -234,7 +234,7 @@ test_a_matching_image_passes_and_says_so() {
     load_measure
     local out
     EXPECT_SHA256="abc123"
-    # shellcheck disable=SC2317  # invoked indirectly, through assert_build
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly, through assert_build
     running_image_sha() { printf 'abc123\n'; }
     out="$(assert_build 2>&1)" || fail "assert_build rejected the deployed image"
     assert_contains "confirms" "$out" "matches EXPECT_SHA256" || return 1
@@ -245,7 +245,7 @@ test_an_unset_expectation_says_the_build_was_not_verified() {
     local out
     # shellcheck disable=SC2034  # read by assert_build, which is sourced
     EXPECT_SHA256=""
-    # shellcheck disable=SC2317  # invoked indirectly, through assert_build
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly, through assert_build
     running_image_sha() { printf 'abc123\n'; }
     out="$(assert_build 2>&1)" || fail "assert_build failed with no expectation set"
     # Not silently a pass: it has to say that nothing was checked, or an
