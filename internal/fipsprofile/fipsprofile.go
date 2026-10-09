@@ -101,8 +101,14 @@ func CheckAuthProtocol(name string) error {
 	case "SHA", "SHA1", "SHA-1":
 		return &RefusedError{Field: "auth_protocol", Value: name, Reason: "SNMPv3 \"SHA\" is HMAC-SHA-96, that is SHA-1" +
 			" (RFC 3414 section 6), which is not a FIPS 140-3 approved algorithm; use SHA224, SHA256, SHA384 or SHA512"}
+	case "SHA224", "SHA256", "SHA384", "SHA512":
+		return nil
 	}
-	return nil
+	// Anything outside the allowlist is refused, not waved through: a name
+	// the profile never approved must not start a worker that can never
+	// connect.
+	return &RefusedError{Field: "auth_protocol", Value: name, Reason: "not an approved SNMPv3 authentication protocol;" +
+		" use SHA224, SHA256, SHA384 or SHA512"}
 }
 
 // CheckPrivProtocol refuses the SNMPv3 privacy protocols FIPS 140-3 does not
@@ -118,8 +124,12 @@ func CheckPrivProtocol(name string) error {
 	case "DES":
 		return &RefusedError{Field: "priv_protocol", Value: name, Reason: "SNMPv3 CBC-DES (RFC 3414 section 8)" +
 			" is not a FIPS 140-3 approved algorithm; use AES, AES192 or AES256"}
+	case "AES", "AES128", "AES192", "AES256", "AES192C", "AES256C":
+		return nil
 	}
-	return nil
+	// Anything outside the allowlist is refused (see CheckAuthProtocol).
+	return &RefusedError{Field: "priv_protocol", Value: name, Reason: "not an approved SNMPv3 privacy protocol;" +
+		" use AES, AES192 or AES256"}
 }
 
 // CheckSNMP applies the whole SNMP policy to one target's settings: the

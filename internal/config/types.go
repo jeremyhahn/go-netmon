@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"strconv"
 	"time"
 
@@ -365,7 +366,15 @@ func (d *Device) Validate() error {
 	// Under the FIPS profile v1/v2c and the non-approved v3 protocols are
 	// refused (product ruling 7); normal mode accepts them all.
 	if err := fipsprofile.CheckSNMP(d.SNMPVersion, d.AuthProtocol, d.PrivProtocol); err != nil {
-		return &ValidationError{Field: "snmp_version", Message: err.Error(), Err: err}
+		// The refusal names the field it objects to; carry it so the error
+		// does not blame a valid snmp_version for a refused auth or priv
+		// protocol.
+		field := "snmp_version"
+		var refused *fipsprofile.RefusedError
+		if errors.As(err, &refused) {
+			field = refused.Field
+		}
+		return &ValidationError{Field: field, Message: err.Error(), Err: err}
 	}
 
 	// Validate version-specific fields. v1 and v2c both authenticate with a
