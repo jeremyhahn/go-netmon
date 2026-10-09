@@ -105,6 +105,10 @@ func (h *PollerControlHandler) HandleRegisterDevice(w http.ResponseWriter, r *ht
 
 	// Convert request to config.Device
 	device := h.requestToDevice(&req)
+	if err := device.Validate(); err != nil {
+		h.respondError(w, http.StatusBadRequest, "validation failed", err.Error())
+		return
+	}
 
 	// Add device to poller
 	ctx := r.Context()
@@ -163,15 +167,22 @@ func (h *PollerControlHandler) HandleUpdateDevice(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Convert request to config.Device and validate it BEFORE the running
+	// worker is touched: AddDevice validates too, but by then the old worker
+	// is gone, so a refused update (for example one the FIPS profile rejects)
+	// would leave a valid device unmonitored.
+	device := h.requestToDevice(&req)
+	if err := device.Validate(); err != nil {
+		h.respondError(w, http.StatusBadRequest, "validation failed", err.Error())
+		return
+	}
+
 	ctx := r.Context()
 
 	// Remove old device
 	if err := h.poller.RemoveDevice(deviceName); err != nil {
 		log.Printf("Warning: failed to remove old device %s: %v", deviceName, err)
 	}
-
-	// Convert request to config.Device
-	device := h.requestToDevice(&req)
 
 	// Add updated device
 	if err := h.poller.AddDevice(ctx, device); err != nil {
