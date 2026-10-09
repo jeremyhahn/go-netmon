@@ -5,7 +5,7 @@
 # still floats, because a tag is a mutable pointer the registry can re-aim with
 # no commit behind it. The digest is the index (multi-arch) digest, so the pin
 # does not cost the manifest list.
-FROM golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
+FROM golang:1.27.2-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
