@@ -1,440 +1,149 @@
-# MIB System Architecture - Visual Reference
+# MIB System Architecture
 
-## System Architecture Overview
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         go-netmon                                   │
-└─────────────────────────────────────────────────────────────────────┘
-                                 │
-        ┌────────────────────────┼────────────────────────┐
-        │                        │                        │
-    ┌───────────┐          ┌──────────┐            ┌────────────┐
-    │  Poller   │          │  WebUI   │            │ Exporter   │
-    └─────┬─────┘          └────┬─────┘            └──────┬─────┘
-          │                     │                        │
-          └─────────────────┬───┴──────────┬─────────────┘
-                            │              │
-                    ┌───────▼──────┐  ┌────▼──────┐
-                    │  API Layer   │  │ Dashboard │
-                    └───────┬──────┘  └─────────┬─┘
-                            │                  │
-                    ┌───────▼──────────────────┴───────┐
-                    │                                   │
-              ┌─────▼──────┐  ┌──────────────┐  ┌──────▼─────┐
-              │  Selector  │  │   Profiles   │  │   Loader   │
-              └─────┬──────┘  └──────┬───────┘  └──────┬─────┘
-                    │                │                │
-                    └────────────────┼────────────────┘
-                                     │
-                        ┌────────────▼────────────┐
-                        │    MIB Storage          │
-                        │  (internal/mib/...)    │
-                        └────────────┬────────────┘
-                                     │
-        ┌────────────────────────────┼────────────────────────┐
-        │                            │                        │
-   ┌────▼─────┐          ┌──────────▼──────┐         ┌───────▼──┐
-   │  Parser  │          │  PebbleDB       │         │  Storage │
-   │(gosmi)   │          │  (Key-Value DB) │         │ Instance │
-   └────┬─────┘          └──────────┬──────┘         └──────────┘
-        │                           │
-        │         ┌─────────────────┘
-        │         │
-    ┌───▼─────────▼────┐
-    │  MIB Search Paths │
-    ├───────────────────┤
-    │ /mibs/standard/   │
-    │ /mibs/cisco/      │
-    │ /mibs/vendor/     │
-    │ /mibs/asr1001/    │
-    └───────────────────┘
-```
+A map of the MIB packages and how data moves through them. Details of each
+step are in [MIB_PARSING_AND_STORAGE.md](MIB_PARSING_AND_STORAGE.md); how the
+poller and web UI each keep a catalog is in
+[mib-catalogs-and-on-demand-loading.md](mib-catalogs-and-on-demand-loading.md).
 
-## MIB File → Storage Pipeline
+## Components
+
+| Package | Role |
+|---------|------|
+| `internal/mib` | Shared data model (`OIDMetadata`, `ModuleInfo`, `TableInfo`) and `FormatValue` |
+| `internal/mib/parser` | gosmi wrapper: loads MIB files, produces `OIDMetadata` and `TableInfo` |
+| `internal/mib/storage` | PebbleDB store of parsed metadata |
+| `internal/mib/loader` | Parses modules and writes them to storage; `EnsureModule`, `EnsureModuleCurrent`, `Revision` |
+| `internal/mib/selector` | Chooses which stored objects a device polls (`Plan`/`Polled`, `Selector.SelectOIDs`) |
+| `internal/mib/profiles` | Built-in profiles and a manager that converts a profile into a selector request |
+| `internal/mib/importer` | Support-list parsing and MIB download for `mib-importer` |
+| `internal/grafana` | Dashboard generation from stored MIBs |
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│ Step 1: File Loading                                           │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  IF-MIB.txt (1814 lines)                                       │
-│      ↓                                                         │
-│  gosmi.LoadModule("IF-MIB")                                    │
-│      ↓                                                         │
-│  Module parsed and dependencies resolved                       │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-                              ↓
-┌────────────────────────────────────────────────────────────────┐
-│ Step 2: Node Parsing                                           │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  For each gosmi.SmiNode:                                       │
-│  • Extract OID (1.3.6.1.2.1.2.2.1.10)                          │
-│  • Extract Name (ifInOctets)                                   │
-│  • Extract Type (Counter32)                                    │
-│  • Extract Access (read-only)                                  │
-│  • Extract Status (current)                                    │
-│  • Extract Description, Units, Parent, Index info              │
-│  • Classify NodeKind (Scalar, Table, Row, Column)              │
-│      ↓                                                         │
-│  OIDMetadata struct created                                    │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-                              ↓
-┌────────────────────────────────────────────────────────────────┐
-│ Step 3: Storage                                                │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  Storage.StoreOID(meta) {                                      │
-│    • JSON serialize OIDMetadata                                │
-│    • Create primary key: "oid:1.3.6.1.2.1.2.2.1.10"           │
-│    • Store metadata value in PebbleDB                          │
-│    • Create reverse index: "name:IF-MIB:ifInOctets"           │
-│    • Store OID reference "1.3.6.1.2.1.2.2.1.10"               │
-│  }                                                             │
-│      ↓                                                         │
-│  PebbleDB contains indexed, searchable OID data                │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-                              ↓
-┌────────────────────────────────────────────────────────────────┐
-│ Step 4: Querying & Filtering                                   │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  Query Types:                                                  │
-│  1. Direct: GetOID("1.3.6.1.2.1.2.2.1.10")                    │
-│  2. Name:   GetOIDByName("IF-MIB", "ifInOctets")               │
-│  3. Prefix: ListOIDs("1.3.6.1.2.1.2.2")                       │
-│  4. Filter: GetPollableOIDs("IF-MIB")                          │
-│  5. Profile: Selector.SelectOIDs(deviceProfile)               │
-│      ↓                                                         │
-│  Filtered OID list for polling                                │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
+MIB files (mibs/standard, mibs/cisco, mibs/vendor, per-device dirs, uploads)
+        │
+        ▼
+   parser (gosmi)  ──►  loader  ──►  storage (PebbleDB)
+                                          ▲   │
+        poller ───── selector / profiles ─┘   │
+        web UI ───── API handlers ────────────┘
+        exporter ─── metric names and index labels built from storage
 ```
 
-## OID Metadata Extraction Example
+The poller and the web UI each open their own PebbleDB catalog, because Pebble
+admits one writer per directory. The web UI loads uploaded MIBs into its catalog;
+the poller loads the modules a device is assigned into its own on demand.
+
+## Pipeline
+
+1. **File loading.** `Parser.LoadModule` has gosmi load the module and resolve
+   its IMPORTS through the search paths.
+2. **Node parsing.** `Parser.ParseModule` walks the module and builds an
+   `OIDMetadata` for each node: OID, name, module, type, access, status,
+   description, units, enum values, range bounds, display hint, parent, table
+   hierarchy and index information, object class and chartability. Objects with
+   no OID are discarded and counted.
+3. **Storage.** `Loader.LoadModule` parses first, then replaces the stored
+   module: the module record, each object (`StoreOID`), and each table
+   (`StoreTable`). `StoreOID` writes the record, a name entry and a module-index
+   entry in one atomic batch.
+4. **Querying.** `GetOID`, `GetOIDByName`, `ListOIDs(prefix)`,
+   `ListModuleOIDs(module)`, `GetPollableOIDs(module)`, then selection.
+
+## Storage keys
+
+| Prefix | Example | Value |
+|--------|---------|-------|
+| `oid:` | `oid:1.3.6.1.2.1.2.2.1.10` | `OIDMetadata` JSON |
+| `name:` | `name:IF-MIB:ifInOctets` | the OID key |
+| `midx:` | `midx:IF-MIB:1.3.6.1.2.1.2.2.1.10` | the OID key (per-module index) |
+| `midxdone:` | `midxdone:IF-MIB` | marker that the module's index is built |
+| `mod:` | `mod:IF-MIB` | `ModuleInfo` JSON |
+| `tbl:` | `tbl:IF-MIB:ifTable` | `TableInfo` JSON |
+
+`ListOIDs("1.3.6.1.2.1.1")` scans the range `["oid:1.3.6.1.2.1.1",
+"oid:1.3.6.1.2.1.1/")` and matches whole sub-identifiers, so it returns the
+`system` subtree without `1.3.6.1.2.1.10` or `1.3.6.1.2.1.11`.
+
+## Whether an object is polled
+
+Two layers apply, and they are not the same test.
+
+**Per object (`OIDMetadata.IsPollable`).** True when the object has an OID, is
+`read-only` or `read-write`, has status `current`, and is not a table or table
+entry. Storage's `GetPollableOIDs` filters with this.
 
 ```
-MIB Definition:
-───────────────
-ifInOctets OBJECT-TYPE
-    SYNTAX      Counter32
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "The total number of octets received on the interface"
-    ::= { ifEntry 10 }
-
-                     ↓ Parser.parseNode()
-
-OIDMetadata Result:
-──────────────────
-{
-  OID:          "1.3.6.1.2.1.2.2.1.10"
-  Name:         "ifInOctets"
-  Module:       "IF-MIB"
-  Type:         "Counter32"
-  Access:       "read-only"
-  Status:       "current"
-  Description:  "The total number of octets received on..."
-  Units:        ""
-  Syntax:       "Counter32"
-  Parent:       "1.3.6.1.2.1.2.2.1"
-  IsScalar:     false
-  IsColumn:     true
-  IsTable:      false
-  IsTableEntry: false
-  Pollable:     true (computed)
-  CreatedAt:    2024-10-25T12:34:56Z
-  UpdatedAt:    2024-10-25T12:34:56Z
-  Tags:         {}
-}
+has an OID?  ──no──► not pollable
+   │ yes
+readable (read-only / read-write)?  ──no──► not pollable
+   │ yes
+status current?  ──no──► not pollable
+   │ yes
+table or table entry?  ──yes──► not pollable (its columns are)
+   │ no
+pollable
 ```
 
-## Storage Key Schema
+**Per device (`selector.Plan` / `selector.Polled`).** For a device with assigned
+modules, the poller reads those modules' objects and applies the selection plan.
+It fetches scalars with GET (they must be readable and current), walks table
+nodes (the node is `not-accessible` in practice, so readability is not tested
+for it), skips columns and entry nodes already covered by a walked table, and
+then applies the module's filters and `max_oids` cap. Every rejection carries a
+reason (for example `not-current`, `covered-by-table-walk`,
+`excluded-by-filter`, `capped-by-max-oids`, `unresolved-oid`), and the web UI
+shows the same plan the poller uses.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ PebbleDB Key Organization                                   │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│ OID Storage (Primary Index)                                 │
-│ ├─ oid:1.3.6.1.2.1.1.1         → OIDMetadata JSON           │
-│ ├─ oid:1.3.6.1.2.1.1.3         → OIDMetadata JSON           │
-│ ├─ oid:1.3.6.1.2.1.2.2.1.1     → OIDMetadata JSON           │
-│ ├─ oid:1.3.6.1.2.1.2.2.1.2     → OIDMetadata JSON           │
-│ └─ ...                                                      │
-│                                                             │
-│ Name Index (Reverse Lookup)                                │
-│ ├─ name:SNMPv2-MIB:sysDescr    → "1.3.6.1.2.1.1.1"        │
-│ ├─ name:SNMPv2-MIB:sysUpTime   → "1.3.6.1.2.1.1.3"        │
-│ ├─ name:IF-MIB:ifIndex         → "1.3.6.1.2.1.2.2.1.1"    │
-│ ├─ name:IF-MIB:ifInOctets      → "1.3.6.1.2.1.2.2.1.10"   │
-│ └─ ...                                                      │
-│                                                             │
-│ Module Storage                                              │
-│ ├─ mod:SNMPv2-MIB              → ModuleInfo JSON            │
-│ ├─ mod:IF-MIB                  → ModuleInfo JSON            │
-│ ├─ mod:IP-MIB                  → ModuleInfo JSON            │
-│ └─ ...                                                      │
-│                                                             │
-│ Table Storage                                               │
-│ ├─ tbl:IF-MIB:ifTable          → TableInfo JSON             │
-│ ├─ tbl:IF-MIB:ifXTable         → TableInfo JSON             │
-│ ├─ tbl:IP-MIB:ipRouteTable     → TableInfo JSON             │
-│ └─ ...                                                      │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+A device with no assigned modules uses its profile (`default` when unset):
+`profiles.Manager.SelectOIDsForProfile` builds a `selector.DeviceProfile`
+(modules, include/exclude patterns on OID and name, `IncludeTables`, `MaxOIDs`)
+and calls `Selector.SelectOIDs`.
 
-Range Query Example:
-───────────────────
-ListOIDs("1.3.6.1.2.1.1") returns all keys between:
-  LowerBound: "oid:1.3.6.1.2.1.1"
-  UpperBound: "oid:1.3.6.1.2.1.1~"  (~ is after all digits)
+## Type classification
 
-Result:
-  ├─ "oid:1.3.6.1.2.1.1.1"       (sysDescr)
-  ├─ "oid:1.3.6.1.2.1.1.2.0"     (sysObjectID)
-  ├─ "oid:1.3.6.1.2.1.1.3.0"     (sysUpTime)
-  ├─ "oid:1.3.6.1.2.1.1.4.0"     (sysContact)
-  └─ ... (all system objects)
-```
+| Method | Types |
+|--------|-------|
+| `IsCounter()` | `Counter32`, `Counter64`, `Counter`, `TimeTicks` |
+| `IsGauge()` | `Gauge32`, `Gauge`, `Integer32`, `Integer`, `Unsigned32` |
+| `IsString()` | `OctetString`, `DisplayString` |
 
-## OID Polling Decision Tree
+Other types (`ObjectIdentifier`, `Bits`, ...) match none of these. The Prometheus
+exporter uses the classification to choose a metric type; metric names follow
+[metric-naming.md](metric-naming.md).
 
-```
-                    ┌─────────────────┐
-                    │ OID Candidate   │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │ Is readable?    │
-                    │ (read-only or   │
-                    │  read-write)    │
-                    └────┬────────┬───┘
-                    NO   │        │   YES
-                    ┌────▼──┐     │
-                    │ SKIP  │     │
-                    └───────┘     │
-                                  │
-                    ┌─────────────▼───────┐
-                    │ Is current status?  │
-                    │ (not deprecated or  │
-                    │  obsolete)          │
-                    └────┬────────┬───────┘
-                    NO   │        │   YES
-                    ┌────▼──┐     │
-                    │ SKIP  │     │
-                    └───────┘     │
-                                  │
-                    ┌─────────────▼──────────┐
-                    │ Is table/row?          │
-                    │ (IsTable or            │
-                    │  IsTableEntry)         │
-                    └────┬────────┬──────────┘
-                    YES  │        │   NO
-                    ┌────▼──┐     │
-                    │ SKIP  │     │
-                    └───────┘     │
-                                  │
-                    ┌─────────────▼──────────┐
-                    │ Is not-accessible?     │
-                    └────┬────────┬──────────┘
-                    YES  │        │   NO
-                    ┌────▼──┐     │
-                    │ SKIP  │     │
-                    └───────┘     │
-                                  │
-                             ┌────▼──────┐
-                             │ POLLABLE   │
-                             │ Pollable=✓ │
-                             └────────────┘
-```
+## Tables
 
-## Type Classification System
+`TableInfo` for `ifTable` holds the table OID (`1.3.6.1.2.1.2.2`), the entry OID
+(`1.3.6.1.2.1.2.2.1`), the index column names (`ifIndex`), resolved
+`IndexColumns`, whether the index is `IMPLIED`, and the column OIDs in order.
 
-```
-OIDMetadata.Type → Classification
-═════════════════════════════════════════════════════════════
+A table is polled by walking the table node. Each returned instance carries the
+row index as its OID suffix (for example `1.3.6.1.2.1.2.2.1.10.3` is
+`ifInOctets` for `ifIndex` 3), and the exporter turns the index into labels using
+`IndexColumns`.
 
-Counter Types (metrics that increase monotonically):
-├─ Counter32   → IsCounter() = true
-├─ Counter64   → IsCounter() = true
-└─ Counter     → IsCounter() = true
+## Concurrency
 
-Gauge Types (metrics that can go up or down):
-├─ Gauge32     → IsGauge() = true
-├─ Gauge       → IsGauge() = true
-├─ Integer32   → IsGauge() = true
-├─ Integer     → IsGauge() = true
-└─ Unsigned32  → IsGauge() = true
+- `Storage` guards its operations with a `sync.RWMutex`: writers (store, delete)
+  take the exclusive lock and readers take the shared lock. PebbleDB admits one
+  writer per directory, hence separate catalogs for the poller and web UI.
+- gosmi keeps global state and is not safe for concurrent use; all parser entry
+  points take one package-wide lock.
+- `Loader.LoadModule` serializes on a mutex, and `EnsureModule` re-checks the
+  store under that mutex so concurrent callers load a module once.
+  `Loader.Revision()` increases after each completed load; the poller uses it to
+  skip rebuilding exporter metadata when nothing has changed.
 
-String Types:
-├─ OctetString → IsString() = true
-└─ DisplayString → IsString() = true
+## Preserved and not preserved
 
-Other Types:
-├─ ObjectIdentifier → (not classified)
-├─ Bits         → (not classified)
-├─ TimeTicks    → (numeric, handled as gauge-like)
-├─ Boolean      → (binary state)
-└─ IPAddress    → (address string)
+Preserved: OID, name, module, declared type name, access, status, description,
+units, parent, table hierarchy (`TableOID`, `EntryOID`), index names and resolved
+index columns, `AUGMENTS`, enumeration values, range bounds (outer bounds only),
+`DISPLAY-HINT`, object class and chartability, and the module's import list
+(names only).
 
-Prometheus Metric Mapping:
-──────────────────────────
-Counter32/Counter64 → prometheus.Counter
-Gauge32/Integer    → prometheus.Gauge
-OctetString        → prometheus.Gauge (label) or ignored
-```
-
-## Device Profile → OID Selection Flow
-
-```
-Device Configuration
-│
-├─ Profile: "cisco-ios"
-│  │
-│  ├─ Modules: ["SNMPv2-MIB", "IF-MIB", "CISCO-PROCESS-MIB"]
-│  ├─ IncludeOIDs: []
-│  ├─ ExcludeOIDs: [".*deprecated.*", ".*obsolete.*"]
-│  ├─ IncludeNames: []
-│  ├─ ExcludeNames: []
-│  ├─ IncludeTables: false
-│  └─ MaxOIDs: 0 (unlimited)
-│
-└─ Selector.SelectOIDs(profile) {
-    │
-    ├─ Step 1: Collect from modules
-    │   Storage.GetPollableOIDs("SNMPv2-MIB")      → 185 OIDs
-    │   Storage.GetPollableOIDs("IF-MIB")          → 95 OIDs
-    │   Storage.GetPollableOIDs("CISCO-PROCESS-MIB") → 1200 OIDs
-    │   Total: 1480 OIDs
-    │
-    ├─ Step 2: Apply filters (regex patterns)
-    │   Exclude: ".*deprecated.*"    → Remove 45 OIDs
-    │   Exclude: ".*obsolete.*"      → Remove 20 OIDs
-    │   Remaining: 1415 OIDs
-    │
-    ├─ Step 3: Filter by table inclusion
-    │   IncludeTables=false
-    │   Remove IsTable and IsTableEntry OIDs → Remove 12 OIDs
-    │   Remaining: 1403 OIDs
-    │
-    ├─ Step 4: Apply limit
-    │   MaxOIDs=0 (unlimited)
-    │   No filtering
-    │   Final: 1403 OIDs
-    │
-    └─ Return 1403 []*OIDMetadata
-       Ready for polling!
-}
-```
-
-## Table Structure Navigation
-
-```
-IF-MIB Table Example:
-────────────────────
-
-ifTable (OID: 1.3.6.1.2.1.2.2)
-│
-├─ TableInfo {
-│  Name:     "ifTable"
-│  EntryOID: "1.3.6.1.2.1.2.2.1"
-│  Columns: [
-│    "1.3.6.1.2.1.2.2.1.1"   ← ifIndex (index)
-│    "1.3.6.1.2.1.2.2.1.2"   ← ifDescr
-│    "1.3.6.1.2.1.2.2.1.3"   ← ifType
-│    "1.3.6.1.2.1.2.2.1.10"  ← ifInOctets
-│    "1.3.6.1.2.1.2.2.1.16"  ← ifOutOctets
-│    ...more columns
-│  ]
-│  Indexes: ["ifIndex"]
-│ }
-│
-└─ Polling Process:
-   1. Walk ifIndex to discover instances:
-      SNMP WALK 1.3.6.1.2.1.2.2.1.1
-      └─ Returns: .1 → "1"
-                  .2 → "2"
-                  .3 → "3"
-   
-   2. Poll each column for each instance:
-      GET 1.3.6.1.2.1.2.2.1.10.1  ← ifInOctets for interface 1
-      GET 1.3.6.1.2.1.2.2.1.10.2  ← ifInOctets for interface 2
-      GET 1.3.6.1.2.1.2.2.1.10.3  ← ifInOctets for interface 3
-      GET 1.3.6.1.2.1.2.2.1.16.1  ← ifOutOctets for interface 1
-      GET 1.3.6.1.2.1.2.2.1.16.2  ← ifOutOctets for interface 2
-      GET 1.3.6.1.2.1.2.2.1.16.3  ← ifOutOctets for interface 3
-      ...
-```
-
-## Storage Concurrency Model
-
-```
-┌──────────────────────────────────────────────┐
-│ Storage Instance (sync.RWMutex Protected)    │
-├──────────────────────────────────────────────┤
-│                                              │
-│  Write Operations (Exclusive Lock)           │
-│  ├─ StoreOID()      ─ mu.Lock()              │
-│  ├─ StoreModule()   ─ mu.Lock()              │
-│  ├─ StoreTable()    ─ mu.Lock()              │
-│  ├─ DeleteOID()     ─ mu.Lock()              │
-│  ├─ DeleteModule()  ─ mu.Lock()              │
-│  └─ Close()         ─ mu.Lock()              │
-│                                              │
-│  Read Operations (Shared Lock)               │
-│  ├─ GetOID()        ─ mu.RLock()             │
-│  ├─ GetOIDByName()  ─ mu.RLock()             │
-│  ├─ ListOIDs()      ─ mu.RLock()             │
-│  ├─ GetModule()     ─ mu.RLock()             │
-│  ├─ ListModules()   ─ mu.RLock()             │
-│  ├─ GetTable()      ─ mu.RLock()             │
-│  ├─ ListTables()    ─ mu.RLock()             │
-│  ├─ GetPollableOIDs()─ mu.RLock()            │
-│  └─ Count()         ─ mu.RLock()             │
-│                                              │
-│  PebbleDB Handles:                           │
-│  ├─ Internal locking for LSM tree            │
-│  ├─ Concurrent reads (lock-free)             │
-│  ├─ Single writer at a time                  │
-│  └─ Snapshot isolation (MVCC)                │
-│                                              │
-└──────────────────────────────────────────────┘
-```
-
-## Data Type Preservation
-
-```
-MIB Definition Detail → Storage Preservation
-═════════════════════════════════════════════════════════════
-
-✓ PRESERVED:
-  ├─ OID (numeric)              → OID field
-  ├─ Name (symbolic)            → Name field
-  ├─ Module                     → Module field
-  ├─ Base type (Counter32, etc.)→ Type field
-  ├─ Access (read-only, etc.)   → Access field
-  ├─ Status (current, etc.)     → Status field
-  ├─ Description                → Description field
-  ├─ Units (if present)         → Units field
-  ├─ Parent OID                 → Parent field
-  ├─ Table indexes              → Index array
-  ├─ Table augments             → Augments field
-  ├─ Node kind                  → IsTable/IsColumn/etc.
-  └─ Import list                → Imports array
-
-✗ NOT PRESERVED (or Simplified):
-  ├─ Enumeration mappings       (only type stored)
-  ├─ Range constraints          (0..255 not captured)
-  ├─ Bit string definitions     (only Bits type stored)
-  ├─ Default values             (not extracted)
-  ├─ DISPLAY-HINT              (format hints lost)
-  ├─ Textual convention details (TC name only)
-  ├─ Complex syntax rules       (simplified)
-  └─ Dependencies resolution    (stored but not resolved)
-```
-
+Not preserved: BITS positions and names (only the `Bits` type), `DEFVAL` default
+values, textual convention definitions (the name and display hint are kept), and
+a resolved import graph.

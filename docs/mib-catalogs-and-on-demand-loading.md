@@ -1,5 +1,7 @@
 # MIB catalogs and on-demand loading
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 Two services parse MIBs, and each keeps its own catalog of the result — the OID
 metadata of every module it has parsed. This document says where those catalogs
 live, why there are two of them, and how a module an operator assigns in the web
@@ -32,19 +34,20 @@ already has on its search path, so either service can parse a module the other
 imported.
 
 Losing the web UI catalog is recoverable but not free: `LoadStoredMIBs` rebuilds
-it at startup from the MIB records in `-db`, which is on a volume.
+it at startup from the MIB records in `-db`, which is on a volume. It calls
+`EnsureModuleCurrent` for each record, so on a warm catalog a module is parsed
+again only if its file has been written since it was last parsed.
 
 ## Assignment does not imply metadata
 
 The web UI tells the poller only the **names** of a device's modules, over
 `PUT /api/poller/devices/{name}`. A name whose objects are not in the poller's own
 catalog selects nothing, so a device silently polls whatever subset happened to
-be in `mib.auto_load` at startup. On one install a router assigned a
-seventeen-module profile polled 38 objects instead of 155 for exactly this
-reason.
+be in `mib.auto_load` at startup. A router assigned a seventeen-module profile
+polled only a fraction of the configured objects for exactly this reason.
 
-`mib.auto_load` is therefore a bootstrap list, not a limit. Everything else is
-parsed on demand.
+`mib.auto_load` is therefore a bootstrap list, not a limit: `Loader.Load` brings
+those modules in at startup, and everything else is parsed on demand.
 
 ## When loading happens
 
@@ -59,12 +62,15 @@ from the search path only if the catalog does not already hold it.
 
 Three properties are worth knowing:
 
-- **It runs outside the poller lock.** Parsing seventeen modules takes on the
-  order of two seconds, and holding the poller's lock across that would stall
+- **It runs outside the poller lock.** A parse costs tens of milliseconds per module
+  and a device can carry seventeen, and holding the poller's lock across that would stall
   every other device's registration, removal and status lookup. Devices already
   polling are unaffected regardless: the polling loop takes neither lock.
-- **A module already present costs a lookup, not a parse** — about 7 µs against
-  about 290 ms for a load (`make bench-mib-loader`).
+- **A module already present costs a lookup, not a parse.** The loader
+  benchmarks (`make bench-mib-loader`) measure both.
+- **It ends by refreshing the exporter's MIB-derived metric names and index
+  labels** (`refreshMetricMetadata`), skipped when the loader's revision shows
+  nothing was loaded since the last refresh.
 - **A module that will not parse costs only itself.** It is logged, counted, and
   skipped; the device keeps polling every module that did load. Failing the
   device instead would stop a router polling at all because one of its
