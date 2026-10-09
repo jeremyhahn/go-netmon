@@ -3,6 +3,8 @@ package config
 import (
 	"strconv"
 	"time"
+
+	"github.com/jeremyhahn/go-netmon/internal/fipsprofile"
 )
 
 // Config represents the main application configuration
@@ -252,6 +254,7 @@ func (c *Config) Validate() error {
 			return &ValidationError{
 				Field:   "devices[" + device.Name + "]",
 				Message: err.Error(),
+				Err:     err,
 			}
 		}
 		// Check for duplicate names
@@ -359,6 +362,12 @@ func (d *Device) Validate() error {
 		return &ValidationError{Field: "snmp_version", Message: "must be '1', '2c' or '3'"}
 	}
 
+	// Under the FIPS profile v1/v2c and the non-approved v3 protocols are
+	// refused (product ruling 7); normal mode accepts them all.
+	if err := fipsprofile.CheckSNMP(d.SNMPVersion, d.AuthProtocol, d.PrivProtocol); err != nil {
+		return &ValidationError{Field: "snmp_version", Message: err.Error(), Err: err}
+	}
+
 	// Validate version-specific fields. v1 and v2c both authenticate with a
 	// community string and neither has anything else to check.
 	if (d.SNMPVersion == "1" || d.SNMPVersion == "2c") && d.Community == "" {
@@ -392,7 +401,13 @@ func (d *Device) GetPollInterval(defaultInterval int) time.Duration {
 type ValidationError struct {
 	Field   string
 	Message string
+	// Err is the typed cause when there is one, so errors.As still reaches it
+	// through a configuration-level wrapper (for example *fipsprofile.RefusedError).
+	Err error
 }
+
+// Unwrap returns the typed cause, if any.
+func (e *ValidationError) Unwrap() error { return e.Err }
 
 func (e *ValidationError) Error() string {
 	return "config validation error: " + e.Field + ": " + e.Message

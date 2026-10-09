@@ -62,7 +62,9 @@ costs such a deployment nothing.
 
 They are registered by `internal/snmp/v3_legacy.go`, which carries
 `//go:build !fips`. A FIPS build does not compile that file and cannot select
-them. Configuring one produces a `*V3ConfigError` that says so:
+them. Configuring one produces a `*V3ConfigError` that says so (when the
+runtime profile below is also active, the `*fipsprofile.RefusedError` answers
+first):
 
 ```
 snmp: auth_protocol "SHA": SNMPv3 "SHA" is HMAC-SHA-96, that is SHA-1
@@ -102,6 +104,47 @@ Everything else in the web UI is unaffected. The REST API is complete, and the
 same metrics are available by polling it. Only the push transport is missing —
 the `Hub`, its clients, the delta encoding and the query path touch no
 non-approved primitive and are compiled into both builds.
+
+## The runtime FIPS profile: SNMP policy
+
+The `fips` tag removes code from the binary. The company enforcement model
+(boundary ruling 1, product ruling 7 in the handbook's `04-security-model.md`)
+is also **FIPS-capable build plus runtime activation**, so the same policy is
+enforced at runtime by `internal/fipsprofile`. The profile is active exactly
+when the Go runtime is in FIPS 140-3 mode (`GODEBUG=fips140=only`, set by
+configuration or because the host kernel is in FIPS mode). An ordinary build
+run under `fips140=only` still contains MD5, SHA-1 and DES, so it needs this
+check; a `-tags fips` build gets it as well.
+
+Under the profile, only SNMPv3 with SHA-2 authentication and AES privacy is
+permitted. Everything else is refused with a typed `*fipsprofile.RefusedError`
+(`Field`, `Value`, `Reason`; reach it with `errors.As`):
+
+| Setting | Refused value | Field |
+|---|---|---|
+| `snmp_version` | `1`, `2c` (also `v1`, `v2c`) | `snmp_version` |
+| `auth_protocol` | `MD5`, `SHA` (SHA-1) | `auth_protocol` |
+| `priv_protocol` | `DES` | `priv_protocol` |
+| `auth_protocol` | empty or `NONE` (noAuthNoPriv) | `auth_protocol` |
+| `priv_protocol` | empty or `NONE` (authNoPriv) | `priv_protocol` |
+
+Accepted, and only this: SNMPv3 authPriv with `SHA224`, `SHA256`, `SHA384` or
+`SHA512` authentication and `AES`, `AES192` or `AES256` privacy. The weaker v3
+security levels are refused as well, so a target cannot satisfy the profile
+by dropping authentication or privacy.
+
+The refusal fails closed at the earliest point that sees the setting:
+`config.Device.Validate` (so a configuration file with a v2c target does not
+load, and `snmp.NewClient` and the poller's device paths refuse it),
+`snmp.ConfigureV3` (so the web UI connectivity tester refuses the same
+protocols) and the tester's version switch.
+
+**Normal mode is unchanged.** With the profile inactive, every version and
+protocol is accepted as before: the product exists to monitor legacy gear.
+
+Tests that exercise v1/v2c and the legacy protocols run with the profile pinned
+off (`fipsprofile.Force(false)`), because CI runs the whole suite under
+`fips140=only`; tests of the profile itself pin it on.
 
 ## What this build does *not* claim
 
