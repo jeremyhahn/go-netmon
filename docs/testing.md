@@ -1,7 +1,69 @@
 # What a test proves
 
-Repository-wide testing notes. Conventions live in the company repo
-(`software/conventions/testing.md`); this is the local, hard-won part.
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> How tests are run and written in this repository. The stamp covers "Running the tests" and "Rules"; everything under "History (not verified)" is narrative that was not checked.
+
+Conventions live in the handbook (`../handbook/software/conventions/testing-guidelines.md`
+and `integration-testing.md`); this page is the local part.
+
+## Running the tests
+
+| Target | Runs |
+|---|---|
+| `make test` | Unit tests, `go test -v -race -coverprofile=coverage.out ./...`; no Docker |
+| `make test-integration` (alias `make integration-test`) | `test/integration/run-tests.sh`, the Docker-based suite |
+| `make vet-tags` | `go vet` under every build tag the repository defines |
+| `make ci-fast` | Everything that needs no Docker: `check-tracked`, `fmt-check`, `vet`, `vet-tags`, `lint`, the harness and guard tests, `test`, `build-all`, `validate-mibs` |
+| `make ci` | `ci-fast` plus `integration-test` |
+
+Layout: unit tests sit beside the code as `*_test.go`; Go integration tests and
+their harness are in `test/integration/`; Playwright browser specs are in
+`tests/e2e/tests/` (`tests/e2e/playwright.config.ts`). A file behind
+`//go:build integration` is invisible to the default tags, which is why
+`vet-tags` exists.
+
+## Rules
+
+- **Mutate before you believe a test.** Remove the behavior the test claims to
+  guard, run only that test, and require it to fail. A test that still passes is
+  decoration. Mutate faithfully: an approximation of the old defect can pass a
+  test the real defect would fail. Do it for each behavior independently.
+- **A test whose outcome depends on a `select`, a goroutine finishing or an
+  interleaving proves nothing until a mutation says otherwise.**
+- **Do not let the fixture predetermine the answer.** Assert that the fixture
+  reached the path (the call happened, the state exists, at least one element
+  was measured). Pair a negative assertion with a positive one. A count
+  assertion needs a non-zero count and a check on the content.
+- **Make the fixture disagree with itself along every axis the rule reads**
+  (row counts, parity, value counts). Fixed warm-up counts land on one phase of
+  a cycle; iterate over the phases.
+- **A fixture must be able to express the failing input.** If its type cannot
+  represent a shape production accepts, no test built on it is evidence.
+- **Do not reach the evidence through the code under test.** Do not assert
+  against the constant or accessor the implementation uses; spell the expected
+  value out or read the underlying state.
+- **Name the outcome, not the mechanism**, and never lock a defect in as the
+  expected behavior.
+- **A bound is tested only by a case that would exceed it**, with a ceiling well
+  below the unbounded behavior. Release blocked handlers before closing a test
+  server.
+- **Do not measure process-global counters as before/after deltas.** Give the
+  code under test its own counters.
+- **A mock is a claim about the server.** Ask the URL the product asks, decode
+  into a raw map to tell an absent field from an empty one, and render the page
+  once against a real server.
+- **Flaky tests are evidence.** Reproduce a timing failure with the single test
+  in a loop (`-count=20`), not the suite. Before widening a margin, ask what the
+  failure would mean if it were not a coincidence. A race test must be able to
+  reach the race: raise contention, and park the other party so the violating
+  state persists while you look at it.
+- **A tolerance is a claim.** Say what the number means and keep it below the
+  smallest defect it must catch.
+
+## History (not verified)
+
+Incident narratives that motivated the rules above. Test names, counts, rates
+and dates below were not checked against the tree and may be stale or renamed.
 
 ## Mutate before you believe a test
 

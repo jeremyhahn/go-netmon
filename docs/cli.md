@@ -1,5 +1,8 @@
 # netmon CLI
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> Describes the `netmon` command (`cmd/netmon`, `internal/cli`) as built; `netmon <command> --help` is authoritative.
+
 `netmon` manages and monitors SNMP devices from the command line. It is a client
 of the go-netmon management API — the same HTTP API the web UI calls — so every
 operation available in the GUI is available here, and the two cannot drift apart.
@@ -16,7 +19,7 @@ make install-cli    # installs to /usr/local/bin/netmon
 Point the CLI at a server with `--server`, or set `NETMON_SERVER` once:
 
 ```bash
-export NETMON_SERVER=http://198.51.100.91:8082
+export NETMON_SERVER=http://netmon.example.com:8081
 netmon device list
 ```
 
@@ -26,8 +29,14 @@ Global flags, accepted by every command:
 |------|---------|---------|
 | `--server` | `http://localhost:8081` | Management API URL (env `NETMON_SERVER`) |
 | `--json` | off | Emit JSON instead of tables, for scripting |
-| `--refresh` | `0` | Redraw every N seconds; `0` prints once |
+| `--refresh` | `0` | Redraw every N seconds (fractions such as `0.5` work); `0` prints once |
 | `--timeout` | `1m` | Timeout for a single API request |
+| `-v`, `--version` | | Print the version and exit |
+
+Most commands also have a short alias: `list` is `ls`, `delete` is `rm` or
+`remove`, `add` is `assign` under `device mib`, `device profile` and
+`profile mib`, `monitor` is `watch`, and `mib`, `profile` and `device mib` also
+answer to their plurals.
 
 Anywhere a device, profile or MIB is expected, you may pass either its **name**
 or its **numeric ID**. Names match case-insensitively. A name matching more than
@@ -251,6 +260,16 @@ netmon device test --address 198.51.100.254 --community public
 `device update` changes only the flags you actually pass; every other field
 keeps its stored value.
 
+`device add`, `device update` and `device test` also take the SNMP flags
+`--version` (`1`, `2c` or `3`; default `2c`), `--port` (default 161) and
+`--community` (default `public`), and for SNMPv3 `--username`,
+`--auth-protocol` (`SHA` or `MD5`), `--priv-protocol` (`AES` or `DES`),
+`--auth-password` and `--priv-password`. Prefer the environment variables
+`NETMON_AUTH_PASSWORD` and `NETMON_PRIV_PASSWORD` to the password flags, which
+show up in the process list. `device test` takes `--snmp-timeout` (seconds,
+default 10), and its `--address`, `--community`, `--port`, `--version` and
+`--username` apply to the unconfigured address only.
+
 ### How often a device is polled
 
 `--poll-interval` sets a device's own schedule, in seconds. A device without one
@@ -314,7 +333,8 @@ netmon device profile remove core-01 asr1000-core
 Assigning a MIB is a coarse decision: a module can define hundreds of objects,
 most of which nobody wants. Every assignment therefore carries an **enabled**
 flag and a set of **filters**, and both are edited without detaching the MIB.
-The same four commands exist for devices and for profiles.
+`enable`, `disable` and `filter` exist for devices and for profiles; `cost` and
+`objects` exist for devices only.
 
 ```bash
 netmon device mib enable  core-01 IF-MIB
@@ -476,7 +496,7 @@ netmon profile devices asr1000-core --search 198.51.100.
 ## MIBs
 
 ```bash
-netmon mib list                              # newest 50 of the catalog
+netmon mib list                              # first 50 of the catalog
 netmon mib list --search cisco               # match name, description or tags
 netmon mib list --limit 0                    # the whole catalog
 netmon mib list --available                  # only modules with data flowing
@@ -492,6 +512,18 @@ netmon mib delete OLD-MIB --force
 so one module that stalls costs that module rather than the batch. A file that
 fails to parse is reported and the import continues with the rest; the command
 exits non-zero and prints an `N imported, M updated, K failed` summary.
+
+### Checking a MIB tree
+
+```bash
+netmon mib validate mibs/asr1001/            # imports resolve only from the directories given
+netmon mib validate mibs/* --quiet           # report only EMPTY or FAILED modules
+```
+
+`mib validate` reads the directories locally and does not contact the server.
+Each module is `ok`, `EMPTY` (it parsed but contributed nothing, which means an
+`IMPORTS` clause did not resolve) or `FAILED` (it could not be read). The
+command exits non-zero if any module is `EMPTY` or `FAILED`.
 
 ### Re-importing a module
 
@@ -556,7 +588,7 @@ counts in the footer describe the list you asked for.
 ```bash
 netmon monitor                               # one row per device
 netmon monitor core-01                    # status, then current values
-netmon monitor core-01 --top 40           # show 40 series; 0 shows all
+netmon monitor core-01 --top 40           # show 40 series (default 20); 0 shows all
 netmon monitor core-01 --raw              # keep the stored metric names
 ```
 
@@ -650,6 +682,9 @@ netmon config export --document | jq .               # just the JSON, for review
 netmon config import netmon-config.tar.gz            # show what would change
 netmon config import netmon-config.tar.gz --yes      # actually change it
 ```
+
+`--referenced-mibs` limits the bundle's MIB source files to the modules some
+device or profile assigns.
 
 An export carries everything an operator configures — devices, profiles, MIB
 assignments and every per-assignment filter — together with the MIB source files

@@ -1,5 +1,33 @@
 # Traps in this repository
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> Working rules for this repository. The stamp covers "Rules"; everything under "History (not verified)" is narrative that was not checked.
+
+## Rules
+
+- **Do not run a formatter on `internal/webui/static/js/app.js`.** It is
+  hand-formatted and the repository has no prettier configuration, so a formatter
+  rewrites thousands of lines and buries the real change. Check `git diff --stat`
+  before committing any change to it.
+- **Commit before a destructive operation, not after.** A WIP commit on your own
+  branch is a backup; "I can recover it" is not.
+- **When the tree deliberately holds unfinished work, name paths.** No
+  `git add -A`, no bare `git checkout`, no recursive delete of a path you have
+  not listed. Naming a path bounds the damage but does not prevent it: the blast
+  radius is whatever is dirty under the path.
+- **For mutation testing, copy the file to `/tmp` and restore it with `cp`**,
+  and commit first anyway.
+- **Ask what a mitigation makes impossible** before leaning on it. `pgrep -x`
+  does not stop a different binary with the same name, and the `[g]o-netmon`
+  bracket trick defeats one form of self-match only.
+- **Ask what a count measured.** A figure feels measured and gets used; check
+  what the probe counted, not what the question was.
+
+## History (not verified)
+
+Incidents behind the rules above. Counts, dates and the people involved were not
+checked against the tree.
+
 Three ways to destroy work or reviewability here, each met in one day
 (2026-09-02) and each cheap to avoid once named.
 
