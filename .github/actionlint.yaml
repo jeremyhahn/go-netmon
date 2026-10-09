@@ -10,6 +10,8 @@ self-hosted-runner:
     - code-review
     - codex
 
-# No repository or organization configuration variables are defined, so any
-# `vars.*` reference is a typo.
-config-variables: []
+# Declared repository configuration variables; any other `vars.*` reference is
+# a typo. AUTOMERGE_APPROVERS_ONLY is read by .github/workflows/automerge.yml
+# (automerge v9).
+config-variables:
+  - AUTOMERGE_APPROVERS_ONLY
