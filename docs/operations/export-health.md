@@ -1,13 +1,14 @@
 # Reading the export counters
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 The poller collects samples and writes them to Prometheus by remote write. These
 counters say whether that is working, and when it is not, which of several
 different faults it is. They exist because a single "samples dropped" number
 could not tell a clock problem from a backpressure problem from an endpoint
-refusing what it will always refuse — and go-netmon once discarded roughly a
-million samples an hour for fifteen hours while every signal it published said
-"buffered, failing to flush", which was true and was a different problem
-([#69](../../issues/69)).
+refusing what it will always refuse — and go-netmon once discarded samples for
+hours while every signal it published said "buffered, failing to flush", which
+was true and was a different problem (go-netmon#69).
 
 ## Is anything being lost
 
@@ -83,7 +84,7 @@ batch is a thousand samples.
 ```
 gonetmon_export_buffered_samples        # accepted and not yet delivered
 gonetmon_export_consecutive_failures    # flushes failed in a row
-gonetmon_export_stalled                 # 1 while nothing has flushed for a long time
+gonetmon_export_stalled                 # 1 while samples have arrived but nothing has flushed for 5 flush intervals (at least a minute)
 ```
 
 `buffered_samples` counts everything undelivered: still accumulating towards a
@@ -104,7 +105,10 @@ scripts/measure-export-health.sh edit        # after: drives the edit, judges it
 
 It prints each counter's movement against the expectation stated here and marks
 it MATCH or UNEXPECTED, so the run can come out wrong. It changes nothing on the
-target except the MIB assignment it creates and deletes again.
+target except the MIB assignment it creates and deletes again. It reads
+`METRICS_URL` (default `http://127.0.0.1:9100/metrics`) and drives the web UI at
+`API_URL` (default `http://127.0.0.1:8080`) against `DEVICE_ID` and `MIB_ID`,
+whose defaults (3 and 171) are specific to one fleet, so set them for yours.
 
 **Give it the sha256 of what you deployed**, or it will say the build was not
 verified:

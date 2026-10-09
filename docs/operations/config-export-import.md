@@ -1,5 +1,7 @@
 # Configuration Export and Import
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 Move a go-netmon instance's **logical configuration** — the devices it polls, the
 profiles that bundle MIBs, and every per-assignment rule — between instances, or
 keep a reviewable copy of it.
@@ -64,8 +66,8 @@ Two things, and no more:
 
 `config.json` records each module's file and its SHA-256, so the manifest and the
 payload are one document: the import knows what should be there, and detects a
-file that has been damaged or swapped before it changes anything. That follows
-`scripts/backup.sh`, whose `manifest.json` records a checksum per member.
+file that has been damaged or swapped before it changes anything. `netmon-backup`'s
+`manifest.json` likewise records a checksum per member.
 
 ### Why the source files and not the parsed catalog
 
@@ -78,13 +80,13 @@ later parser fix.
 
 ### Size
 
-On the reference deployment, 170 modules is roughly 3 MB gzipped. That is fine to
-carry, and it is the default.
+By default the bundle carries every MIB source in the catalog. MIB sources are
+text and compress well, so this is normally fine to carry.
 
 `--referenced-mibs` (API: `?mibs=referenced`) narrows the bundle to only the
-modules some device or profile actually assigns. On a fleet where 4 devices use
-17 modules out of a 170-module catalog, that is an order of magnitude smaller —
-at the cost of not reproducing the browsable catalog on the target.
+modules some device or profile actually assigns. On a fleet that assigns a small
+part of a large catalog, that is much smaller — at the cost of not reproducing
+the browsable catalog on the target.
 
 The server refuses an upload over **64 MB compressed**, an archive that unpacks
 to more than **256 MB**, more than **8192 files**, or any single file over
@@ -187,8 +189,8 @@ refreshed.
 ### Dry run is the default
 
 Nothing changes without `--yes` (CLI) or `?apply=true` (API). The precedents in
-this repository are `netmon mib delete --force` and `scripts/restore.sh --yes`;
-the CLI follows `restore.sh`, which is the closest analogue, and the API follows
+this repository are `netmon mib delete --force` and the `--apply` flag of
+`netmon-backup restore`; the CLI follows the same dry-run-by-default idea, and the API follows
 `POST /api/mibs/import?replace=true`.
 
 A dry run computes the diff against the configuration **actually stored**, not
@@ -246,8 +248,8 @@ An apply runs in this order, and the order is the whole safety argument:
    and every module the configuration references. Nothing has been written, so a
    document that is going to be rejected costs nothing.
 2. **Save the current configuration** to a file (see below). If that fails the
-   import stops — the same rule `scripts/restore.sh` applies when its safety
-   backup fails.
+   import stops — the same rule `netmon-backup restore` applies when its
+   safety backup fails.
 3. **Import the MIB source files**, before any assignment refers to them. This is
    additive: it creates modules the instance lacks and refreshes ones it has, and
    deletes nothing.
@@ -307,7 +309,7 @@ bundle:
 <directory of the web UI record store>/config-backups/pre-import-<UTC timestamp>.tar.gz
 ```
 
-On the reference deployment that is:
+Under the shipped `docker-compose.yml` (`-db=/app/data/webui/webui.db`) that is:
 
 ```
 /app/data/webui/config-backups/pre-import-20260810T154420Z.tar.gz
@@ -326,7 +328,7 @@ netmon config import /app/data/webui/config-backups/pre-import-20260810T154420Z.
 
 It is a full bundle rather than a note because recovery should be one command
 against one file, with nothing else needing to be present. The naming follows
-`scripts/restore.sh`, whose safety backup is `pre-restore-<timestamp>`.
+`netmon-backup restore`, whose safety backup is `pre-restore-<timestamp>`.
 
 These accumulate. Pruning them is an operator concern, exactly as it is for
 `backups/`.
@@ -625,7 +627,7 @@ netmon --server http://new:8080 config import netmon-config.tar.gz --yes
 netmon --server http://new:8080 config import netmon-config.tar.gz
 ```
 
-The MIB modules are imported by step 5, before any assignment refers to them. You
+The MIB modules are imported during the apply, before any assignment refers to them. You
 do **not** import MIBs first by hand.
 
 The last step is the check that matters: re-importing the same file must report
@@ -651,7 +653,7 @@ They solve different problems and neither replaces the other.
 |---|---|---|
 | **What** | Logical configuration + MIB sources | Whole Docker volumes, byte for byte |
 | **Includes metric history** | No | Yes |
-| **Downtime** | None | The stack is stopped for the copy (11.8 s for 350 MB on the reference deployment) |
+| **Downtime** | None | The stack is stopped for the copy (a cold backup) |
 | **Can run while the web UI is up** | Yes — it *is* the web UI | No, it stops the web UI too |
 | **Readable / diffable** | Yes | No, opaque tarballs |
 | **Survives a storage-format change** | Yes, it is re-imported through the API | No, it is the on-disk format |
@@ -662,10 +664,10 @@ Use the logical path to move configuration between instances, to review what
 changed, and to recover from a bad configuration edit. Use the physical path for
 disaster recovery of a whole deployment including metrics.
 
-They compose: `scripts/backup.sh` already writes a REST logical export into
+They compose: `netmon-backup backup` already writes a REST logical export into
 `logical/` on every physical backup as a review artifact — see
-[Backup and Restore](backup-restore.md). `restore.sh` never applies it; that is
-what `netmon config import` is for.
+[Backup and Restore](backup-restore.md). `netmon-backup restore` never applies
+it; that is what `netmon config import` is for.
 
 The safety export an apply takes lands inside the `webui-data` volume, so it is
 itself captured by the next `make backup`.

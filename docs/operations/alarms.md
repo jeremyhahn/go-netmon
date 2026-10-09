@@ -1,5 +1,7 @@
 # Alarms
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 The bell in the top-right of the web UI shows what is wrong right now.
 
 Before it existed, everything the UI said about a fault was a toast: shown once,
@@ -46,12 +48,13 @@ fix. Each firing instance carries the series' labels, so the bell can say which
 one it is, and each keeps its own `since`.
 
 That is also the trap. An expression that matches broadly fills the bell:
-measured on this fleet, `snmp_ifOperStatus == 2 and on(device,ifindex)
-snmp_ifAdminStatus == 1` fires 135 times, nearly all of them unused ports on an
-access switch. Narrow the expression to the devices or the interfaces you care
-about rather than raising a threshold. The rule that ships adds
-`and on(device,ifindex) snmp_ifalias_info{value!=""}` — an interface somebody
-bothered to label is an interface somebody cares about — which brings it to 36.
+`snmp_ifOperStatus == 2 and on(device,ifindex) snmp_ifAdminStatus == 1` matches
+every unused port on an access switch. Narrow the expression to the devices or
+the interfaces you care about rather than raising a threshold. The rule that
+ships adds `and on(device,ifindex) snmp_ifalias_info{value!=""}` — an interface
+somebody bothered to label is an interface somebody cares about. Even so, the
+comment on that rule in `deploy/config.yaml` records 36 matches on the fleet it
+was written against.
 
 Because a rule is ordinary PromQL, it can be tried in Prometheus's own console
 before it is written down.
@@ -78,9 +81,11 @@ alarms[4].severity: must be one of: critical, warning, info
 A reload that emptied the bell because of a typo would be a monitoring outage
 caused by the act of configuring monitoring.
 
-Note that a reload restarts the `for` window for any rule whose alarms were not
-firing across the swap, the same way Prometheus does. An alarm with `for: 10m`
-is therefore not shown for ten minutes after the rule is (re)loaded.
+A reload does not restart the `for` window of an alarm that is still being
+sighted: the evaluator remembers when each alarm (rule name plus series labels)
+was first seen, and a reload keeps that. A renamed or newly added rule starts
+its `for` window from the reload, so an alarm with `for: 10m` is not shown for
+ten minutes after that rule first appears.
 
 ## What the bell says when it does not know
 
@@ -131,10 +136,12 @@ GET /api/alarms
     }
   ],
   "count": 1,
-  "configured": 6,
-  "unevaluated": 0
+  "configured": 6
 }
 ```
+
+`unevaluated` is the number of rules that could not be asked on the last round;
+it is omitted from the response when it is zero.
 
 `since` is when the alarm was first raised, not when it was last seen: an alarm
 that stays up keeps it, and one that cleared and recurred gets a new one, so a

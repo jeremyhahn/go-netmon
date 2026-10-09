@@ -1,5 +1,7 @@
 # Backup and Restore
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 Tooling to back up a deployed go-netmon stack, redeploy it from scratch, and
 restore the data exactly as it was.
 
@@ -13,10 +15,13 @@ make restore FROM=backups/netmon-... YES=1 ALLOW_TREE_OVERWRITE=1
 make restore-help                             # explain the restore flags
 ```
 
-> **`./mibs` is covered, and restoring it needs a second flag.** The MIB source
-> tree is a bind mount from this working copy, not a Docker volume, so restoring
-> it writes into your checkout. `ALLOW_TREE_OVERWRITE=1` is required whenever
-> that directory already holds files. See
+> **A bind-mounted MIB tree is covered, and restoring it needs a second flag.**
+> The `mibs` component is a host directory bind-mounted at `/app/mibs`, not a
+> Docker volume, so restoring it writes into your checkout.
+> `ALLOW_TREE_OVERWRITE=1` is required whenever that directory already holds
+> files. **The shipped `docker-compose.yml` does not bind-mount one** (only
+> `docker-compose.prod.yml` mounts `./mibs:/app/mibs`), so against it a backup
+> must be told `--skip mibs` or `--mib-tree DIR`. See
 > [The MIB source tree](#the-mib-source-tree).
 
 The tool is `netmon-backup`, built by `make build-backup` into
@@ -34,7 +39,10 @@ may well have taken out the build environment too.
 > comparisons against a list of directories it hoped never to be pointed at; its
 > test harness translated a container's `find /dst -mindepth 1 -delete` into a
 > delete on the host, where a wrong path was a delete aimed at the operator's
-> filesystem. That class of mistake is now unrepresentable, and a test
+> filesystem. (`scripts/backup.sh` and `scripts/restore.sh` are still in the
+> tree and still have their own tests, but no Makefile target calls them; the
+> targets above run `netmon-backup`.) That class of mistake is now
+> unrepresentable in the binary, and a test
 > (`TestNothingBypassesTheContainment`) fails the build if any code in the tool
 > reaches the filesystem another way or hands a command line to a shell.
 
@@ -42,8 +50,7 @@ may well have taken out the build environment too.
 
 **Backups are cold.** `netmon-backup backup` stops every service in the compose project,
 copies the volumes at rest, then starts exactly the services that were running.
-Downtime is the length of the copy — measured at **11.8 s** for 350 MB of
-volumes on the reference deployment.
+Downtime is the length of the copy, so it grows with the size of the volumes.
 
 There is no hot mode. Both storage engines in this stack are unsafe to copy
 while running, and neither offers a usable online snapshot:
@@ -76,7 +83,7 @@ A logical REST export is included alongside as a portable, reviewable artifact.
 | Component | Where it lives | Contents |
 |---|---|---|
 | `config` | bind-mounted files | `config.yaml`, `prometheus.yml` |
-| `mibs` | **host directory** (`./mibs`) | MIB source tree bind-mounted read-only at `/app/mibs` in the poller and web UI |
+| `mibs` | **host directory** (read from the compose bind mount at `/app/mibs`) | MIB source tree bind-mounted into the services; not present in the shipped `docker-compose.yml` |
 | `webui` | `<project>_webui-data` | devices, profiles, MIB assignments, poll intervals, MIB catalog |
 | `poller` | `<project>_go-netmon-data` | poller MIB metadata store, uploaded MIB files |
 | `metrics` | `<project>_prometheus-data` | all metric history |
@@ -84,19 +91,24 @@ A logical REST export is included alongside as a portable, reviewable artifact.
 
 ### The MIB source tree
 
-`./mibs` is 22 MB across 212 files, bind-mounted read-only into both the poller
-and the web UI. It lives in **no Docker volume**, so before this it was in no
-archive either — and that made the backup half a backup:
+Where a deployment bind-mounts a host MIB directory at `/app/mibs` (for example
+`./mibs:/app/mibs` in `docker-compose.prod.yml`), that directory lives in **no
+Docker volume**, so a volume-only backup would not carry it:
 
-* It is the source most of the 170 imported modules were parsed from. The
-  archive carries the *parsed catalogs* (`mib.db`, `mib-storage/`) and the files
-  under `uploaded/` on the poller volume, but those are derived artifacts. A
-  restore that brings back a catalog whose sources are gone resolves fine until
+* It is the source the imported modules were parsed from. The archive carries
+  the *parsed catalogs* (`mib.db`, `mib-storage/`) and the files under
+  `uploaded/` on the poller volume, but those are derived artifacts. A restore
+  that brings back a catalog whose sources are gone resolves fine until
   something triggers a re-parse or a re-import, and then cannot.
-* **This repository has no version control.** These files exist in exactly one
-  place on disk. A lost or clobbered working tree loses them permanently, and
-  `standard/INET-ADDRESS-MIB.txt` was added by hand — it is recoverable from
-  nowhere else.
+* Files that were added to the tree by hand and never committed are recoverable
+  from nowhere else, so the backup carries the directory itself.
+
+The shipped `docker-compose.yml` mounts no host MIB directory: the web UI and
+poller share MIB storage through the `go-netmon-data` volume instead. Against
+that file there is no tree to find, the backup stops with an error naming
+`--skip mibs` and `--mib-tree DIR`, and the rest of this section applies only
+once one of them is given or a compose file with the mount is used
+(`NETMON_COMPOSE_FILE`).
 
 #### Why its own component, not part of `config`
 
@@ -136,7 +148,8 @@ deployment whose MIB sources were never put back, which is the same half-restore
 in a different disguise.
 
 The plan always shows the destination, that it is a host directory, how many
-files are there now, and whether the gate is satisfied:
+files are there now, and whether the gate is satisfied (illustrative output;
+the paths and counts are from one deployment):
 
 ```
     tree    /home/user/sources/go-netmon/mibs
@@ -181,7 +194,7 @@ tooling:
 A volume tarball is exact, includes metric history, and restores byte-for-byte —
 but it is opaque and tied to the on-disk format of the version that wrote it. A
 logical export through the REST API is portable, diffable and survives a schema
-change — but it cannot carry a 250 MB TSDB.
+change — but it cannot carry the TSDB's metric history.
 
 Since "metrics" is a stated requirement, **physical is the default and is what
 `netmon-backup restore` applies**. The logical export is written to `logical/` on every
@@ -258,7 +271,7 @@ infer which is which from a filename.
 A directory rather than one monolithic archive, because:
 
 * **Selective restore stays cheap.** Restoring only metrics is a file read, not
-  a scan through a 150 MB stream to find one member.
+  a scan through one large stream to find one member.
 * **Damage is localised.** Per-member checksums say *which* component is bad.
 * It rsyncs and dedupes offsite; a single recompressed blob does neither.
 
@@ -414,21 +427,17 @@ is that the **oldest retained sample did not move forward**. That is the signal
 that matters, because a stack whose TSDB came back empty looks perfectly healthy
 and starts scraping immediately.
 
-### Expected timings
+### After the restore
 
-On the reference deployment (350 MB of volumes, 170 MIB modules, 4 devices):
+Backup downtime and restore time scale with the size of the volumes. The web UI
+is not ready until it has loaded its MIB catalog, which is slow on a cold
+catalog (see [restart-and-startup.md](restart-and-startup.md)).
 
-| Step | Duration |
-|---|---|
-| `make backup` (downtime) | ~12 s (the MIB tree adds ~0.2 s: 22 MB in, 2.3 MB out) |
-| `make restore` including safety backup | ~10 s |
-| Web UI ready after restore | ~60 s (cold MIB catalog load) |
-
-> The web UI's healthcheck uses `start_period: 5s` with a 30 s interval and 3
-> retries, so a cold start that takes ~60 s to load a full MIB catalog will
-> report `unhealthy` for a minute or so before recovering on its own. This is a
-> healthcheck tuning issue in the image, not a restore failure — the API serves
-> correctly throughout. Wait for `healthy` rather than acting on it.
+> The web UI image's healthcheck (`Dockerfile.webui`) uses `--start-period=5s`
+> with a 30 s interval and 3 retries, so a cold start that takes longer than
+> that to load a full MIB catalog will report `unhealthy` until it finishes
+> and recovers on its own. This is a healthcheck tuning issue in the image, not
+> a restore failure. Wait for `healthy` rather than acting on it.
 
 ## Restoring onto a fresh host
 
@@ -455,7 +464,7 @@ If the backup came from a differently named project, either set
 ```bash
 make test              # unit: the tool against a fake runtime, no daemon
 make integration-test  # the same operations against a real Docker daemon
-make test-scripts      # 52 tests, no Docker daemon, no live stack
+make test-scripts      # shell-script tests, no Docker daemon, no live stack
 make lint-scripts      # shellcheck, including test/integration/run-tests.sh
 ```
 
@@ -500,7 +509,9 @@ That distinction is deliberate. A skipped test that announces itself is honest;
 a suite that goes red because an optional capability is unavailable trains
 people to ignore it.
 
-`scripts/tests/run-tests.sh` runs everything against a stub Docker CLI
+`scripts/tests/run-tests.sh` (`make test-scripts`) tests the legacy shell scripts
+`scripts/backup.sh` and `scripts/restore.sh`, and the checks below describe that
+suite. It runs everything against a stub Docker CLI
 (`scripts/tests/fake-docker`) and a throwaway repository tree under `$TMPDIR`.
 Tooling that destroys data has to be testable without risking data, so the
 tests never contact a Docker daemon or read the real repository. They cover the
@@ -530,8 +541,10 @@ permissions is a test of who you are running as, not of the guard.
 | `NETMON_PROJECT` | `go-netmon` | Compose project to operate on |
 | `NETMON_COMPOSE_FILE` | `<repo>/docker-compose.yml` | Compose file defining the stack |
 | `NETMON_HELPER_IMAGE` | `alpine:3.19` | Image used to stream volume contents |
-| `NETMON_WEBUI_URL` | `http://localhost:8082` | Web UI, for the logical export and verification |
-| `NETMON_PROM_URL` | `http://localhost:9091` | Prometheus, for verification |
+| `NETMON_REPO_ROOT` | current directory | Repository root holding `config.yaml` and `docker-compose.yml` |
+| `NETMON_WEBUI_URL` | `http://localhost:8082` | Web UI, for the logical export (and for `scripts/verify-stack.sh`) |
+| `NETMON_PROM_URL` | `http://localhost:9091` | Prometheus; read by `scripts/verify-stack.sh` only, not by `netmon-backup` |
+| `NETMON_HISTORY_LOOKBACK_DAYS` | `30` | `scripts/verify-stack.sh`: window used to find the oldest retained sample |
 | `NETMON_MIB_TREE` | *(read from the compose bind mount)* | Host directory holding the MIB source tree |
 | `NETMON_MIB_MOUNT_TARGET` | `/app/mibs` | Container path the MIB tree is mounted at, used to find its host path |
 | `DOCKER` | `docker` | Docker CLI (the test suite substitutes a stub) |

@@ -1,9 +1,12 @@
 # Restarting the web UI is a dashboard outage
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 `go-netmon-webui` parses its MIB catalog before it binds `:8080`. Nothing
 answers until that finishes, so **every restart takes the dashboard down for as
 long as the parse takes** — on monitor-01, with 176 modules imported, that has been
-measured at **203 seconds**.
+recorded in `deploy/go-netmon-webui.service` as **203 seconds**. The unit allows
+a start up to 900 seconds (`TimeoutStartSec`).
 
 That is worth knowing before an incident rather than during one, because the
 moment somebody needs the dashboard is exactly the moment they are most likely
@@ -47,8 +50,9 @@ Listening on :8080 — the web UI is ready to serve (startup took 3m23.108s, dur
 **Do not judge a deploy on `systemctl is-active` alone with the old unit, and do
 not restart a service that is `activating`.** Before the unit became
 `Type=notify` it reported `active` from the moment the process forked, and a
-deploy of a good binary was read as hung and rolled back on that signal — twice
-the outage, and a month-old build restored to a production dashboard.
+deploy of a good binary was read as hung and rolled back on that signal
+(2026-09-06, per the comment in `deploy/go-netmon-webui.service`), doubling the
+outage.
 `scripts/deploy.sh` now waits for the port to answer rather than for the unit to
 say it is up.
 
@@ -62,8 +66,8 @@ until curl -fsS -o /dev/null http://127.0.0.1:8080/; do sleep 5; done
 
 The parsed catalog lives in Pebble under `/var/lib/go-netmon/webui/mib.db` and
 survives the process. A restart reparses only the modules whose files have
-changed since they were parsed, so a warm start costs about the time it takes to
-open the store. Measured on a 153-module catalog: **cold 16.9s, warm 1.2s**.
+changed since they were parsed, so a warm start costs far less than a cold one: roughly the time it takes to
+open the store plus a file-time check per module.
 
 A start that pays the full cost again means one of:
 

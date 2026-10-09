@@ -1,5 +1,7 @@
 # How to View All Interfaces in Grafana Dashboards
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 ## Current Dashboard Behavior
 
 Each timeseries panel in the IF-MIB dashboard shows **ALL** interfaces as separate lines on a single graph.
@@ -15,17 +17,18 @@ When you open the IF-MIB dashboard:
    - Each line is a different color
    - Hover over a line to see its value
 
-3. **Legend shows interface OIDs** at the bottom of each panel:
+3. **Legend shows the device, interface name and index** at the bottom of each
+   panel (`{{device}} - {{ifname}} [{{ifindex}}]`):
    ```
-   core-01 - .1.3.6.1.2.1.2.2.1.10.1
-   core-01 - .1.3.6.1.2.1.2.2.1.10.2
-   core-01 - .1.3.6.1.2.1.2.2.1.10.3
+   core-01 - Gi0/0 [10]
+   core-01 - Gi0/1 [11]
    ... (24 total)
    ```
+   `ifname` is empty when the device reports none, leaving only the index.
 
-4. **The last number in the OID is the interface index**:
-   - `.1.3.6.1.2.1.2.2.1.10.1` → Interface index 1
-   - `.1.3.6.1.2.1.2.2.1.10.26` → Interface index 26
+4. **The `ifindex` label is the interface index.** Each sample also carries an
+   `oid` label with the full instance OID, whose last number is the same index
+   (`.1.3.6.1.2.1.2.2.1.10.10` → interface index 10).
 
 ## Troubleshooting: "I Only See One Interface"
 
@@ -38,7 +41,7 @@ If you're only seeing one line on the graphs:
 
 ### Check 2: Device Variable
 - Check the `device` dropdown at the top
-- Make sure you've selected a device (not "All")
+- The `device` variable is multi-select and includes "All"; make sure the device you expect is selected
 - Try selecting "core-01" specifically
 
 ### Check 3: Legend Visibility
@@ -57,29 +60,12 @@ where the device reports one.
 
 ### Mapping Index to Interface Name
 
-To find which index corresponds to which interface, you need to:
-
-1. Log into your router's management interface
-2. Check the SNMP interface table
-3. Match index numbers to interface names
-
-OR use this PromQL query in Grafana Explore:
-```promql
-snmp_ifDescr{device="core-01"}
-```
-
 Every interface series already carries `ifindex` and, where the device reports
-it, `ifname`.
-
-## Future Improvement: Add Interface Names
-
-To make interfaces easier to identify, we can:
-
-1. **Add interface descriptions as labels** when exporting metrics
-2. **Use label_replace() in PromQL** to extract index numbers
-3. **Create a mapping table** in Grafana
-
-Would you like me to implement any of these improvements?
+it, `ifname`, so the legend shows both. To list the mapping for a device, run
+this PromQL query in Grafana Explore:
+```promql
+count by (ifindex, ifname) (snmp_ifInOctets{device="core-01"})
+```
 
 ## Viewing Specific Interfaces
 

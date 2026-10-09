@@ -1,16 +1,18 @@
 # Security Posture
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 What this deployment does and does not defend against, so neither has to be
 rediscovered by reading the code.
 
 ## The API is unauthenticated, deliberately
 
-**Every endpoint the web UI serves on port 8082 is open to anyone who can reach
-the port, and `GET /api/devices` returns each device's SNMP community string in
-clear text.**
+**Every endpoint the web UI serves is open to anyone who can reach the port
+(8080 on a native install, published as 8082 by `docker-compose.yml`), and
+`GET /api/devices` returns each device's SNMP community string in clear text.**
 
 ```
-$ curl -s http://<host>:8082/api/devices | head -c 120
+$ curl -s http://<host>:8080/api/devices | head -c 120
 {"devices":[{"id":4,"name":"bastion","address":"198.51.100.14","snmp_version":"2c","community":"public",...
 ```
 
@@ -45,10 +47,11 @@ authentication properly.
 
 Either of these is a supported way to run it:
 
-* **Private ports.** Bind 8082, 9080 and 9100 to an interface only trusted
+* **Private ports.** Bind the web UI port (8080, or 8082 under compose), 9080 and 9100 to an interface only trusted
   clients can reach — a management VLAN, a WireGuard interface, or `127.0.0.1`
-  with an SSH tunnel for occasional access. This is what the deployment here
-  does.
+  with an SSH tunnel for occasional access. The shipped `deploy/config.yaml`
+  binds 9080 and 9100 on all interfaces (`:9080`, `:9100`), so this needs a
+  firewall or an edited `listen_address`; it is not the default.
 * **An authenticating reverse proxy.** Terminate TLS and authenticate at nginx,
   Caddy, Authelia, oauth2-proxy or equivalent, and let only that proxy reach the
   service ports. The API is stateless and has no session of its own, so a proxy
@@ -70,10 +73,10 @@ handling.
 
 Until then the network is the boundary, as above.
 
-If that changes before the platform integration lands,
-`internal/webui/api/server.go` already routes through a middleware chain
-(`noCacheMiddleware`), so a check has a natural place to go. Options considered,
-for whoever picks this up:
+If that changes before the platform integration lands, the API router in
+`internal/webui/api/server.go` is where a check would go. It has no middleware
+today: `noCacheMiddleware` wraps only the static asset handler. Options
+considered, for whoever picks this up:
 
 | Approach | Cost | Notes |
 |---|---|---|
@@ -102,7 +105,8 @@ tests that fail if they stop holding.
   restore anything in a project holding a container its own compose file did not
   create, and refuses volumes not labelled for the project.
 * **Dependency vulnerabilities.** `make security` runs `govulncheck` over the
-  dependencies and the linked standard library, and it is a required CI job.
+  dependencies and the linked standard library, and it runs as a job in
+`.github/workflows/ci.yml`.
 
 ## Reporting
 

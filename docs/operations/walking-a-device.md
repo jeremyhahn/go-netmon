@@ -1,5 +1,7 @@
 # Walking a device
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 `netmon device walk` asks a device what it actually exposes. It is the answer to
 two questions that come up constantly and that nothing else answers:
 
@@ -18,6 +20,9 @@ have to agree; re-entering them to troubleshoot is how they drift apart.
 netmon device walk <device> [oid]
 ```
 
+`snmpwalk` is an alias for `walk`. Giving the OID both ways with different values
+is an error.
+
 ```
 $ netmon device walk bastion 1.3.6.1.4.1.21317.1.3.1.13.1.9
 OID                                    NAME         MODULE         TYPE         VALUE
@@ -33,7 +38,7 @@ OID                                    NAME         MODULE         TYPE         
 |---|---|
 | `--oid` | the subtree, as an alternative to the positional argument |
 | `--limit` | stop after this many objects (default 500, maximum 20000) |
-| `--named` | show only objects an imported MIB describes |
+| `--named` | show only objects an imported MIB describes (the object count still reports everything the device answered, with `(N shown)` beside it) |
 | `--json` | the whole result as JSON |
 
 The OID defaults to `1.3.6.1` — everything the device exposes, standard and
@@ -96,7 +101,10 @@ where a box is walked before it is onboarded. Both answer the same body.
 
 A silent device answers `504`, a refused request `400`, and any other failure
 `502` — the same classification `/api/snmp/test` uses, so a client tells "fix
-your request" from "that box is down" without reading prose.
+your request" from "that box is down" without reading prose. The `GET` form
+answers `404` for an unregistered device id. `limit` above 20000 is clamped to
+20000 rather than refused; the `POST` form also accepts `limit`, plus the
+credential fields `/api/snmp/test` takes.
 
 ## Related
 

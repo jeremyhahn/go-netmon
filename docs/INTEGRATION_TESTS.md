@@ -1,391 +1,121 @@
-# Integration Tests - Complete Setup
+# Integration Tests
 
-## Overview
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
 
-A complete Docker-based integration test environment that validates the entire go-netmon pipeline end-to-end.
+How the Docker-based integration suite is laid out and run. Everything here was
+checked against `docker-compose.test.yml`, `test/integration/*.sh`, the
+`Makefile` and the test files. The commands themselves need a Docker daemon and
+were not executed for this verification.
 
-## What Was Built
+## Services
 
-### 1. Docker Compose Test Environment
+`docker-compose.test.yml` (repository root) defines:
 
-**File:** `docker-compose.test.yml`
+| Service            | Purpose |
+| ------------------ | ------- |
+| `prometheus`       | Receives metrics on the remote-write receiver (built from `test/integration/Dockerfile.prometheus`) |
+| `snmp-simulator`   | Mock SNMP agent serving `public.snmprec` (built from `test/integration/Dockerfile.snmpsim`) |
+| `dind`             | A privileged `docker:27-dind` sibling daemon, behind the `dind` profile, for the backup tests |
+| `integration-test` | The test runner (built from `test/integration/Dockerfile.test`); waits for the first two to be healthy |
 
-Three-service architecture:
-- **Prometheus** - Receives metrics via remote write API
-- **SNMP Simulator** - Mock Cisco router with SNMP v2c
-- **Integration Test Runner** - Executes tests in isolated environment
+Prometheus and the simulator publish **ephemeral** host ports, so two stacks do
+not collide. The tests reach them by service name on `test-network`
+(`PROMETHEUS_URL=http://prometheus:9090`, `SNMP_HOST=snmp-simulator`,
+`SNMP_PORT=161`). Find a published port with
+`docker compose -p <project> port prometheus 9090`.
 
-### 2. Integration Tests
+## Which packages run
 
-**File:** `test/integration/integration_test.go`
+The runner does not run a fixed directory. It runs every package holding a file
+behind `//go:build integration`, discovered by
+`test/integration/tagged-packages.sh` (it prints one `./dir/...` pattern per
+line). Empty output is an error: `run-tests.sh` refuses to report a green run
+for a suite that does not exist. Adding a tagged test file to a new package is
+enough to have it run. `make vet-tags` vets the tree under every tag the
+repository defines, and `make test-integration-harness` tests the harness's
+compose namespacing and teardown against a stub docker (no daemon).
 
-Three comprehensive tests:
-- `TestEndToEndIntegration` - Full pipeline validation
-- `TestSNMPConnectivity` - SNMP device connectivity
-- `TestPrometheusConnectivity` - Prometheus endpoint validation
-
-### 2a. Which packages the suite runs
-
-The runner does **not** run a fixed directory. It runs every package holding a
-file behind `//go:build integration`, discovered by
-`test/integration/tagged-packages.sh`:
-
-```
-./internal/mib/parser/...
-./test/integration/...
-```
-
-The scope used to be the literal `./test/integration/...`, which does not match
-`./internal/...`. `internal/mib/parser`'s two tagged files were therefore never
-compiled and never executed by any target or CI job, and one of them had not
-compiled since the day it was written — invisible because `go build`, `go vet`
-and `go test` are all scoped to the tag set they are given (#30). `make
-vet-tags` now compiles the tree under every tag the repository defines, and
-`make test-integration-harness` asserts that the runner's scope covers every
-tagged package.
-
-Adding a tagged test file to a new package is therefore enough to have it run.
-
-### 3. Test Infrastructure
-
-**Files Created:**
-- `test/integration/Dockerfile.test` - Test runner container
-- `test/integration/prometheus.yml` - Prometheus configuration
-- `test/integration/snmp-data/public.snmprec` - Mock SNMP device data
-- `test/integration/README.md` - Complete documentation
-
-### 4. Makefile Integration
-
-**New Targets:**
-```makefile
-make test-integration    # Run full integration test suite
-make integration-up      # Start test services manually
-make integration-down    # Stop and clean up services
-make integration-logs    # View service logs
-make integration-shell   # Debug in test environment
-```
-
-## Test Pipeline
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  Integration Test Flow                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  1. Start Docker Services                                   │
-│     ├─ Prometheus (port 9090)                              │
-│     └─ SNMP Simulator (port 1161)                          │
-│                                                             │
-│  2. Wait for Health Checks                                  │
-│     ├─ Prometheus: GET /-/healthy                          │
-│     └─ SNMP: snmpwalk validation                           │
-│                                                             │
-│  3. Initialize go-netmon                                    │
-│     ├─ Load MIB files (SNMPv2-MIB, IF-MIB)                │
-│     ├─ Load 8 built-in profiles                           │
-│     └─ Create Prometheus exporter                          │
-│                                                             │
-│  4. Start Polling                                           │
-│     ├─ Connect to SNMP simulator                           │
-│     ├─ Poll OIDs based on default profile                  │
-│     └─ Collect ~50+ metrics per poll                       │
-│                                                             │
-│  5. Export Metrics                                          │
-│     ├─ Convert SNMP results to Prometheus samples          │
-│     ├─ Batch samples (100 per batch)                       │
-│     ├─ Compress with Snappy                                │
-│     └─ POST to Prometheus remote write                     │
-│                                                             │
-│  6. Verify Results                                          │
-│     ├─ Check poll results received (min 2 cycles)          │
-│     ├─ Verify metrics in poll results                      │
-│     └─ Query Prometheus for exported metrics               │
-│                                                             │
-│  7. Cleanup                                                 │
-│     ├─ Stop poller gracefully                              │
-│     ├─ Close exporters and connections                     │
-│     └─ Remove containers and volumes                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Test Validation
-
-### What Gets Validated
-
-**SNMP Polling:**
-- ✅ Connection to SNMP device
-- ✅ SNMPv2c authentication
-- ✅ OID retrieval (system and interface groups)
-- ✅ Multiple poll cycles
-- ✅ Error handling
-
-**MIB System:**
-- ✅ MIB file loading from disk
-- ✅ Profile loading (8 built-in profiles)
-- ✅ OID selection based on profile
-- ✅ Storage initialization (PebbleDB)
-
-**Metrics Export:**
-- ✅ Sample conversion from SNMP results
-- ✅ Metric name sanitization
-- ✅ Label assignment (device, tags)
-- ✅ Batching behavior
-- ✅ Snappy compression
-- ✅ HTTP POST to Prometheus
-
-**Prometheus Integration:**
-- ✅ Remote write endpoint
-- ✅ Protobuf serialization
-- ✅ Metrics persistence
-- ✅ Query API responses
-
-## Usage Examples
-
-### Run Integration Tests
+## Running
 
 ```bash
-# Full test suite with automatic cleanup
-make test-integration
-
-# Expected output:
-# Starting integration test services...
-# Creating network...
-# Creating prometheus...
-# Creating snmp-simulator...
-# Running integration tests...
-# === RUN   TestEndToEndIntegration
-# --- PASS: TestEndToEndIntegration (20.3s)
-# === RUN   TestSNMPConnectivity
-# --- PASS: TestSNMPConnectivity (0.5s)
-# === RUN   TestPrometheusConnectivity
-# --- PASS: TestPrometheusConnectivity (0.1s)
-# PASS
-# Cleaning up...
+make test-integration          # alias: make integration-test
 ```
 
-### Manual Testing
+This runs `test/integration/run-tests.sh`, which:
+
+1. refuses an unsafe compose project (`compose-guard.sh`: never empty, never the
+   directory default, which is a deployed stack's project, and never the manual
+   stack below);
+2. starts `prometheus` and `snmp-simulator` under a per-run project name with
+   `up -d --build --wait`;
+3. tries to start `dind`; if the runner cannot start a privileged container it
+   prints a WARNING and the backup tests skip rather than fail;
+4. runs `go test -v -tags=integration <discovered packages>` in the
+   `integration-test` container, rebuilt on every run so the baked-in source is
+   current;
+5. tears everything down on exit, interrupt or termination
+   (`down -v --remove-orphans`, including the `dind` profile).
+
+The script takes an optional `-run` regex as its first argument; `make` does not
+pass one through, so use it directly:
 
 ```bash
-# Start services in background
-make integration-up
-
-# Access Prometheus UI
-open http://localhost:9090
-
-# Query metrics
-curl 'http://localhost:9090/api/v1/query?query={device="test-router"}'
-
-# Test SNMP directly
-snmpwalk -v2c -c public localhost:1161 system
-
-# Run specific test
-go test -v -tags=integration -run TestEndToEnd ./test/integration/
-
-# Stop services
-make integration-down
+test/integration/run-tests.sh TestEndToEnd
 ```
 
-### Debugging
+Narrower targets: `make integration-test-ordering` (the #69 ordering
+reproduction, via `test/integration/Makefile`), and
+`make integration-test-parser`, `integration-test-parser-cisco-bgp`,
+`integration-test-parser-critical` (MIB parser tests against real MIB files).
+
+## Manual stack
 
 ```bash
-# View live logs
-make integration-logs
-
-# Access test shell
-make integration-shell
-
-# Inside shell:
-$ go test -v -tags=integration $(test/integration/tagged-packages.sh)
-$ snmpwalk -v2c -c public snmp-simulator system
-$ curl http://prometheus:9090/-/healthy
+make integration-up      # prometheus + snmp-simulator, waits for healthy
+make integration-logs    # follow logs
+make integration-shell   # sh in the integration-test container
+make integration-down    # down -v --remove-orphans
 ```
 
-## Mock SNMP Device
+These call `test/integration/stack.sh up|down|logs|shell`. They use one fixed
+project name (not the directory default) so that `up` and `down` can name the
+same stack across separate invocations. Two people on one host share it.
+`integration-up` prints the ephemeral ports. Inside `integration-shell`:
 
-The simulator provides realistic Cisco IOS data:
-
-```
-sysDescr:      Cisco IOS Software, C2900...
-sysName:       cisco-router-test
-sysUpTime:     123456789 (14 days)
-sysLocation:   Test Lab Datacenter
-
-Interfaces:
-- GigabitEthernet0/0 (status: up, speed: 1Gbps)
-- GigabitEthernet0/1 (status: up, speed: 1Gbps)
-
-Counters:
-- ifInOctets:  123456789
-- ifOutOctets: 987654321
-- ifInErrors:  100
-- ifOutErrors: 50
+```bash
+go test -v -tags=integration $(test/integration/tagged-packages.sh)
 ```
 
-## Test Metrics
+## Tests
 
-### Performance
+`test/integration/integration_test.go`:
 
-Typical execution times:
-- Service startup: 10-15 seconds
-- Test execution: 20-30 seconds
-- Cleanup: 5 seconds
-- **Total: 35-50 seconds**
+- `TestEndToEndIntegration`: poll the simulator and export to Prometheus
+- `TestSNMPConnectivity`
+- `TestPrometheusConnectivity`
 
-### Coverage
+`test/integration/backup_test.go` (need the `dind` daemon, otherwise they skip):
+`TestVolumeRoundTripSurvivesTheDaemon`, `TestImportReplacesRatherThanMerges`,
+`TestOwnershipSurvivesTheRoundTrip`, `TestVolumeOwnershipIsReadFromRealLabels`.
 
-Integration tests validate:
-- 6 internal packages
-- 110+ code paths
-- Full API surface
-- Real network operations
-- Actual database operations
+`test/integration/ordering_test.go` (the #69 reproduction):
+`TestDisorderInsideOneRequestIsDiscardedWithoutASound`,
+`TestOneReadingBehindTheHeadRefusesTheWholeRequest`,
+`TestOverlappingPollsAreRepairedAndNothingIsLost`,
+`TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever`.
 
-## CI/CD Integration
+`test/integration/table_index_test.go` (`TestTableIndexExtraction`,
+`TestEndToEndPipeline`) carries no `integration` build tag, so the runner does
+not discover it through the tag; check its header before relying on it.
 
-### GitHub Actions
-
-```yaml
-name: Integration Tests
-on: [push, pull_request]
-jobs:
-  integration:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Run Integration Tests
-        run: make test-integration
-```
-
-### Results Reporting
-
-Tests produce:
-- Standard Go test output
-- Docker container logs
-- Prometheus metrics data
-- Coverage reports (optional)
+Mock device data is `test/integration/snmp-data/public.snmprec`; add OIDs there
+as `OID|type|value` lines.
 
 ## Troubleshooting
 
-### Common Issues
-
-**1. Docker Not Running**
-```bash
-# Error: Cannot connect to Docker daemon
-# Solution:
-sudo systemctl start docker
-```
-
-**2. Port Already in Use**
-```bash
-# Error: port 9090 already allocated
-# Solution:
-docker ps | grep 9090  # Find conflicting container
-docker stop <container-id>
-make integration-down
-```
-
-**3. Services Not Healthy**
-```bash
-# Check status
-docker compose -p go-netmon-integration-manual -f docker-compose.test.yml ps
-
-# View logs
-make integration-logs
-
-# Restart
-make integration-down
-make integration-up
-```
-
-**4. Tests Timeout**
-```bash
-# Increase timeout in test
-# Or check if services are slow
-docker compose -p go-netmon-integration-manual -f docker-compose.test.yml logs prometheus
-```
-
-### Debug Mode
-
-Enable verbose logging:
-
-```bash
-# Set environment variables before running
-export LOG_LEVEL=debug
-make test-integration
-
-# Or manually
-docker compose -p go-netmon-integration-manual -f docker-compose.test.yml run --rm \
-  -e LOG_LEVEL=debug \
-  integration-test bash -c 'go test -v -tags=integration $(test/integration/tagged-packages.sh)'
-```
-
-## Extending Tests
-
-### Add New Test Scenario
-
-1. **Create test function** in `integration_test.go`:
-```go
-//go:build integration
-// +build integration
-
-func TestNewFeature(t *testing.T) {
-    // Test implementation
-}
-```
-
-2. **Add mock data** to `snmp-data/public.snmprec`:
-```
-# New OID
-1.3.6.1.4.1.9.9.109.1.1.1.1.3.1|66|75
-```
-
-3. **Run test**:
-```bash
-make test-integration
-```
-
-### Test Different Profiles
-
-Modify test to use different profiles:
-
-```go
-device := &config.Device{
-    Name:    "cisco-test",
-    Profile: "cisco-ios",  // or "generic-router", "interfaces-only"
-    // ...
-}
-```
-
-## Benefits
-
-### 1. Confidence
-- Real services, not mocks
-- Actual network operations
-- True end-to-end validation
-
-### 2. Isolation
-- Runs in Docker containers
-- No host system modification
-- Reproducible environment
-
-### 3. Automation
-- One command execution
-- Automatic cleanup
-- CI/CD ready
-
-### 4. Documentation
-- Tests serve as examples
-- Shows real usage patterns
-- Validates documentation
-
-## Summary
-
-✅ **Complete Docker-based integration test environment**
-✅ **Full pipeline validation (SNMP → MIB → Prometheus)**
-✅ **Automated setup and teardown**
-✅ **Comprehensive test coverage**
-✅ **CI/CD ready**
-✅ **Well documented**
-
-The integration test suite provides confidence that the entire go-netmon system works correctly when all components are integrated together!
+- **Docker not running or compose plugin missing:** the scripts exit with
+  `docker is not installed…` or `the docker compose plugin is not available`.
+- **Services not healthy:** `make integration-logs`, or
+  `docker compose -p <project> -f docker-compose.test.yml ps`.
+- **Backup tests skipped:** the run printed the `could not start the sibling
+  Docker daemon` warning; the runner cannot start a privileged container.

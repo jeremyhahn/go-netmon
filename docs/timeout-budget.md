@@ -1,5 +1,7 @@
 # The web UI's timeout budget
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 An unreachable device used to make the web UI drop the connection instead of
 answering. The CLI reported:
 
@@ -34,6 +36,7 @@ each link fits inside the one outside it:
 ```
 SNMPProbeTimeout x SNMPProbeAttempts  <=  SNMPProbeBudget  <=  HandlerBudget  <  ServerWriteTimeout
 PollerRequestTimeout                   <   PollerSyncBudget <=  HandlerBudget  <  ServerWriteTimeout
+PollerRequestTimeout                   <   FleetStatusBudget <= HandlerBudget  <  ServerWriteTimeout
 ```
 
 | Constant               | Value | Why                                                                                   |
@@ -43,8 +46,11 @@ PollerRequestTimeout                   <   PollerSyncBudget <=  HandlerBudget  <
 | `SNMPProbeBudget`      | 8s    | Hard ceiling on a whole probe, connect and encoding included. 6s of SNMP with slack.    |
 | `PollerRequestTimeout` | 3s    | One HTTP call to the poller's control API.                                              |
 | `PollerSyncBudget`     | 5s    | A whole best-effort push of a device to the poller, retries included.                   |
+| `FleetStatusBudget`    | 8s    | A whole bulk fleet request: one call to the poller's device listing, however large the fleet. Exceeds `PollerRequestTimeout` so the poller client's own deadline and retries expire first. |
 | `HandlerBudget`        | 10s   | The widest any single handler's outbound work may be.                                   |
 | `ServerWriteTimeout`   | 15s   | The connection's write deadline. 5s of headroom to serialize and write a response.      |
+| `ServerReadTimeout`    | 15s   | Bounds reading a request, including its body. Not part of the chain.                    |
+| `ConfigImportBudget`   | 10m   | A configuration import, which parses every MIB module in the bundle. Deliberately outside the chain: the import handler extends its own connection deadline rather than widening `ServerWriteTimeout` for every endpoint. |
 
 `TestTimeoutBudgetOrdering` asserts the ordering, so an edit that inverts a
 pair fails the build rather than the field. `TestServerTimeoutsComeFromTheBudget`
@@ -102,7 +108,10 @@ RemoveDevice took 39.535s     ->     RemoveDevice took 89.7us
 
 `Close` now takes a read lock: closing the socket is precisely how an in-flight
 request is interrupted, so waiting for that request to finish first defeats the
-purpose. `RemoveDevice` releases the poller lock before any teardown.
+purpose. `RemoveDevice` releases the poller lock before any teardown. Teardown
+is still not strictly bounded: `Close` queues behind `Connect`, which holds the
+client's write lock for the whole dial, so the poller lock must stay released
+across it.
 
 ## Two poller bugs found on the way
 

@@ -1,278 +1,175 @@
 # Web UI Backend - Quick Start Guide
 
-## 5-Minute Setup
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
 
-### 1. Run the Server (Standalone Test)
+How to run the web UI backend (`cmd/webui`) and drive its REST API with `curl`.
+The routes are registered in `internal/webui/api/server.go`.
 
-```go
-// test-server.go
-package main
-
-import (
-    "context"
-    "log"
-
-    "github.com/jeremyhahn/go-netmon/internal/webui/api"
-)
-
-func main() {
-    // Simple MIB provider (returns empty for testing)
-    mibProvider := &emptyMIBProvider{}
-
-    // Simple Prometheus query function (returns empty for testing)
-    queryFunc := func(ctx context.Context, query string) ([]api.MetricValue, error) {
-        return []api.MetricValue{}, nil
-    }
-
-    // Create server
-    cfg := api.Config{
-        QueryFunc:      queryFunc,
-        MIBProvider:    mibProvider,
-        DBPath:         "./webui-test.db",
-        MIBStoragePath: "./mibs",
-    }
-
-    server, err := api.NewServer(cfg)
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer server.Close()
-
-    log.Println("Server starting on :8080")
-    log.Fatal(server.Start(context.Background(), ":8080"))
-}
-
-type emptyMIBProvider struct{}
-
-func (e *emptyMIBProvider) ListMIBs() ([]api.MIBInfo, error) {
-    return []api.MIBInfo{}, nil
-}
-
-func (e *emptyMIBProvider) GetMIB(name string) (*api.MIBDetail, error) {
-    return &api.MIBDetail{Name: name, Objects: []api.MIBObject{}}, nil
-}
-```
-
-Run it:
-```bash
-go run test-server.go
-```
-
-### 2. Test the API
+## 1. Run the server
 
 ```bash
-# Create a device
-curl -X POST http://localhost:8080/api/devices \
+make build-webui          # builds cmd/webui into the build directory
+# or run it straight from source:
+go run ./cmd/webui
+```
+
+Flags (`cmd/webui/main.go`):
+
+| Flag            | Default       | Meaning                                              |
+| --------------- | ------------- | ---------------------------------------------------- |
+| `-listen`       | `:8080`       | Listen address (`webui.listen_address`, env `NETMON_WEBUI_LISTEN_ADDRESS`) |
+| `-prometheus`   | `http://localhost:9091` | Prometheus to query (`webui.prometheus_url`, env `NETMON_WEBUI_PROMETHEUS_URL`) |
+| `-poller`       | `http://localhost:9080` | Poller control API (`webui.poller_url`, env `NETMON_WEBUI_POLLER_URL`) |
+| `-db`           | `data/webui`  | Web UI storage, a PebbleDB directory                 |
+| `-mib-storage`  | `data/mibs`   | Where uploaded MIB files are stored                  |
+| `-mib-catalog`  | `data/mib.db` | The parsed MIB catalog, a PebbleDB directory         |
+
+The three address flags resolve flag > environment > config file > default.
+Device changes are saved first; the push to the poller is best effort and does
+not fail the request when the poller is down.
+
+> **Bind the port privately.** The API is unauthenticated by design and
+> `GET /api/devices` returns SNMP community strings in clear text. Publish it
+> only behind an authenticating reverse proxy, or bind it to an interface only
+> trusted clients can reach. See
+> [operations/security-posture.md](operations/security-posture.md).
+
+## 2. Try the API
+
+The examples below assume `API=http://localhost:8080/api`.
+
+```bash
+API=http://localhost:8080/api
+
+# Create a device (name, address and snmp_version are required)
+curl -X POST $API/devices \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "test-router",
-    "address": "203.0.113.1",
-    "snmp_version": "2c",
-    "community": "public"
-  }'
+  -d '{"name":"test-router","address":"203.0.113.1","snmp_version":"2c","community":"public"}'
 
 # List devices
-curl http://localhost:8080/api/devices?stored=true
+curl $API/devices
 
-# Get device
-curl http://localhost:8080/api/devices/1
+# Get one device
+curl $API/devices/1
 ```
 
-### 3. Complete Workflow
+## 3. A complete workflow
 
 ```bash
-#!/bin/bash
 API="http://localhost:8080/api"
 
-# Create profile
+# Create a profile
 PROFILE=$(curl -s -X POST $API/profiles \
   -H "Content-Type: application/json" \
   -d '{"name":"cisco-router","description":"Cisco Router Profile"}')
-
 PROFILE_ID=$(echo $PROFILE | jq -r '.id')
-echo "Created profile: $PROFILE_ID"
 
-# Create device
+# Create a device
 DEVICE=$(curl -s -X POST $API/devices \
   -H "Content-Type: application/json" \
   -d '{"name":"router-1","address":"203.0.113.1","snmp_version":"2c","community":"public"}')
-
 DEVICE_ID=$(echo $DEVICE | jq -r '.id')
-echo "Created device: $DEVICE_ID"
 
-# Assign profile to device
+# Assign the profile to the device
 curl -X POST "$API/devices/$DEVICE_ID/profiles/$PROFILE_ID"
 
 # List everything
-echo "Devices:"
-curl -s "$API/devices?stored=true" | jq '.devices'
-
-echo "Profiles:"
+curl -s "$API/devices" | jq '.devices'
 curl -s "$API/profiles" | jq '.profiles'
 ```
 
-## Common Operations
+## Common operations
 
-### Device Management
+### Devices
 
 ```bash
-# Create device
-curl -X POST $API/devices \
-  -H "Content-Type: application/json" \
-  -d '{"name":"NAME","address":"IP","snmp_version":"2c","community":"public"}'
-
-# Update device
+# Update a device
 curl -X PUT $API/devices/1 \
   -H "Content-Type: application/json" \
   -d '{"name":"NAME","address":"NEW_IP","snmp_version":"2c","community":"private"}'
 
-# Delete device
+# Delete a device
 curl -X DELETE $API/devices/1
+
+# Test SNMP connectivity (see timeout-budget.md for the status codes)
+curl -X POST $API/devices/1/test-snmp
 ```
 
-### Profile Management
+### Profiles
 
 ```bash
-# Create profile
 curl -X POST $API/profiles \
   -H "Content-Type: application/json" \
   -d '{"name":"NAME","description":"DESC"}'
-
-# List profiles
 curl $API/profiles
 ```
 
-### MIB Management
+### MIBs
 
 ```bash
-# Import MIB
+# Import a MIB (add ?replace=true to refresh a module that is already imported;
+# without it, re-uploading a stored module is a 409)
 curl -X POST $API/mibs/import -F "file=@/path/to/MIB.txt"
 
-# List MIBs
-curl "$API/mibs?stored=true"
+# List stored MIBs
+curl "$API/mibs"
 
-# Assign MIB to profile
+# Assign a MIB to a profile, or to a device
 curl -X POST $API/profiles/1/mibs \
-  -H "Content-Type: application/json" \
-  -d '{"mib_id":1}'
-
-# Assign MIB to device
+  -H "Content-Type: application/json" -d '{"mib_id":1}'
 curl -X POST $API/devices/1/mibs \
-  -H "Content-Type: application/json" \
-  -d '{"mib_id":1}'
+  -H "Content-Type: application/json" -d '{"mib_id":1}'
 ```
 
-### Dashboard Generation
+### Dashboards
 
 ```bash
-# Generate dashboard for device
-curl $API/devices/1/dashboard | jq '.' > dashboard.json
+# Dashboard for a device
+curl $API/devices/1/dashboard | jq '.'
 
-# Custom dashboard
+# Dashboard for chosen MIBs
 curl -X POST $API/dashboards/generate \
   -H "Content-Type: application/json" \
-  -d '{"device_id":1,"mib_ids":[1,2,3],"title":"My Dashboard"}' \
-  | jq '.' > custom-dashboard.json
+  -d '{"device_id":1,"mib_ids":[1,2,3],"title":"My Dashboard"}'
 ```
 
-## Running Tests
+## Running tests
 
 ```bash
-# All tests
-go test ./internal/webui/...
-
-# Storage tests only
-make test-webui-storage
-
-# With coverage
+make test-webui           # web UI packages
+make test-webui-storage   # storage only
 make coverage-webui-storage
-
-# With race detector
-go test -race ./internal/webui/storage/...
 ```
 
 ## Building
 
 ```bash
-# Build everything
-go build ./...
-
-# Build specific package
-go build ./internal/webui/storage/...
-go build ./internal/webui/api/...
-```
-
-## Docker Quick Start
-
-```yaml
-# docker-compose.yml
-services:
-  go-netmon:
-    build: .
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./data:/app/data
-      - ./mibs:/app/mibs
-    environment:
-      - WEBUI_DB_PATH=/app/data/webui.db
-```
-
-```bash
-docker-compose up
-```
-
-> **Bind these ports privately.** The API is unauthenticated by design and
-> `GET /api/devices` returns SNMP community strings in clear text. Publish the
-> ports only behind an authenticating reverse proxy, or bind them to an
-> interface only trusted clients can reach. The `"8080:8080"` above binds to
-> every interface; `"127.0.0.1:8080:8080"` does not. See
-> [operations/security-posture.md](operations/security-posture.md).
-
-## Environment Variables
-
-```bash
-export WEBUI_DB_PATH=./data/webui.db
-export MIB_STORAGE_PATH=./mibs
-export PROMETHEUS_URL=http://localhost:9090
-export API_LISTEN_ADDR=:8080
+make build-webui
+make build-all            # every binary
 ```
 
 ## Troubleshooting
 
-### Database locked
-```bash
-# Check if database exists
-ls -la data/webui.db
+### The data directory will not open
 
-# Check permissions
-chmod 644 data/webui.db
-```
+Storage is PebbleDB, which allows one process per directory. If the server
+fails to open `data/webui`, check that no other `webui` process is using it and
+that the directory is writable by the user running the server.
 
 ### Port already in use
+
 ```bash
-# Find process
 lsof -i :8080
-
-# Kill process
-kill -9 <PID>
 ```
 
-### CGO build errors
-```bash
-# Enable CGO
-CGO_ENABLED=1 go build ./...
+Then stop that process, or start the web UI with a different `-listen`.
 
-# Install SQLite dev package (Ubuntu/Debian)
-sudo apt-get install libsqlite3-dev
-```
-
-## Quick Reference - File Locations
+## File locations
 
 ```
 internal/webui/
 ├── api/            # API handlers
-│   ├── server.go      # Main server
+│   ├── server.go      # Server, route table
 │   ├── device.go      # Device endpoints
 │   ├── profile.go     # Profile endpoints
 │   └── mib_import.go  # MIB import
@@ -280,27 +177,11 @@ internal/webui/
     ├── storage.go     # DB initialization
     ├── device.go      # Device CRUD
     ├── profile.go     # Profile CRUD
-    └── mib.go        # MIB CRUD
-
-docs/
-├── webui-backend.md              # Full API docs
-├── webui-backend-example.md      # Examples
-├── webui-backend-integration.md  # Integration guide
-└── QUICK-START.md               # This file
+    └── mib.go         # MIB CRUD
 ```
 
-## Next Steps
+## Next steps
 
-1. Read the [full documentation](webui-backend.md)
-2. Check [integration examples](webui-backend-example.md)
-3. Follow [integration guide](webui-backend-integration.md) to add to your app
-4. Review [implementation summary](IMPLEMENTATION-SUMMARY.md) for details
-
-## Getting Help
-
-Check the documentation:
-- API Reference: `docs/webui-backend.md`
-- Examples: `docs/webui-backend-example.md`
-- Integration: `docs/webui-backend-integration.md`
-
-All code is well-documented with inline comments.
+- [webui-backend.md](webui-backend.md) — the full backend description
+- [webui-backend-example.md](webui-backend-example.md) — examples
+- [webui-backend-integration.md](webui-backend-integration.md) — integration guide

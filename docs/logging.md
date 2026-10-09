@@ -1,11 +1,17 @@
 # Logging
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 `internal/logging` builds the application's `*slog.Logger` from the `logging`
 section of `config.yaml`. Before this package the section was validated but
-never read: 31 `log.Printf("DEBUG: ...")` statements in the web UI and the
-poller fired unconditionally, several hundred lines a second with a dashboard
-open. Those statements are now level-gated, so the default level of `info`
-produces none of them.
+never read: `log.Printf("DEBUG: ...")` statements in the web UI and the poller
+fired unconditionally, several hundred lines a second with a dashboard open.
+The tracing in the components listed below is now level-gated, so the default
+level of `info` produces none of it.
+
+One exception remains: `GetMIB` in `internal/webui/provider/provider.go` still
+prints two `DEBUG GetMIB(...)` lines with the standard `log` package,
+regardless of the configured level.
 
 ## Configuration
 

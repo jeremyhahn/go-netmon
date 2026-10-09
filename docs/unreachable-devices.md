@@ -1,5 +1,7 @@
 # Unreachable devices
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 A device that stops answering SNMP used to cost a worker one full retry budget
 per selected object, every cycle:
 
