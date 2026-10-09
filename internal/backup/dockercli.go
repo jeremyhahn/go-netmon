@@ -397,11 +397,17 @@ func (c *CLI) ImageID(ctx context.Context, image string) (string, error) {
 // Versions reports the runtime and compose plugin versions.
 func (c *CLI) Versions(ctx context.Context) (Versions, error) {
 	v := Versions{Docker: "unknown", Compose: "unknown"}
+	// Empty or whitespace-only output from a successful exit is not an answer:
+	// the "unknown" fallback is kept rather than recording "".
 	if out, err := c.run(ctx, "version", "--format", "{{.Server.Version}}"); err == nil {
-		v.Docker = strings.TrimSpace(out)
+		if s := strings.TrimSpace(out); s != "" {
+			v.Docker = s
+		}
 	}
 	if out, err := c.run(ctx, "compose", "version", "--short"); err == nil {
-		v.Compose = strings.TrimSpace(out)
+		if s := strings.TrimSpace(out); s != "" {
+			v.Compose = s
+		}
 	}
 	return v, nil
 }

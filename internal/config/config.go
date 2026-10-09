@@ -18,12 +18,23 @@ const (
 
 // Load loads configuration from file
 func Load() (*Config, error) {
-	configPath := getConfigPath()
-	return LoadFromFile(configPath)
+	return LoadWithOverrides(nil)
+}
+
+// LoadWithOverrides loads configuration from the configured file, with the
+// flags the operator set taking precedence (flags > env > file > defaults).
+func LoadWithOverrides(o Overrides) (*Config, error) {
+	return LoadFromFileWithOverrides(getConfigPath(), o)
 }
 
 // LoadFromFile loads configuration from a specific file
 func LoadFromFile(path string) (*Config, error) {
+	return LoadFromFileWithOverrides(path, nil)
+}
+
+// LoadFromFileWithOverrides loads configuration from a specific file; the bind
+// and target addresses resolve flags > env (NETMON_*) > file > defaults.
+func LoadFromFileWithOverrides(path string, o Overrides) (*Config, error) {
 	// path is the configuration file the operator named; reading it is the point.
 	data, err := os.ReadFile(path) // #nosec G304 -- operator-supplied config path
 	if err != nil {
@@ -37,6 +48,11 @@ func LoadFromFile(path string) (*Config, error) {
 
 	// Set defaults
 	setDefaults(&config)
+
+	// Resolve the addresses through the env and flag layers
+	if err := ResolveAddresses(&config, path, o); err != nil {
+		return nil, err
+	}
 
 	// Validate configuration
 	if err := config.Validate(); err != nil {
@@ -99,16 +115,22 @@ func setDefaults(config *Config) {
 
 	// API defaults
 	if config.API.ListenAddress == "" {
-		config.API.ListenAddress = "0.0.0.0:8080"
+		config.API.ListenAddress = DefaultAPIListen
 	}
-
-	// Metrics defaults.
-	//
-	// 9100 is what prometheus.yml scrapes, what docker-compose publishes and
-	// what the shipped configs set. A different default would leave a
-	// deployment that omits the key listening where nothing is looking.
 	if config.Metrics.ListenAddress == "" {
-		config.Metrics.ListenAddress = "0.0.0.0:9100"
+		config.Metrics.ListenAddress = DefaultMetricsListen
+	}
+	if config.WebUI.ListenAddress == "" {
+		config.WebUI.ListenAddress = DefaultWebUIListen
+	}
+	if config.WebUI.PrometheusURL == "" {
+		config.WebUI.PrometheusURL = DefaultWebUIPrometheus
+	}
+	if config.WebUI.PollerURL == "" {
+		config.WebUI.PollerURL = DefaultWebUIPoller
+	}
+	if config.Dashboard.PrometheusURL == "" {
+		config.Dashboard.PrometheusURL = DefaultDashboardPromURL
 	}
 
 	// MIB defaults

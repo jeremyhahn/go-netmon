@@ -31,9 +31,12 @@ import (
 const version = "0.1.0"
 
 var (
-	listenAddr     = flag.String("listen", ":8080", "Web UI listen address")
-	prometheusURL  = flag.String("prometheus", "http://localhost:9091", "Prometheus URL for querying metrics")
-	pollerURL      = flag.String("poller", "http://localhost:9080", "Poller service URL for device management")
+	// The three address flags carry no default of their own: the default lives
+	// in the config package's defaults layer, and a flag left unset must not
+	// mask the environment (NETMON_WEBUI_*) or the config file.
+	_              = flag.String("listen", "", "Web UI listen address (config webui.listen_address, env NETMON_WEBUI_LISTEN_ADDRESS)")
+	_              = flag.String("prometheus", "", "Prometheus URL for querying metrics (config webui.prometheus_url, env NETMON_WEBUI_PROMETHEUS_URL)")
+	_              = flag.String("poller", "", "Poller service URL for device management (config webui.poller_url, env NETMON_WEBUI_POLLER_URL)")
 	dbPath         = flag.String("db", "data/webui", "Database path for Web UI storage (PebbleDB directory)")
 	mibStoragePath = flag.String("mib-storage", "data/mibs", "Path to store uploaded MIB files")
 
@@ -51,9 +54,6 @@ func main() {
 	flag.Parse()
 
 	log.Printf("go-netmon Web UI v%s", version)
-	log.Printf("Listen address: %s", *listenAddr)
-	log.Printf("Prometheus URL: %s", *prometheusURL)
-	log.Printf("Poller URL: %s", *pollerURL)
 	log.Printf("Database path: %s", *dbPath)
 	log.Printf("MIB storage: %s", *mibStoragePath)
 	log.Printf("MIB catalog: %s", *mibCatalogPath)
@@ -63,6 +63,17 @@ func main() {
 	}
 
 	log.Println("Shutdown complete")
+}
+
+// addressOverrides is the flag layer for the bind and target addresses: only
+// the flags the operator actually set, so an unset flag never masks the
+// environment or the config file.
+func addressOverrides() config.Overrides {
+	return config.FlagOverrides(flag.CommandLine, map[string]string{
+		"listen":     config.KeyWebUIListen,
+		"prometheus": config.KeyWebUIPrometheus,
+		"poller":     config.KeyWebUIPoller,
+	})
 }
 
 // runUntilSignal owns the cancellable context so that main can exit through
@@ -114,7 +125,8 @@ func runUntilSignal() error {
 
 func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) error {
 	// Load MIB configuration (or use defaults)
-	cfg, err := config.Load()
+	overrides := addressOverrides()
+	cfg, err := config.LoadWithOverrides(overrides)
 	if err != nil {
 		log.Printf("Warning: failed to load config, using defaults: %v", err)
 		cfg = &config.Config{
@@ -127,7 +139,16 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 		// output "" is not a valid output and would fail the service at
 		// startup, which is not much of a fallback.
 		config.ApplyDefaults(cfg)
+		// The addresses still honor the environment and flags without a
+		// usable file. A file that cannot be parsed is skipped here.
+		if resolveErr := config.ResolveAddresses(cfg, "", overrides); resolveErr != nil {
+			return resolveErr
+		}
 	}
+
+	log.Printf("Listen address: %s", cfg.WebUI.ListenAddress)
+	log.Printf("Prometheus URL: %s", cfg.WebUI.PrometheusURL)
+	log.Printf("Poller URL: %s", cfg.WebUI.PollerURL)
 
 	configureMIB(&cfg.MIB, *mibCatalogPath, *mibStoragePath)
 	log.Printf("MIB search paths: %v", cfg.MIB.Paths)
@@ -165,7 +186,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 	mibProvider := provider.NewMIBProvider(mibLoader, mibStorage)
 
 	// Create Prometheus client
-	promClient := api.NewPrometheusClient(*prometheusURL)
+	promClient := api.NewPrometheusClient(cfg.WebUI.PrometheusURL)
 
 	// Build the configured logger. Everything level-gated in the web UI goes
 	// through it, so logging.level in the config file is what decides whether
@@ -184,8 +205,8 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 
 	// Initialize poller client. Its per-request timeout is one link in the
 	// budget documented in internal/webui/api/timeouts.go.
-	log.Printf("Initializing poller client (URL: %s)...", *pollerURL)
-	pollerClient := client.NewPollerClient(*pollerURL, api.PollerRequestTimeout)
+	log.Printf("Initializing poller client (URL: %s)...", cfg.WebUI.PollerURL)
+	pollerClient := client.NewPollerClient(cfg.WebUI.PollerURL, api.PollerRequestTimeout)
 	log.Println("Poller client initialized")
 
 	// The UI's static assets, compiled into this binary. Resolving them here
@@ -209,7 +230,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 		MIBStoragePath:  *mibStoragePath,
 		PollerClient:    pollerClient,
 		PromClient:      promClient,
-		GoNetmonBaseURL: *pollerURL, // Pass poller URL for OID learner proxy
+		GoNetmonBaseURL: cfg.WebUI.PollerURL, // Pass poller URL for OID learner proxy
 		Assets:          staticAssets,
 		Logger:          logger,
 
@@ -276,11 +297,11 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 	// catalog that is minutes. Binding is the point at which the service
 	// becomes usable, so it is the point the readiness signal belongs at, and
 	// the point the log line an operator greps for belongs at.
-	status(notifier, "binding "+*listenAddr)
+	status(notifier, "binding "+cfg.WebUI.ListenAddress)
 	// listenErr rather than err: the outer err is still live here, and
 	// shadowing it would hide a failure to bind behind a name that already
 	// means something else in this function.
-	listener, listenErr := server.Listen(ctx, *listenAddr)
+	listener, listenErr := server.Listen(ctx, cfg.WebUI.ListenAddress)
 	if listenErr != nil {
 		return listenErr
 	}
@@ -290,7 +311,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 	// long the dashboard was down for this restart.
 	log.Printf("Listening on %s — the web UI is ready to serve (startup took %s, during which it served nothing)",
 		listener.Addr(), time.Since(started).Truncate(time.Millisecond))
-	log.Printf("Open http://localhost%s in your browser", *listenAddr)
+	log.Printf("Open http://localhost%s in your browser", cfg.WebUI.ListenAddress)
 
 	// READY=1 goes out only now. Sending it any earlier is the defect this
 	// replaces: systemd would call the unit active while the port refused

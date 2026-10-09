@@ -443,7 +443,7 @@ func sensorSample(
 
 	// The module is the key's, so the scale is read with the semantics of
 	// the module that both described this sensor and produced this reading.
-	value, err := ScaleSensorValue(raw, metadata.scale, metadata.precision, key.table)
+	value, err := ScaleSensorValue(raw, metadata.sensorType, metadata.scale, metadata.precision, key.table)
 	if err != nil {
 		return nil, err
 	}

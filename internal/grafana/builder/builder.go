@@ -66,7 +66,6 @@ func DefaultConfig() *Config {
 		DeviceLabel:          promname.DeviceLabel,
 		OIDLabel:             promname.OIDLabel,
 		MetricPrefix:         promname.Prefix,
-		PrometheusURL:        "http://prometheus:9090",
 	}
 }
 

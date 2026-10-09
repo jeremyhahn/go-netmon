@@ -5,6 +5,8 @@ package loader
 import (
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -142,8 +144,7 @@ func (l *Loader) Revision() uint64 {
 
 // HasModule reports whether the store already holds moduleName's metadata.
 func (l *Loader) HasModule(moduleName string) bool {
-	_, err := l.storage.GetModule(moduleName)
-	return err == nil
+	return l.storedModule(moduleName) != nil
 }
 
 // EnsureModule loads moduleName unless the store already holds it.
@@ -219,11 +220,33 @@ func (l *Loader) EnsureModuleCurrent(moduleName string) error {
 // moduleIsCurrent reports whether the store holds moduleName parsed from a file
 // that has not been written since.
 func (l *Loader) moduleIsCurrent(moduleName string) bool {
-	info, err := l.storage.GetModule(moduleName)
-	if err != nil {
+	info := l.storedModule(moduleName)
+	if info == nil {
 		return false
 	}
 	return !moduleFileIsNewer(info)
+}
+
+// storedModule finds the stored record for a requested name. The store is
+// keyed by the declared module name, but a request can name the file instead
+// (iDRAC-SMIv2 for IDRAC-MIB-SMIv2); without the fallback such a module is
+// never found and is parsed again on every start.
+func (l *Loader) storedModule(moduleName string) *mib.ModuleInfo {
+	if info, err := l.storage.GetModule(moduleName); err == nil {
+		return info
+	}
+
+	modules, err := l.storage.ListModules()
+	if err != nil {
+		return nil
+	}
+	for _, info := range modules {
+		base := filepath.Base(info.Path)
+		if info.Path != "" && strings.TrimSuffix(base, filepath.Ext(base)) == moduleName {
+			return info
+		}
+	}
+	return nil
 }
 
 // moduleFileIsNewer reports whether the file a stored module was parsed from
@@ -298,6 +321,10 @@ func (l *Loader) parseModule(moduleName string) (*parsedModule, error) {
 	if err != nil {
 		return nil, &ModuleLoadError{Module: moduleName, Op: "read", Err: err}
 	}
+
+	// moduleName is what was asked for -- possibly a file name. The module the
+	// file declares is info.Name, and it is the one the parser knows.
+	moduleName = info.Name
 
 	oids, err := l.parser.ParseModule(moduleName)
 	if err != nil {

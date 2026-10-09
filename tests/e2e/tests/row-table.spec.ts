@@ -410,6 +410,11 @@ test('a table whose columns are all summarized still lists its rows', async ({ p
   }, { timeout: 20000 });
   await page.evaluate(() => (window as any).app.openFleetDevice(4));
   await page.waitForSelector('.row-table', { timeout: 20000 });
+  // feed() reads the installed subscription, which subscribeToPanels creates
+  // after renderPanels' pause; wait for it as openDashboard does.
+  await page.waitForFunction(
+    () => ((window as any).app.activeSubscriptions?.size ?? 0) > 0,
+    { timeout: 20000 });
   await feed(page, PORTS);
 
   await expect(page.locator('.row-table-grid tbody th'),

@@ -206,6 +206,21 @@ func (e *SensorRangeError) DropReason() string {
 	return "overflow"
 }
 
+// SensorMalformedValueError reports an EntitySensorValue outside the range its
+// sensor type permits and not one of the reserved sentinels: the agent sent
+// data its own MIB forbids, so there is no reading to publish.
+type SensorMalformedValueError struct {
+	Value int64
+	Type  SensorType
+}
+
+func (e *SensorMalformedValueError) Error() string {
+	return fmt.Sprintf("metrics: entity sensor value %d is outside the range of %s sensors", e.Value, e.Type.Label())
+}
+
+// DropReason implements sensorDropError.
+func (e *SensorMalformedValueError) DropReason() string { return "malformed_value" }
+
 // SensorMetadataError reports a sensor reading whose type, scale or precision
 // the device has not reported, leaving nothing to scale the reading by.
 //

@@ -360,7 +360,7 @@ func TestScaleSensorValue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ScaleSensorValue(tt.raw, tt.scale, tt.precision, tt.table)
+			got, err := ScaleSensorValue(tt.raw, SensorTypeDBm, tt.scale, tt.precision, tt.table)
 			if err != nil {
 				t.Fatalf("ScaleSensorValue() returned error: %v", err)
 			}
@@ -386,8 +386,8 @@ func TestScaleSensorValueRejectsUninterpretable(t *testing.T) {
 	}{
 		{"overflow sentinel", SensorValueOverflow, SensorScaleUnits, 1, wantRangeError(SensorValueOverflow)},
 		{"underflow sentinel", SensorValueUnderflow, SensorScaleUnits, 1, wantRangeError(SensorValueUnderflow)},
-		{"beyond overflow", 2000000000, SensorScaleUnits, 0, wantRangeError(2000000000)},
-		{"beyond underflow", -2000000000, SensorScaleUnits, 0, wantRangeError(-2000000000)},
+		{"beyond overflow", 2000000000, SensorScaleUnits, 0, wantMalformedError(2000000000)},
+		{"beyond underflow", -2000000000, SensorScaleUnits, 0, wantMalformedError(-2000000000)},
 		{"scale zero", 100, 0, 1, wantScaleError(0)},
 		{"scale past yotta", 100, 18, 1, wantScaleError(18)},
 		{"precision past maximum", 100, SensorScaleUnits, 10, wantPrecisionError(10)},
@@ -396,7 +396,7 @@ func TestScaleSensorValueRejectsUninterpretable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ScaleSensorValue(tt.raw, tt.scale, tt.precision, SensorTableCisco)
+			got, err := ScaleSensorValue(tt.raw, SensorTypeDBm, tt.scale, tt.precision, SensorTableCisco)
 			if err == nil {
 				t.Fatalf("ScaleSensorValue() = %v, want error", got)
 			}
@@ -456,11 +456,81 @@ func wantPrecisionError(precision int32) func(*testing.T, error) {
 // is the more specific diagnosis -- the sensor is out of range, which is a
 // fact about the link -- and it is what an operator needs to see.
 func TestScaleSensorValueSentinelChecksPrecedeMetadata(t *testing.T) {
-	_, err := ScaleSensorValue(SensorValueOverflow, 0, 99, SensorTableCisco)
+	_, err := ScaleSensorValue(SensorValueOverflow, SensorTypeDBm, 0, 99, SensorTableCisco)
 
 	var rangeErr *SensorRangeError
 	if !errors.As(err, &rangeErr) {
 		t.Fatalf("error = %T (%v), want *SensorRangeError", err, err)
+	}
+}
+
+// TestScaleSensorValueSentinelsAreTypeAware pins that the range sentinels
+// exist only for the fixed-point physical types. other, unknown and
+// specialEnum permit the full Integer32 subtype, so the endpoints are readings
+// there; for the physical types the sentinels match by exact equality and a
+// value beyond them is malformed rather than a sentinel.
+func TestScaleSensorValueSentinelsAreTypeAware(t *testing.T) {
+	const (
+		maxInt32 = int64(math.MaxInt32)
+		minInt32 = int64(math.MinInt32)
+	)
+	tests := []struct {
+		name       string
+		raw        int64
+		sensorType SensorType
+		check      func(*testing.T, error) // nil means a reading
+	}{
+		{"other overflow endpoint", SensorValueOverflow, SensorTypeOther, nil},
+		{"other underflow endpoint", SensorValueUnderflow, SensorTypeOther, nil},
+		{"unknown overflow endpoint", SensorValueOverflow, SensorTypeUnknown, nil},
+		{"unknown underflow endpoint", SensorValueUnderflow, SensorTypeUnknown, nil},
+		{"specialEnum overflow endpoint", SensorValueOverflow, SensorTypeSpecialEnum, nil},
+		{"specialEnum underflow endpoint", SensorValueUnderflow, SensorTypeSpecialEnum, nil},
+		{"other max int32", maxInt32, SensorTypeOther, nil},
+		{"other min int32", minInt32, SensorTypeOther, nil},
+		{"specialEnum max int32", maxInt32, SensorTypeSpecialEnum, nil},
+		{"unknown min int32", minInt32, SensorTypeUnknown, nil},
+		{"other beyond int32", maxInt32 + 1, SensorTypeOther, wantMalformedError(maxInt32 + 1)},
+		{"unknown below int32", minInt32 - 1, SensorTypeUnknown, wantMalformedError(minInt32 - 1)},
+
+		{"dBm overflow", SensorValueOverflow, SensorTypeDBm, wantRangeError(SensorValueOverflow)},
+		{"celsius underflow", SensorValueUnderflow, SensorTypeCelsius, wantRangeError(SensorValueUnderflow)},
+		{"dBm beyond overflow is malformed", SensorValueOverflow + 1, SensorTypeDBm, wantMalformedError(SensorValueOverflow + 1)},
+		{"celsius beyond underflow is malformed", SensorValueUnderflow - 1, SensorTypeCelsius, wantMalformedError(SensorValueUnderflow - 1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ScaleSensorValue(tt.raw, tt.sensorType, SensorScaleUnits, 0, SensorTableCisco)
+			if tt.check == nil {
+				if err != nil {
+					t.Fatalf("ScaleSensorValue() returned error: %v", err)
+				}
+				if got != float64(tt.raw) {
+					t.Errorf("ScaleSensorValue() = %v, want %d", got, tt.raw)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ScaleSensorValue() = %v, want error", got)
+			}
+			tt.check(t, err)
+		})
+	}
+}
+
+// wantMalformedError asserts the error is a *SensorMalformedValueError naming
+// value.
+func wantMalformedError(value int64) func(*testing.T, error) {
+	return func(t *testing.T, err error) {
+		t.Helper()
+		var malformed *SensorMalformedValueError
+		if !errors.As(err, &malformed) {
+			t.Fatalf("error = %T (%v), want *SensorMalformedValueError", err, err)
+		}
+		if malformed.Value != value {
+			t.Errorf("SensorMalformedValueError.Value = %d, want %d", malformed.Value, value)
+		}
 	}
 }
 
@@ -485,7 +555,7 @@ func TestScaleSensorValueRoundTripsDecimals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ScaleSensorValue(tt.raw, SensorScaleUnits, tt.precision, SensorTableCisco)
+			got, err := ScaleSensorValue(tt.raw, SensorTypeDBm, SensorScaleUnits, tt.precision, SensorTableCisco)
 			if err != nil {
 				t.Fatalf("ScaleSensorValue() returned error: %v", err)
 			}
@@ -699,7 +769,7 @@ func TestApplyDecimalExponent(t *testing.T) {
 func BenchmarkScaleSensorValue(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if _, err := ScaleSensorValue(-115, SensorScaleUnits, 2, SensorTableCisco); err != nil {
+		if _, err := ScaleSensorValue(-115, SensorTypeDBm, SensorScaleUnits, 2, SensorTableCisco); err != nil {
 			b.Fatalf("ScaleSensorValue() returned error: %v", err)
 		}
 	}

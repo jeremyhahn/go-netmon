@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -90,8 +91,15 @@ func main() {
 		log.Printf("WebUI configuration sync enabled: %s", webuiURL)
 	}
 
-	// Load configuration
-	cfg, err := config.Load()
+	// Load configuration. The listen addresses resolve flags > env > file >
+	// defaults; a flag left unset does not mask the environment or the file.
+	flag.String("api-listen", "", "API listen address (config api.listen_address, env NETMON_API_LISTEN_ADDRESS)")
+	flag.String("metrics-listen", "", "Metrics listen address (config metrics.listen_address, env NETMON_METRICS_LISTEN_ADDRESS)")
+	flag.Parse()
+	cfg, err := config.LoadWithOverrides(config.FlagOverrides(flag.CommandLine, map[string]string{
+		"api-listen":     config.KeyAPIListen,
+		"metrics-listen": config.KeyMetricsListen,
+	}))
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}

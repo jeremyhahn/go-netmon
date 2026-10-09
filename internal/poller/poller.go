@@ -201,8 +201,8 @@ func (w *worker) awaitCommit() {
 // retired reports whether this worker's device has been removed.
 //
 // Removal does not interrupt the poll already running -- deliberately, because
-// closing an SNMP client waits for the request it has in flight, and the
-// control plane must not stall behind a device that has stopped answering
+// the poll may be stuck in a request to a device that has stopped answering,
+// and the control plane must not stall behind it
 // (TestRemoveDeviceDoesNotWaitForAnInFlightPoll). So a poll can finish after
 // its device is gone, and a device UPDATE is a remove followed by an add: the
 // replacement worker is already polling by then.
@@ -925,10 +925,12 @@ func (p *Poller) AddDevice(ctx context.Context, device *config.Device) error {
 // RemoveDevice dynamically removes a device from the poller.
 //
 // The poller lock is released before the connection is torn down. Closing an
-// SNMP client waits for whatever request that client has in flight, which for
-// an unreachable device is the full retry budget; holding the poller lock
-// across that would stall every other device's registration and status lookup
-// behind one dead box.
+// SNMP client does not wait for a request in flight -- it takes the client's
+// read lock and closes the socket, interrupting that request -- but it does
+// queue behind Connect, which holds the client's write lock for the whole
+// dial and so, for an unreachable device, can take a long time. Teardown is
+// therefore not bounded, and holding the poller lock across it would stall
+// every other device's registration and status lookup behind one dead box.
 func (p *Poller) RemoveDevice(deviceName string) error {
 	p.mu.Lock()
 	w := p.liveWorker(deviceName)

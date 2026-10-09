@@ -13,6 +13,7 @@ type Config struct {
 	Metrics    MetricsConfig    `yaml:"metrics"`
 	MIB        MIBConfig        `yaml:"mib"`
 	WebUI      WebUIConfig      `yaml:"webui"`
+	Dashboard  DashboardConfig  `yaml:"dashboard"`
 	Devices    []Device         `yaml:"devices"`
 	MIBModules []MIBModule      `yaml:"mib_modules"`
 	Logging    LoggingConfig    `yaml:"logging"`
@@ -67,6 +68,20 @@ type WebUIConfig struct {
 	// changing it for all of them. What a viewer controls is their own
 	// browser's refresh, which never leaves their browser.
 	StreamInterval int `yaml:"stream_interval"`
+
+	// ListenAddress is where the web UI binds; PrometheusURL and PollerURL are
+	// the upstreams it queries. All three are also settable by environment
+	// (NETMON_WEBUI_*) and flag.
+	ListenAddress string `yaml:"listen_address"`
+	PrometheusURL string `yaml:"prometheus_url"`
+	PollerURL     string `yaml:"poller_url"`
+}
+
+// DashboardConfig configures dashboard generation (mib-importer).
+type DashboardConfig struct {
+	// PrometheusURL is the Prometheus the generator queries to check that a
+	// metric exists before it gets a panel.
+	PrometheusURL string `yaml:"prometheus_url"`
 }
 
 // GlobalConfig contains global application settings

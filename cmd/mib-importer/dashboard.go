@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jeremyhahn/go-netmon/internal/config"
 	"github.com/jeremyhahn/go-netmon/internal/grafana/builder"
 	"github.com/jeremyhahn/go-netmon/internal/grafana/template"
 	"github.com/jeremyhahn/go-netmon/internal/mib/storage"
@@ -18,6 +19,31 @@ const (
 )
 
 // dashboardCommand handles dashboard generation
+// prometheusFlag names the flag that sets the Prometheus the generator queries.
+const prometheusFlag = "prometheus-url"
+
+// addPrometheusFlag registers --prometheus-url. It has no default of its own:
+// the default lives in the config package, and an unset flag must not mask the
+// environment (NETMON_DASHBOARD_PROMETHEUS_URL) or the config file
+// (dashboard.prometheus_url).
+func addPrometheusFlag(fs *flag.FlagSet) {
+	fs.String(prometheusFlag, "", "Prometheus URL to query for metric existence "+
+		"(config dashboard.prometheus_url, env NETMON_DASHBOARD_PROMETHEUS_URL)")
+}
+
+// builderConfig resolves the builder configuration, taking the Prometheus URL
+// from flag > environment > config file > default.
+func builderConfig(fs *flag.FlagSet) (*builder.Config, error) {
+	overrides := config.FlagOverrides(fs, map[string]string{prometheusFlag: config.KeyDashboardPromURL})
+	settings, err := config.Settings(config.Path(), overrides)
+	if err != nil {
+		return nil, err
+	}
+	cfg := builder.DefaultConfig()
+	cfg.PrometheusURL = settings.GetString(config.KeyDashboardPromURL)
+	return cfg, nil
+}
+
 func dashboardCommand(args []string) error {
 	if len(args) == 0 {
 		printDashboardUsage()
@@ -51,6 +77,7 @@ func dashboardGenerate(args []string) error {
 	outputDir := fs.String("output-dir", defaultOutputDir, "Output directory for dashboards")
 	overwrite := fs.Bool("overwrite", false, "Overwrite existing dashboard")
 	validate := fs.Bool("validate", true, "Validate JSON before writing")
+	addPrometheusFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -73,8 +100,11 @@ func dashboardGenerate(args []string) error {
 	defer func() { _ = store.Close() }()
 
 	// Create builder
-	config := builder.DefaultConfig()
-	b := builder.New(config, store)
+	bcfg, err := builderConfig(fs)
+	if err != nil {
+		return err
+	}
+	b := builder.New(bcfg, store)
 
 	// Validate module
 	if validateErr := b.ValidateModule(moduleName); validateErr != nil {
@@ -129,6 +159,7 @@ func dashboardGenerateAll(args []string) error {
 	overwrite := fs.Bool("overwrite", false, "Overwrite existing dashboards")
 	validate := fs.Bool("validate", true, "Validate JSON before writing")
 	generateIndex := fs.Bool("index", true, "Generate index.json catalog")
+	addPrometheusFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -146,8 +177,11 @@ func dashboardGenerateAll(args []string) error {
 	defer func() { _ = store.Close() }()
 
 	// Create builder
-	config := builder.DefaultConfig()
-	b := builder.New(config, store)
+	bcfg, err := builderConfig(fs)
+	if err != nil {
+		return err
+	}
+	b := builder.New(bcfg, store)
 
 	// Generate all dashboards
 	start := time.Now()
@@ -245,6 +279,7 @@ func dashboardList(args []string) error {
 	storagePath := fs.String("storage-path", defaultStoragePath, "Path to MIB storage")
 	showPollable := fs.Bool("pollable", false, "Show pollable OID count")
 	verbose := fs.Bool("verbose", false, "Show detailed information")
+	addPrometheusFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -259,8 +294,11 @@ func dashboardList(args []string) error {
 	defer func() { _ = store.Close() }()
 
 	// Create builder
-	config := builder.DefaultConfig()
-	b := builder.New(config, store)
+	bcfg, err := builderConfig(fs)
+	if err != nil {
+		return err
+	}
+	b := builder.New(bcfg, store)
 
 	// List modules
 	modules, err := b.ListModules()

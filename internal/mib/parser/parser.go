@@ -107,16 +107,20 @@ func (p *Parser) LoadModule(moduleName string) (*mib.ModuleInfo, error) {
 
 // loadModuleLocked is LoadModule for a caller already holding the lock.
 func (p *Parser) loadModuleLocked(moduleName string) (*mib.ModuleInfo, error) {
-	// Load the module
-	_, err := gosmi.LoadModule(moduleName)
+	// Load the module. The argument is a file name or a module name; the
+	// name gosmi reports back is the one the file declares, which differs
+	// from the argument when a file is not named after its module
+	// (iDRAC-SMIv2.mib declaring IDRAC-MIB-SMIv2). Every later lookup must use
+	// the declared name.
+	declared, err := gosmi.LoadModule(moduleName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load module %s: %w", moduleName, err)
 	}
 
 	// Get the loaded module
-	module, err := gosmi.GetModule(moduleName)
+	module, err := gosmi.GetModule(declared)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get module %s: %w", moduleName, err)
+		return nil, fmt.Errorf("failed to get module %s: %w", declared, err)
 	}
 
 	rawModule := module.GetRaw()

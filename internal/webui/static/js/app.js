@@ -8072,7 +8072,6 @@ class MonitoringApp {
             statusQueries: new Set(),
             objects: new Map()
         };
-        this.activeSubscriptions.set(key, subscription);
 
         for (const panel of panels) {
             const elementId = this.panelElementId(deviceId, mibName, panel);
@@ -8095,6 +8094,14 @@ class MonitoringApp {
             }
             subscription.objects.set(panel.query, target);
         }
+
+        // Recorded only once every panel has been registered, immediately
+        // before the send. A panel that throws partway through (a chart that
+        // will not initialise) used to leave the half-built subscription in
+        // the map, where it counted as installed -- and was re-sent on the next
+        // reconnect -- although nothing had ever been sent for it. Now a throw
+        // leaves nothing behind, and ensureMibTabLoaded's retry starts clean.
+        this.activeSubscriptions.set(key, subscription);
 
         const queries = [...subscription.statusQueries, ...subscription.metricQueries];
         if (queries.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -8362,9 +8369,17 @@ class MonitoringApp {
             const readings = this.textReadings(panel, labels);
             const labelled = readings.length > 1;
 
+            // On an indexed panel each row of the table carries its own set of
+            // readings, so the reading's label alone ("sys_descr") names the
+            // same thing on every row and says which of them it belongs to on
+            // none. The row's identity stays in front of it.
+            const indexed = (panel.index_labels || []).length > 0 && key !== panel.title;
+
             return readings.map(reading => ({
                 key,
-                name: reading.label || (anonymous ? '' : identity.name),
+                name: labelled && indexed
+                    ? `${identity.name} ${reading.label}`
+                    : reading.label || (anonymous ? '' : identity.name),
                 reading: reading.text,
                 labelled
             }));

@@ -326,6 +326,37 @@ const (
 	SensorValueOverflow  int64 = 1000000000
 )
 
+// carriesRangeSentinels reports whether the type's value range reserves
+// SensorValueUnderflow and SensorValueOverflow. The fixed-point physical types
+// range -999,999,999..+999,999,999; other, unknown and specialEnum permit the
+// full Integer32 subtype, where the endpoints are ordinary readings.
+func (t SensorType) carriesRangeSentinels() bool {
+	switch t {
+	case SensorTypeOther, SensorTypeUnknown, SensorTypeSpecialEnum:
+		return false
+	}
+	return true
+}
+
+// checkSensorValueRange classifies raw for the type. Sentinel types match the
+// two sentinels by exact equality; a value beyond them is malformed, not a
+// sentinel it happens to sit near. Other types accept any Integer32.
+func checkSensorValueRange(raw int64, sensorType SensorType) error {
+	if sensorType.carriesRangeSentinels() {
+		switch {
+		case raw == SensorValueUnderflow || raw == SensorValueOverflow:
+			return &SensorRangeError{Value: raw}
+		case raw < SensorValueUnderflow || raw > SensorValueOverflow:
+			return &SensorMalformedValueError{Value: raw, Type: sensorType}
+		}
+		return nil
+	}
+	if raw < math.MinInt32 || raw > math.MaxInt32 {
+		return &SensorMalformedValueError{Value: raw, Type: sensorType}
+	}
+	return nil
+}
+
 // ScaleSensorValue returns the physical quantity a sensor reading represents,
 // in the base unit of its type -- dBm, degrees Celsius, volts, amperes.
 //
@@ -336,9 +367,9 @@ const (
 // An out-of-range scale, an out-of-range precision, and the overflow and
 // underflow sentinels each return a typed error and no value. A caller that
 // cannot scale a reading must not publish it.
-func ScaleSensorValue(raw int64, scale SensorScale, precision SensorPrecision, table SensorTable) (float64, error) {
-	if raw <= SensorValueUnderflow || raw >= SensorValueOverflow {
-		return 0, &SensorRangeError{Value: raw}
+func ScaleSensorValue(raw int64, sensorType SensorType, scale SensorScale, precision SensorPrecision, table SensorTable) (float64, error) {
+	if err := checkSensorValueRange(raw, sensorType); err != nil {
+		return 0, err
 	}
 
 	scaleExponent, err := scale.Exponent(table)

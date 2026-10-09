@@ -102,6 +102,40 @@ func TestRestartDoesNotReparseAnUnchangedCatalog(t *testing.T) {
 	closeWarm()
 }
 
+// A file named differently from the module it declares (iDRAC-SMIv2.mib
+// declaring IDRAC-MIB-SMIv2) must load under the declared name, with its
+// objects resolved, and a restart must find it cached.
+func TestFileNameDifferingFromModuleNameLoadsAndStaysCached(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "mib-storage")
+	mibs := t.TempDir()
+	writeMIB(t, mibs, "renamed-fixture-file", fixtureMIB)
+
+	cold, closeCold := restartLoader(t, store, []string{"renamed-fixture-file"}, mibs)
+	if err := cold.Load(); err != nil {
+		t.Fatalf("cold Load: %v", err)
+	}
+	if cold.Revision() == 0 {
+		t.Fatal("the cold start parsed nothing")
+	}
+	if !cold.HasModule("FIXTURE-MIB") {
+		t.Fatal("the module is not stored under the name it declares")
+	}
+	oids, err := storeOf(t, cold).ListModuleOIDs("FIXTURE-MIB")
+	if err != nil || len(oids) == 0 {
+		t.Fatalf("objects of the declared module not resolved: %d, %v", len(oids), err)
+	}
+	closeCold()
+
+	warm, closeWarm := restartLoader(t, store, []string{"renamed-fixture-file"}, mibs)
+	if err := warm.Load(); err != nil {
+		t.Fatalf("warm Load: %v", err)
+	}
+	if got := warm.Revision(); got != 0 {
+		t.Errorf("the warm start changed the store %d times, want 0 — it reparsed a cached module", got)
+	}
+	closeWarm()
+}
+
 // The other half of the same decision: skipping unchanged modules must not cost
 // the operator an edited one. Editing a MIB file on disk is how a fix reaches a
 // running appliance, and it took effect on the next restart before this change.

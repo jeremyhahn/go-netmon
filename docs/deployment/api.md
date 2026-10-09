@@ -101,3 +101,19 @@ curl -s http://127.0.0.1:9090/api/v1/status/tsdb | jq '.data.headStats'
 # Devices the web UI knows about
 curl -s http://127.0.0.1:8080/api/devices | jq 'length'
 ```
+
+## Configuring bind and target addresses
+
+Every bind and target address resolves through viper with the precedence
+**flag > environment > config file > default**. A flag counts only if it was
+set on the command line. The environment variable is `NETMON_` plus the key
+upper-cased, with `.` replaced by `_`.
+
+| Key | Env | Flag | Default |
+| --- | --- | --- | --- |
+| `api.listen_address` | `NETMON_API_LISTEN_ADDRESS` | `go-netmon -api-listen` | `0.0.0.0:8080` |
+| `metrics.listen_address` | `NETMON_METRICS_LISTEN_ADDRESS` | `go-netmon -metrics-listen` | `0.0.0.0:9100` |
+| `webui.listen_address` | `NETMON_WEBUI_LISTEN_ADDRESS` | `webui -listen` | `:8080` |
+| `webui.prometheus_url` | `NETMON_WEBUI_PROMETHEUS_URL` | `webui -prometheus` | `http://localhost:9091` |
+| `webui.poller_url` | `NETMON_WEBUI_POLLER_URL` | `webui -poller` | `http://localhost:9080` |
+| `dashboard.prometheus_url` | `NETMON_DASHBOARD_PROMETHEUS_URL` | `mib-importer dashboard … --prometheus-url` | `http://prometheus:9090` |

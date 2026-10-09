@@ -112,7 +112,10 @@ die() {
 
 # A forced failure, for the fail-open case.
 if [ -f "$root/ps-status" ] && [ "\$1" = "ps" ]; then
-    cat "$root/ps-error" 2>/dev/null || true
+    # To stderr, like real docker: on stdout the text would be parsed as
+    # container ids and fail in the inspect branch, so the ps-status branch
+    # of compose_foreign_containers would pin nothing.
+    cat "$root/ps-error" >&2 2>/dev/null || true
     exit "\$(cat "$root/ps-status")"
 fi
 
@@ -506,6 +509,8 @@ test_guard_refuses_when_the_ownership_query_fails() {
 
     [ $status -ne 0 ] || fail "down succeeded although the ownership query failed" || return 1
     expect_refused "failed ownership query" "ownership could not be checked"
+    # The ps-status branch specifically, not the inspect one.
+    expect_refused "failed ownership query" "ps failed (exit 1): Cannot connect to the Docker daemon"
 }
 
 # --- lifecycle verbs ------------------------------------------------------
