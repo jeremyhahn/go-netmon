@@ -1,5 +1,12 @@
 # MIB Dashboard Redesign - Testing Strategy
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Test plan for a redesign proposal that was only partly built; not maintained.
+> Only the parser test file it names (`internal/mib/parser/parser_enhanced_test.go`)
+> exists; the storage, dashboard-generator and integration test files do not.
+> For how the project tests today see [../testing.md](../testing.md).
+
 ## Overview
 
 This document outlines the testing strategy for the MIB dashboard redesign to ensure 90%+ code coverage and correct functionality.

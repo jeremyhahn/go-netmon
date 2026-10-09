@@ -1,5 +1,14 @@
 # MIB Dashboard Architecture Documentation
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Index of a 2025 redesign proposal that was only partly built. The index
+> describes the proposal, not the system. Current pages: [system-architecture.md](system-architecture.md),
+> [../dashboard-generation.md](../dashboard-generation.md),
+> [../MIB_ARCHITECTURE.md](../MIB_ARCHITECTURE.md) and [../webui.md](../webui.md).
+> What was built, and what was not, is listed in
+> [mib-dashboard-redesign.md](mib-dashboard-redesign.md).
+
 ## Overview
 
 This directory contains comprehensive architectural documentation for the MIB dashboard redesign project.

@@ -1,5 +1,25 @@
 # MIB Dashboard Architecture Redesign
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Design proposal, built in part and otherwise differently; not maintained.
+> **Built:** the semantic fields on `mib.OIDMetadata` (`ObjectClass`, `TableOID`,
+> `EntryOID`, `IsIndex`, `IndexFor`, `DisplayHint`, `EnumValues`, `RangeMin`,
+> `RangeMax`, `IsChartable`, `IsDisplayable`, `ChartType`) and the parser
+> classification that fills `ObjectClass` (`internal/mib/types.go`,
+> `internal/mib/parser/parser.go`). **Not built:** the `DashboardSpec`,
+> `ScalarWidget` and `TableWidget` contract, the `internal/mib/dashboard`
+> package, the enhanced `TableInfo` column lists, and `GetTableInfoEnhanced`.
+> `detectTables` in `internal/webui/api/mib_handler.go` still matches OID
+> patterns for `GET /api/mibs/{id}/tables`. **Replaced by:** dashboards are
+> built from the metrics a device reports in Prometheus joined with the metric
+> catalog the poller publishes (`generateDashboard` in
+> `internal/webui/api/dashboard_gen.go`), returned as `Dashboard` and `Panel`
+> values. See [../dashboard-generation.md](../dashboard-generation.md),
+> [../MIB_ARCHITECTURE.md](../MIB_ARCHITECTURE.md) and
+> [system-architecture.md](system-architecture.md). The file and line
+> references below describe the code as it was when this was written.
+
 ## Executive Summary
 
 The current MIB dashboard generation system has critical architectural flaws that prevent it from correctly displaying MIB objects. This document provides a comprehensive analysis of the problems and proposes a complete architectural redesign.

@@ -1,5 +1,15 @@
 # MIB Dashboard Architecture Diagrams
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Diagrams of a redesign proposal that was only partly built; not maintained.
+> The "proposed" diagrams show a dashboard spec generator that does not exist.
+> Dashboards are now built from the metrics a device reports in Prometheus
+> joined with the poller's metric catalog. See
+> [mib-dashboard-redesign.md](mib-dashboard-redesign.md) for what was built,
+> [system-architecture.md](system-architecture.md) and
+> [../dashboard-generation.md](../dashboard-generation.md).
+
 ## Current Architecture (Broken)
 
 ```

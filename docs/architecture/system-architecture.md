@@ -1,5 +1,11 @@
 # go-netmon System Architecture
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
+How the containers in `docker-compose.yml` fit together. Ports and volumes below
+are the ones in that file; `config.example.yaml` and `prometheus.yml` agree with
+them except where noted.
+
 ## Overview
 
 go-netmon is a comprehensive SNMP network monitoring solution that provides real-time device monitoring, MIB parsing, metric collection, and dashboard visualization.
@@ -53,7 +59,7 @@ go-netmon is a comprehensive SNMP network monitoring solution that provides real
 │  │  │ • Dashboard gen │    │                 │                           │  │
 │  │  └─────────────────┘    └─────────────────┘                           │  │
 │  │                                                                         │  │
-│  │  Exposed Ports: 9080 (API), 9090 (Metrics)                             │  │
+│  │  Exposed Ports: 9080 (API), 9100 (Metrics)                             │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                    │                                                          │
 │                    │ remote_write                                            │
@@ -99,8 +105,8 @@ go-netmon is a comprehensive SNMP network monitoring solution that provides real
 │  │  │   HTTP Server   │    │  MIB Loader     │    │   Dashboard     │    │  │
 │  │  │    (:8080)      │    │                 │    │   Generator     │    │  │
 │  │  │                 │    │ • gosmi parser  │    │                 │    │  │
-│  │  │ • Static files  │    │ • MIB import    │    │ • Widget specs  │    │  │
-│  │  │ • REST API      │    │ • Parse/store   │    │ • Chart configs │    │  │
+│  │  │ • Static files  │    │ • MIB import    │    │ • Panel specs   │    │  │
+│  │  │ • REST API      │    │ • Parse/store   │    │ • PromQL queries│    │  │
 │  │  │ • WebSocket     │    │                 │    │                 │    │  │
 │  │  └─────────────────┘    └─────────────────┘    └─────────────────┘    │  │
 │  │           │                                                            │  │
@@ -114,7 +120,7 @@ go-netmon is a comprehensive SNMP network monitoring solution that provides real
 │  │  │ • MIB mappings  │    │                 │    │   updates       │    │  │
 │  │  └─────────────────┘    └─────────────────┘    └─────────────────┘    │  │
 │  │                                                                         │  │
-│  │  Exposed Ports: 8081 (mapped from 8080)                                │  │
+│  │  Exposed Ports: 8082 (mapped from 8080)                                │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                                                               │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
@@ -133,7 +139,7 @@ go-netmon is a comprehensive SNMP network monitoring solution that provides real
                     ┌─────────────────────────────────────────────┐
                     │                  Browser                     │
                     │                                              │
-                    │  http://localhost:8081  - WebUI Dashboard   │
+                    │  http://localhost:8082  - WebUI Dashboard   │
                     │  http://localhost:3000  - Grafana           │
                     │  http://localhost:9091  - Prometheus        │
                     │                                              │
@@ -200,36 +206,45 @@ User selects device ──► Fetch device MIBs
                        For each MIB:
                               │
                               ▼
-                    GET /api/mibs/{id}/dashboard
+                    GET /api/mibs/{id}/dashboard?device={name}
                               │
                               ▼
-                    Dashboard Generator:
-                    ├── Load OID metadata
-                    ├── Classify objects (scalar/table)
-                    ├── Determine chartability
-                    └── Generate widget specs
+                    generateDashboard (parses no MIBs):
+                    ├── List the metric names the device reports in Prometheus
+                    ├── Join them with the metric catalog the poller publishes
+                    ├── Keep the metrics of the requested module(s)
+                    └── Build one Panel per metric (line, rate, state, text)
                               │
                               ▼
-                    Frontend renders:
-                    ├── Status widgets (scalars)
-                    ├── Chart widgets (time series)
-                    └── Table widgets (multi-instance)
+                    Frontend renders the panels
                               │
                               ▼
-                    Subscribe to WebSocket:
+                    Subscribe to WebSocket (/ws):
                     ├── Metric updates
                     └── Real-time chart data
 ```
+
+`GET /api/devices/{id}/dashboard` builds the same dashboard for everything the
+device reports, across all of its assigned MIBs. The WebSocket endpoint answers
+501 in a FIPS build (`internal/webui/api/websocket_fips.go`); see
+[../fips.md](../fips.md).
 
 ## Port Mapping
 
 | Service     | Internal Port | External Port | Description                    |
 |-------------|--------------|---------------|--------------------------------|
 | go-netmon   | 9080         | 9080          | REST API for poller control    |
-| go-netmon   | 9090         | 9090          | Prometheus metrics endpoint    |
+| go-netmon   | 9100         | 9100          | Prometheus metrics endpoint    |
 | Prometheus  | 9090         | 9091          | Prometheus UI and API          |
 | Grafana     | 3000         | 3000          | Grafana dashboards             |
-| WebUI       | 8080         | 8081          | Web UI for device management   |
+| WebUI       | 8080         | 8082          | Web UI for device management   |
+
+The poller's API and metrics ports come from `api.listen_address` and
+`metrics.listen_address` in `config.yaml`; the compose file and `Dockerfile`
+assume `:9080` and `:9100`. `config.example.yaml` sets the API to `:8080`, so a
+copy of it must change that to `:9080` for the published port and the
+container health check to reach it. The web UI is unauthenticated; see
+[../operations/security-posture.md](../operations/security-posture.md).
 
 ## Key Components
 
@@ -254,7 +269,7 @@ User selects device ──► Fetch device MIBs
 | HTTP Server        | Serve static files and REST API                  |
 | Device Storage     | PebbleDB-based device and profile storage        |
 | MIB Import         | Upload and parse MIB files                       |
-| Dashboard Generator| Generate widget specifications from MIB metadata |
+| Dashboard Generator| Build panels from device metrics and the catalog |
 | Prometheus Client  | Query metrics for display                        |
 | WebSocket Hub      | Real-time metric updates to browser              |
 
@@ -301,7 +316,7 @@ make restart
 
 ## Access URLs
 
-- **WebUI**: http://localhost:8081
+- **WebUI**: http://localhost:8082
 - **Prometheus**: http://localhost:9091
 - **Grafana**: http://localhost:3000 (admin/admin)
 - **go-netmon API**: http://localhost:9080

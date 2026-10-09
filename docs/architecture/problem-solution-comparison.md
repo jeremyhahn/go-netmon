@@ -1,5 +1,13 @@
 # Problem-Solution Comparison
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Before/after comparison for a redesign proposal that was only partly built;
+> not maintained. The "current" code it criticizes is gone or changed and the
+> "proposed" generator was not built as written. See
+> [mib-dashboard-redesign.md](mib-dashboard-redesign.md) for what was built and
+> [../dashboard-generation.md](../dashboard-generation.md) for what replaced it.
+
 ## Executive Summary
 
 This document provides side-by-side comparisons of the current broken implementation versus the proposed robust solution.

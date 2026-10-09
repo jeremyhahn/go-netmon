@@ -47,14 +47,10 @@ verified against the code page by page (#153).
 
 ### Architecture ([architecture/](architecture/README.md))
 
-- [architecture/README.md](architecture/README.md) — MIB dashboard architecture documentation
 - [architecture/system-architecture.md](architecture/system-architecture.md) — go-netmon system architecture
-- [architecture/mib-dashboard-redesign.md](architecture/mib-dashboard-redesign.md) — MIB dashboard architecture redesign
-- [architecture/mib-dashboard-diagrams.md](architecture/mib-dashboard-diagrams.md) — MIB dashboard architecture diagrams
-- [architecture/implementation-guide.md](architecture/implementation-guide.md) — MIB dashboard redesign implementation guide
-- [architecture/testing-strategy.md](architecture/testing-strategy.md) — MIB dashboard redesign testing strategy
-- [architecture/problem-solution-comparison.md](architecture/problem-solution-comparison.md) — problem-solution comparison
-- [architecture/quick-reference.md](architecture/quick-reference.md) — MIB dashboard redesign quick reference
+
+The other pages in [architecture/](architecture/README.md) are a partly built
+MIB dashboard redesign proposal; they are listed under Archive.
 
 ### Deployment ([deployment/](deployment/))
 
@@ -98,3 +94,10 @@ Historical reports and fix notes. Not maintained.
 - [webui-fixes-2025-11-01.md](webui-fixes-2025-11-01.md) — web UI critical fixes report, 2025-11-01
 - [bugfix-mib-parser-empty-oids.md](bugfix-mib-parser-empty-oids.md) — bug fix: MIB parser empty OID fields
 - [scalar_oid_fix.md](scalar_oid_fix.md) — scalar OID detection fix
+- [architecture/README.md](architecture/README.md) — MIB dashboard redesign proposal: index
+- [architecture/mib-dashboard-redesign.md](architecture/mib-dashboard-redesign.md) — MIB dashboard redesign proposal, and what was built
+- [architecture/mib-dashboard-diagrams.md](architecture/mib-dashboard-diagrams.md) — MIB dashboard redesign diagrams
+- [architecture/implementation-guide.md](architecture/implementation-guide.md) — MIB dashboard redesign implementation guide
+- [architecture/testing-strategy.md](architecture/testing-strategy.md) — MIB dashboard redesign testing strategy
+- [architecture/problem-solution-comparison.md](architecture/problem-solution-comparison.md) — MIB dashboard redesign problem-solution comparison
+- [architecture/quick-reference.md](architecture/quick-reference.md) — MIB dashboard redesign quick reference

@@ -1,5 +1,14 @@
 # MIB Dashboard Redesign - Implementation Guide
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Implementation plan for a redesign proposal that was only partly built; not
+> maintained. The parser phase (`ObjectClass` and the related `OIDMetadata`
+> fields) exists; the dashboard generator, `DashboardSpec` and frontend phases
+> were not built as written. The code samples below do not match the code. See
+> [mib-dashboard-redesign.md](mib-dashboard-redesign.md) for what was built and
+> [../dashboard-generation.md](../dashboard-generation.md) for what replaced it.
+
 ## Quick Start
 
 This guide provides concrete code examples for implementing the redesigned architecture.

@@ -1,5 +1,12 @@
 # MIB Dashboard Redesign - Quick Reference Card
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Summary card for a redesign proposal that was only partly built; not
+> maintained. Its file list and phases describe the plan, not the code. See
+> [mib-dashboard-redesign.md](mib-dashboard-redesign.md) for what was built and
+> [../dashboard-generation.md](../dashboard-generation.md) for what replaced it.
+
 ## 30-Second Overview
 
 **Problem**: Dashboard shows wrong data, empty instance selectors, charts meaningless indices.
