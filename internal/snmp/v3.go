@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/gosnmp/gosnmp"
+
+	"github.com/jeremyhahn/go-netmon/internal/fipsprofile"
 )
 
 // SNMPv3 user-based security, in one place.
@@ -38,6 +40,15 @@ type V3Credentials struct {
 func ConfigureV3(conn *gosnmp.GoSNMP, creds V3Credentials) error {
 	if creds.Username == "" {
 		return &V3ConfigError{Field: "username", Value: "", Reason: "required for SNMPv3"}
+	}
+
+	// The FIPS profile is a runtime decision, so an ordinary build run under
+	// fips140=only still contains MD5, SHA-1 and DES and must refuse them here.
+	if err := fipsprofile.CheckAuthProtocol(creds.AuthProtocol); err != nil {
+		return err
+	}
+	if err := fipsprofile.CheckPrivProtocol(creds.PrivProtocol); err != nil {
+		return err
 	}
 
 	auth, err := authProtocol(creds.AuthProtocol)
