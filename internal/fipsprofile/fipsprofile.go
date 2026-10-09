@@ -92,6 +92,9 @@ func CheckAuthProtocol(name string) error {
 		return nil
 	}
 	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "", "NONE":
+		return &RefusedError{Field: "auth_protocol", Value: name, Reason: "the profile permits only SNMPv3 authPriv;" +
+			" authentication is required (noAuthNoPriv is refused); use SHA224, SHA256, SHA384 or SHA512"}
 	case "MD5":
 		return &RefusedError{Field: "auth_protocol", Value: name, Reason: "SNMPv3 HMAC-MD5-96 (RFC 3414 section 6)" +
 			" is not a FIPS 140-3 approved algorithm; use SHA224, SHA256, SHA384 or SHA512"}
@@ -109,6 +112,9 @@ func CheckPrivProtocol(name string) error {
 		return nil
 	}
 	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "", "NONE":
+		return &RefusedError{Field: "priv_protocol", Value: name, Reason: "the profile permits only SNMPv3 authPriv;" +
+			" privacy is required (noAuthNoPriv and authNoPriv are refused); use AES, AES192 or AES256"}
 	case "DES":
 		return &RefusedError{Field: "priv_protocol", Value: name, Reason: "SNMPv3 CBC-DES (RFC 3414 section 8)" +
 			" is not a FIPS 140-3 approved algorithm; use AES, AES192 or AES256"}

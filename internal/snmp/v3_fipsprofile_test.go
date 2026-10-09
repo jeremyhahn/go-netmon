@@ -25,6 +25,8 @@ func TestConfigureV3UnderTheFIPSProfile(t *testing.T) {
 		{"MD5 auth", "MD5", "AES", "auth_protocol"},
 		{"SHA-1 auth", "SHA", "AES", "auth_protocol"},
 		{"DES priv", "SHA256", "DES", "priv_protocol"},
+		{"authNoPriv", "SHA256", "", "priv_protocol"},
+		{"noAuthNoPriv", "", "", "auth_protocol"},
 		{"SHA256 AES", "SHA256", "AES", ""},
 		{"SHA512 AES256", "SHA512", "AES256", ""},
 		{"SHA224 AES192", "SHA224", "AES192", ""},
@@ -83,6 +85,10 @@ func TestNewClientUnderTheFIPSProfile(t *testing.T) {
 			SNMPVersion: "3", Username: "u", AuthProtocol: "SHA256", AuthPassword: "authpassword",
 			PrivProtocol: "DES", PrivPassword: "privpassword",
 		}, true},
+		{"v3 authNoPriv", config.Device{
+			SNMPVersion: "3", Username: "u", AuthProtocol: "SHA256", AuthPassword: "authpassword",
+		}, true},
+		{"v3 noAuthNoPriv", config.Device{SNMPVersion: "3", Username: "u"}, true},
 		{"v3 SHA256 AES", config.Device{
 			SNMPVersion: "3", Username: "u", AuthProtocol: "SHA256", AuthPassword: "authpassword",
 			PrivProtocol: "AES", PrivPassword: "privpassword",

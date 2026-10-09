@@ -35,6 +35,8 @@ func TestDeviceValidateUnderTheFIPSProfile(t *testing.T) {
 		{"v3 MD5", fipsTestDevice("3", "MD5", "AES"), "auth_protocol"},
 		{"v3 SHA-1", fipsTestDevice("3", "SHA", "AES"), "auth_protocol"},
 		{"v3 DES", fipsTestDevice("3", "SHA256", "DES"), "priv_protocol"},
+		{"v3 authNoPriv", fipsTestDevice("3", "SHA256", ""), "priv_protocol"},
+		{"v3 noAuthNoPriv", fipsTestDevice("3", "", ""), "auth_protocol"},
 		{"v3 SHA256 AES", fipsTestDevice("3", "SHA256", "AES"), ""},
 		{"v3 SHA512 AES256", fipsTestDevice("3", "SHA512", "AES256"), ""},
 	}

@@ -24,7 +24,10 @@ func TestCheckSNMP(t *testing.T) {
 		{"v3 SHA256 AES", "3", "SHA256", "AES", ""},
 		{"v3 SHA512 AES256", "3", "SHA512", "AES256", ""},
 		{"v3 SHA224 AES192", "v3", "SHA224", "AES192", ""},
-		{"v3 SHA384 no priv", "3", "SHA384", "", ""},
+		{"v3 authNoPriv", "3", "SHA384", "", "priv_protocol"},
+		{"v3 authNoPriv NONE", "3", "SHA256", "NONE", "priv_protocol"},
+		{"v3 noAuthNoPriv", "3", "", "", "auth_protocol"},
+		{"v3 noAuthNoPriv NONE", "3", "none", "none", "auth_protocol"},
 	}
 
 	for _, tt := range tests {

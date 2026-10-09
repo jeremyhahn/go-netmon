@@ -125,9 +125,13 @@ permitted. Everything else is refused with a typed `*fipsprofile.RefusedError`
 | `snmp_version` | `1`, `2c` (also `v1`, `v2c`) | `snmp_version` |
 | `auth_protocol` | `MD5`, `SHA` (SHA-1) | `auth_protocol` |
 | `priv_protocol` | `DES` | `priv_protocol` |
+| `auth_protocol` | empty or `NONE` (noAuthNoPriv) | `auth_protocol` |
+| `priv_protocol` | empty or `NONE` (authNoPriv) | `priv_protocol` |
 
-Accepted: SNMPv3 with `SHA224`, `SHA256`, `SHA384` or `SHA512` authentication
-and `AES`, `AES192` or `AES256` privacy.
+Accepted, and only this: SNMPv3 authPriv with `SHA224`, `SHA256`, `SHA384` or
+`SHA512` authentication and `AES`, `AES192` or `AES256` privacy. The weaker v3
+security levels are refused as well, so a target cannot satisfy the profile
+by dropping authentication or privacy.
 
 The refusal fails closed at the earliest point that sees the setting:
 `config.Device.Validate` (so a configuration file with a v2c target does not
