@@ -1,5 +1,9 @@
 # Scalar OID Detection Fix
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical bug-fix note; not maintained. See the current pages in [docs/README.md](README.md).
+
 ## Problem
 
 The SNMP poller was not collecting scalar OIDs correctly, particularly SNMPv2-MIB system group scalars like `sysDescr`, `sysUpTime`, and `sysName`. 

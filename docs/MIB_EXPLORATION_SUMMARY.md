@@ -1,5 +1,9 @@
 # MIB Parsing and Storage - Exploration Summary
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical exploration notes; not maintained. See the current pages in [docs/README.md](README.md).
+
 This directory contains comprehensive documentation of the MIB (Management Information Base) parsing and storage subsystem in go-netmon.
 
 ## Documents Overview

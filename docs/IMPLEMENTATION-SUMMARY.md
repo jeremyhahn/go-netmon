@@ -1,5 +1,9 @@
 # Web UI Backend Implementation Summary
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical implementation summary; not maintained. See [webui.md](webui.md) and [docs/README.md](README.md) for current pages.
+
 ## Overview
 
 Successfully implemented a complete Web UI backend system for go-netmon with REST API, SQLite storage, MIB management, and automatic Grafana dashboard generation.

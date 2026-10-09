@@ -1,5 +1,9 @@
 # Phase 2: MIB Profile System - Summary
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical phase report; not maintained. See the current pages in [docs/README.md](README.md).
+
 ## Overview
 
 Successfully implemented a comprehensive MIB profile-based architecture that allows devices to be monitored using pre-defined or custom MIB profiles. The system dynamically selects OIDs based on device type and profile configuration.

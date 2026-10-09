@@ -1,5 +1,7 @@
 # Web UI Poller Integration
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 ## Overview
 This document describes the integration between the Web UI and the main go-netmon polling service. The integration enables the Web UI to manage device lifecycle (create, update, delete) and retrieve device status from the poller service.
 
@@ -15,16 +17,19 @@ HTTP client for interacting with the main poller service API.
 - Graceful error handling
 
 **Methods:**
-- `RegisterDevice(ctx, device, mibNames)` - Register a device with the poller
-- `UpdateDevice(ctx, device, mibNames)` - Update an existing device
+- `RegisterDevice(ctx, device, mibNames, filters)` - Register a device with the poller
+- `UpdateDevice(ctx, device, mibNames, filters)` - Update an existing device
 - `RemoveDevice(ctx, deviceName)` - Remove a device from the poller
 - `GetDeviceStatus(ctx, deviceName)` - Fetch device status
 - `ListDevices(ctx)` - List all devices from the poller
 
+`filters` maps a MIB module name to its `config.ModuleFilter`, which carries the per-device assignment filters to the poller.
+
 **Configuration:**
-- Default base URL: `http://go-netmon:8080`
-- Default timeout: 10 seconds
-- Max retries: 3 with exponential backoff (100ms, 200ms, 400ms)
+- Poller URL: `-poller` flag, `webui.poller_url` in the config file, or `NETMON_WEBUI_POLLER_URL`; the default is `http://localhost:9080` (the Compose file points it at the poller service)
+- Per-request timeout: the web UI passes `PollerRequestTimeout` (3 seconds); `NewPollerClient` itself falls back to 10 seconds when given zero
+- Device changes are pushed within a `PollerSyncBudget` of 5 seconds
+- Max attempts: 3, with exponential backoff between them (100ms, then 200ms)
 
 ### 2. Device Lifecycle Hooks (`internal/webui/api/device.go`)
 Integration points in device CRUD handlers that synchronize with the poller service.
@@ -51,12 +56,13 @@ Integration points in device CRUD handlers that synchronize with the poller serv
 - Automatically updates the poller with new MIB list
 - Uses graceful degradation
 
-### 3. Device Status Endpoint (`internal/webui/api/device_status.go`)
+### 3. Device Status Endpoints (`internal/webui/api/device_status.go`)
 REST API endpoints for retrieving device status from the poller service.
 
 **Endpoints:**
 - `GET /api/devices/{id}/status` - Get status by device ID
 - `GET /api/devices/status/{name}` - Get status by device name
+- `GET /api/devices/status` - Fleet status from one poller listing call; see [webui.md](webui.md#fleet-status)
 
 **Response Format:**
 ```json
@@ -70,20 +76,23 @@ REST API endpoints for retrieving device status from the poller service.
   "poll_interval": "30s",
   "tags": {
     "environment": "production"
-  }
+  },
+  "unreachable": false,
+  "consecutive_failures": 0,
+  "next_poll_time": "2025-10-24T14:00:30Z"
 }
 ```
 
-### 4. Server Updates (`internal/webui/api/server.go`)
-- Added `PollerClient` interface to Server struct
-- Added `pollerClient` field to Server
-- Updated Config to accept PollerClient
-- Added status routes to router
+`last_error`, `tags`, `consecutive_failures` and `next_poll_time` are omitted when empty. A missing `next_poll_time` means no retry is scheduled yet (a device on its first poll); it is not an error. `unreachable` is true while the poller gets no SNMP answer at all from the device and is retrying on a widening interval.
 
-### 5. Main Updates (`cmd/webui/main.go`)
-- Added `--poller` flag for poller URL configuration
-- Initializes PollerClient with configured URL and timeout
-- Passes client to API server during initialization
+### 4. Server Wiring (`internal/webui/api/server.go`)
+- `api.Config` takes a `PollerClient` (an interface, so tests can substitute a fake)
+- The status routes are registered with the other `/api` routes
+
+### 5. Main (`cmd/webui/main.go`)
+- The `-poller` flag (or config/env above) sets the poller URL
+- Builds the client with `NewPollerClient(url, api.PollerRequestTimeout)`
+- Passes it to the API server
 
 ## Usage
 
@@ -91,50 +100,52 @@ REST API endpoints for retrieving device status from the poller service.
 
 ```bash
 ./bin/webui \
-  --listen :8081 \
-  --prometheus http://localhost:9091 \
-  --poller http://go-netmon:8080 \
-  --db data/webui \
-  --mib-storage data/mibs
+  -listen :8082 \
+  -prometheus http://localhost:9091 \
+  -poller http://localhost:9080 \
+  -db data/webui \
+  -mib-storage data/mibs
 ```
+
+Under Docker Compose these are set for you and the Web UI is published on host port 8082.
 
 ### API Examples
 
 **Create a device:**
 ```bash
-curl -X POST http://localhost:8081/api/devices \
+curl -X POST http://localhost:8082/api/devices \
   -H "Content-Type: application/json" \
   -d '{
     "name": "router-01",
     "address": "203.0.113.1",
-    "snmp_version": "2c",
+    "snmp_version": "v2c",
     "community": "public"
   }'
 ```
 
 **Get device status:**
 ```bash
-curl http://localhost:8081/api/devices/1/status
+curl http://localhost:8082/api/devices/1/status
 
 # Or by name:
-curl http://localhost:8081/api/devices/status/router-01
+curl http://localhost:8082/api/devices/status/router-01
 ```
 
 **Update device:**
 ```bash
-curl -X PUT http://localhost:8081/api/devices/1 \
+curl -X PUT http://localhost:8082/api/devices/1 \
   -H "Content-Type: application/json" \
   -d '{
     "name": "router-01",
     "address": "203.0.113.2",
-    "snmp_version": "2c",
+    "snmp_version": "v2c",
     "community": "private"
   }'
 ```
 
 **Delete device:**
 ```bash
-curl -X DELETE http://localhost:8081/api/devices/1
+curl -X DELETE http://localhost:8082/api/devices/1
 ```
 
 ## Error Handling
@@ -143,9 +154,9 @@ curl -X DELETE http://localhost:8081/api/devices/1
 The integration uses graceful degradation to ensure the Web UI continues functioning even if the poller service is unavailable:
 
 1. **Device Operations**: If poller is down, devices are still saved/updated/deleted in PebbleDB
-2. **Logging**: All poller errors are logged at WARNING level
+2. **Logging**: Poller errors are logged
 3. **User Experience**: Users can still manage devices via the Web UI
-4. **Status Endpoint**: Returns 503 Service Unavailable if poller is down
+4. **Status Endpoints**: Return 503 Service Unavailable (plain text) if the poller is down or no poller client is configured, and 404 if the poller does not know the device
 
 ### Retry Logic
 The client automatically retries failed requests with exponential backoff:
@@ -153,21 +164,19 @@ The client automatically retries failed requests with exponential backoff:
 - Attempt 2: 100ms delay
 - Attempt 3: 200ms delay
 
-Client errors (4xx) are not retried.
+Client errors (4xx) and context cancellation are not retried.
 
 ## Testing
 
 ### Unit Tests
-- `internal/webui/client/poller_client_test.go` - 92% coverage
-  - Tests all client methods
+- `internal/webui/client/poller_client_test.go`
+  - Tests the client methods
   - Tests retry logic and timeout
-  - Tests context cancellation
-  - Tests error handling
+  - Tests context cancellation and error handling
 
 - `internal/webui/api/device_status_test.go`
-  - Tests status endpoints with mocked client
-  - Tests error scenarios
-  - Tests response format
+  - Tests status endpoints with a mocked client
+  - Tests error scenarios and response format
 
 ### Running Tests
 
@@ -187,18 +196,17 @@ make test-webui
 ```bash
 # Generate coverage report
 make coverage-webui
-
-# View HTML coverage report
-open coverage/coverage-webui.html
 ```
+
+The Makefile target names the output; check `make coverage-webui` for where it writes the report.
 
 ## Architecture
 
 ```
 ┌─────────────┐         ┌──────────────┐         ┌───────────────┐
 │   Web UI    │         │  Poller      │         │  Prometheus   │
-│   (8081)    │         │  Service     │         │    (9091)     │
-└──────┬──────┘         │  (8080)      │         └───────────────┘
+│   (8082)    │         │  Service     │         │    (9091)     │
+└──────┬──────┘         │  (9080)      │         └───────────────┘
        │                └───────┬──────┘                  ▲
        │                        │                         │
        │ HTTP Client            │ SNMP Polls              │ Metrics
@@ -219,6 +227,8 @@ open coverage/coverage-webui.html
                         Device Config
 ```
 
+Ports are host ports from `docker-compose.yml`; inside the Compose network the services use their container ports.
+
 ## Profile Resolution
 
 When a device is created or updated, the Web UI:
@@ -226,17 +236,8 @@ When a device is created or updated, the Web UI:
    - Direct MIB assignments
    - MIBs from assigned profiles
 2. Extracts MIB names
-3. Passes them to the poller as the `modules` array
+3. Passes them to the poller as the `modules` array, with the per-assignment filters
 4. Poller uses these modules to determine what OIDs to poll
-
-## Future Enhancements
-
-1. **Batch Operations**: Support bulk device registration
-2. **Webhook Notifications**: Poller notifies Web UI of status changes
-3. **Caching**: Cache device status to reduce poller load
-4. **Health Checks**: Periodic health checks between Web UI and poller
-5. **Metrics**: Export integration metrics (success/failure rates)
-6. **Rate Limiting**: Protect poller from excessive requests
 
 ## Troubleshooting
 
@@ -246,8 +247,8 @@ When a device is created or updated, the Web UI:
 
 **Check:**
 1. Poller service is running: `docker ps | grep go-netmon`
-2. Poller URL is correct: Check `--poller` flag
-3. Network connectivity: `curl http://go-netmon:8080/health`
+2. Poller URL is correct: check the `-poller` flag, `webui.poller_url`, or `NETMON_WEBUI_POLLER_URL`
+3. Network connectivity: `curl http://localhost:9080/api/poller/devices`
 4. Check logs: `make logs-webui`
 
 ### Device Not Showing in Poller
@@ -256,27 +257,24 @@ When a device is created or updated, the Web UI:
 
 **Check:**
 1. Check Web UI logs for registration errors
-2. Verify poller received the device: `curl http://go-netmon:8080/api/poller/devices`
-3. Check device is enabled in poller
-4. Verify MIBs/profiles are correctly assigned
+2. Verify poller received the device: `curl http://localhost:9080/api/poller/devices`
+3. Verify MIBs/profiles are correctly assigned
 
 ### Status Returns 404
 
 **Symptom**: GET /api/devices/{id}/status returns 404
 
 **Possible Causes:**
-1. Device not registered with poller
-2. Device name mismatch between Web UI and poller
-3. Poller service not running
+1. The device id is unknown to the Web UI ("device not found")
+2. The poller does not know the device ("device not found in poller"): it was not registered, or its name differs between the two systems
 
 **Solution:**
-1. Update the device to re-register: `PUT /api/devices/{id}`
-2. Check device name in both systems
-3. Start poller service
+1. Update the device to re-register it: `PUT /api/devices/{id}`
+2. Check the device name in both systems
 
 ## References
 
-- Main Poller API: `/home/user/sources/go-netmon/internal/api/poller_control.go`
-- Device Status Types: `/home/user/sources/go-netmon/internal/api/device_status.go`
-- Web UI API: `/home/user/sources/go-netmon/internal/webui/api/`
-- Storage Layer: `/home/user/sources/go-netmon/internal/webui/storage/`
+- Poller device control API: `internal/api/poller_control.go`
+- Device status types: `internal/api/device_status.go`
+- Web UI API: `internal/webui/api/`
+- Storage layer: `internal/webui/storage/`

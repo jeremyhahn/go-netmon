@@ -1,5 +1,9 @@
 # Phase 2 Progress: MIB Parser & Dynamic OID Management
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical phase report; not maintained. See the current pages in [docs/README.md](README.md).
+
 **Date:** 2025-10-23
 **Status:** 🚧 IN PROGRESS (70% Complete)
 

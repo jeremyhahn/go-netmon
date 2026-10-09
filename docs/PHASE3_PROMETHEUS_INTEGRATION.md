@@ -1,5 +1,9 @@
 # Phase 3: Prometheus Integration - Summary
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical phase report; not maintained. See the current pages in [docs/README.md](README.md).
+
 ## Overview
 
 Successfully implemented Prometheus remote write integration with automatic metric export from the SNMP poller. The system now collects SNMP metrics, converts them to Prometheus samples, and exports them via the Prometheus remote write protocol with batching and compression.

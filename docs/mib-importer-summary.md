@@ -1,5 +1,9 @@
 # MIB Importer Tool - Implementation Summary
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical implementation summary; the current page is [mib-importer.md](mib-importer.md).
+
 ## Overview
 
 Successfully implemented a comprehensive MIB import tool for go-netmon that parses Cisco support lists and downloads MIBs organized by device from the cisco-mibs GitHub repository.

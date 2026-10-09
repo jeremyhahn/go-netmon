@@ -1,5 +1,14 @@
 # The Metric Catalog
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
+The figures quoted below (object counts, series counts, timings, durations) are
+point-in-time measurements taken when the section was written, on the MIB set
+and the monitor-01 Prometheus of that day. They are context for the design decisions,
+not properties the code guarantees, and they were not re-measured for the
+2026-10-09 verification. The behavior described is what was checked against the
+code.
+
 How a consumer learns what a series means without parsing a MIB.
 
 ## Why it exists
@@ -112,9 +121,15 @@ Which applies is not a preference — it is whether the name is on the series.
 
 Where a table has several candidate columns (`ifName`, `ifDescr`, `ifAlias`) the
 MIB does not declare which names the row, so the choice is a documented
-presentation convention: a column ending in `Name`, then `Descr`, then `Alias`,
-otherwise the first in sorted order. Deterministic, so every collector given the
+presentation convention (`identityInfoMetric`): among the table's status
+columns, in sorted order, the first whose name ends in `Name`, else `Descr`,
+else `Description`, else `Alias`. Enumerated columns are never candidates — a
+state cannot tell two rows apart. Deterministic, so every collector given the
 same MIBs picks the same one.
+
+When no candidate survives there is **no identity** rather than a guess: the
+entry carries neither `identity_label` nor `identity_info_metric`, and a
+renderer falls back to the row's index.
 
 ## Scale: global, and it must stay that way
 
@@ -306,10 +321,11 @@ the fleet publishes now rather than everything it ever published. The window is
 far longer than any plausible poll interval on purpose: evicting sooner would
 drop a metric from a device polled hourly. Eviction is self-healing — a live
 metric returns on its next successful export — so the cost of the window being
-slightly wrong is a description missing for one poll, not data lost. Cataloging every object in every loaded module would describe 9,202 metrics on
-a fleet publishing a few hundred, and promise panels for objects no device
-answers. A row appears when the data does — the same semantics the dashboard
-already has.
+slightly wrong is a description missing from the diagnostic for one poll, not
+data lost.
+
+The published set never limits what is emitted. Catalog rows come from the MIB
+corpus (see *Scope*); the set only feeds the two coverage gauges.
 
 ## Delivery: the catalog does not share a batch with telemetry
 
@@ -330,9 +346,8 @@ A failed chunk stops the rest: a catalog describing an arbitrary subset of
 metrics is worse than one that is a refresh behind, because the missing rows
 look like metrics that have no description rather than like a failed write.
 
-Chunking here is by sample count only. Bounding a request by its *encoded size*
-is a property every send should have rather than just this one, and is tracked
-separately.
+`SendCatalog` does no chunking of its own: it hands the whole catalog to the
+common send path, which applies the same bounds as every other write.
 
 ## Cost, measured
 

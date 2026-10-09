@@ -1,5 +1,7 @@
 # Entity Sensors and Optical DOM
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 How go-netmon collects physical sensor readings — optical transmit and receive
 power, temperature, voltage, current, fan speed — and why the number it exports
 is not the number the device put on the wire.
@@ -90,7 +92,9 @@ together.
 
 A scale outside `1..17`, a precision outside `-8..9`, and the reserved
 `±1000000000` overflow/underflow sentinels each produce a typed error and no
-sample.
+sample. The sentinels apply to the fixed-point physical types; for `other(1)`,
+`unknown(2)` and `specialEnum(13)` the endpoints are ordinary readings and only
+a value beyond the `Integer32` range is refused (`malformed_value`).
 
 ## Metric names
 
@@ -261,9 +265,8 @@ undeclared types and another 400 and requiring the same label set.
 
 `reason` is one of `missing_metadata`, `missing_type`, `missing_scale`,
 `missing_precision`, `missing_status`, `missing_reading`, `invalid_scale`,
-`invalid_precision`,
-`overflow`, `underflow`, `status_unavailable`, `status_nonoperational`,
-`status_unknown`.
+`invalid_precision`, `overflow`, `underflow`, `malformed_value`,
+`status_unavailable`, `status_nonoperational`, `status_unknown`.
 
 **That set is closed, and deliberately so.** The reason for a status drop is
 derived from an `Integer32` the device chose, so every status outside the two

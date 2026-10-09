@@ -1,5 +1,9 @@
 # Phase 1 Completion Summary
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical phase report; not maintained. See the current pages in [docs/README.md](README.md).
+
 **Date:** 2025-10-23
 **Phase:** Core Backend Foundation (TDD)
 **Status:** ✅ COMPLETED

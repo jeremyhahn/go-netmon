@@ -1,5 +1,9 @@
 # WebUI Critical Fixes - Completion Report
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Dated fix report (2025-11-01); not maintained. The current page is [webui.md](webui.md).
+
 ## Executive Summary
 
 Successfully fixed 2 critical WebUI issues and verified 1 working-as-designed behavior:

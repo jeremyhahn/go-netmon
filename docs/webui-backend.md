@@ -1,106 +1,35 @@
 # Web UI Backend System
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 ## Overview
 
-The Web UI backend provides a complete REST API and data persistence layer for managing SNMP monitoring devices, MIB profiles, and dashboard generation. Built on SQLite with comprehensive CRUD operations and relationship management.
+The Web UI backend provides a REST API and a persistence layer for managing SNMP monitoring devices, MIB profiles, and dashboards. It is served by the standalone `cmd/webui` binary and stores its records in an embedded PebbleDB key-value store (no SQL database).
+
+This page covers the REST API and the server package. For running the service, the UI, the WebSocket protocol and the key layout, see [webui.md](webui.md). For the link to the poller, see [webui-poller-integration.md](webui-poller-integration.md).
 
 ## Architecture
 
 ### Components
 
 1. **Storage Layer** (`internal/webui/storage/`)
-   - SQLite database with WAL mode for concurrency
-   - Foreign key constraints for referential integrity
-   - Automatic migrations on startup
-   - Connection pooling and timeout management
+   - PebbleDB key-value store, opened from the `-db` path (default `data/webui`)
+   - Records are JSON values under per-entity key prefixes; relationships (profile MIBs, device MIBs, device profiles) are separate keys
+   - The key layout is in [webui.md](webui.md#storage-layout)
 
 2. **API Layer** (`internal/webui/api/`)
-   - RESTful endpoints with proper HTTP methods
+   - gorilla/mux routes under `/api`
    - JSON request/response handling
-   - Input validation and error handling
+   - Input validation; errors are plain text (see Error Handling)
    - Context propagation for cancellation
 
 3. **MIB Integration** (`internal/webui/api/mib_import.go`)
-   - File upload handling (multipart/form-data)
-   - MIB parsing using existing parser
-   - Metadata storage in database
+   - File upload handling (multipart/form-data, 10 MB limit)
+   - MIB parsing, with the parsed objects stored beside the record
 
 4. **Dashboard Generation** (`internal/webui/api/dashboard_gen.go`)
-   - Automatic Grafana dashboard creation
-   - Panel generation based on MIB objects
-   - Prometheus query generation
-
-## Database Schema
-
-### Tables
-
-**devices**
-```sql
-CREATE TABLE devices (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE NOT NULL,
-    address TEXT NOT NULL,
-    snmp_version TEXT NOT NULL,
-    community TEXT,
-    port INTEGER DEFAULT 161,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-**device_profiles**
-```sql
-CREATE TABLE device_profiles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE NOT NULL,
-    description TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-**mibs**
-```sql
-CREATE TABLE mibs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE NOT NULL,
-    file_path TEXT NOT NULL,
-    description TEXT,
-    object_count INTEGER,
-    imported_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-**profile_mibs** (Many-to-Many)
-```sql
-CREATE TABLE profile_mibs (
-    profile_id INTEGER,
-    mib_id INTEGER,
-    PRIMARY KEY (profile_id, mib_id),
-    FOREIGN KEY (profile_id) REFERENCES device_profiles(id) ON DELETE CASCADE,
-    FOREIGN KEY (mib_id) REFERENCES mibs(id) ON DELETE CASCADE
-);
-```
-
-**device_profiles_assigned** (Many-to-Many)
-```sql
-CREATE TABLE device_profiles_assigned (
-    device_id INTEGER,
-    profile_id INTEGER,
-    PRIMARY KEY (device_id, profile_id),
-    FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,
-    FOREIGN KEY (profile_id) REFERENCES device_profiles(id) ON DELETE CASCADE
-);
-```
-
-**device_mibs** (Many-to-Many)
-```sql
-CREATE TABLE device_mibs (
-    device_id INTEGER,
-    mib_id INTEGER,
-    PRIMARY KEY (device_id, mib_id),
-    FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,
-    FOREIGN KEY (mib_id) REFERENCES mibs(id) ON DELETE CASCADE
-);
-```
+   - Builds a dashboard (panels with their PromQL) from the metric catalog in Prometheus
+   - Not a Grafana JSON model; the web UI renders it
 
 ## REST API Endpoints
 
@@ -108,8 +37,10 @@ CREATE TABLE device_mibs (
 
 #### List All Devices
 ```
-GET /api/devices?stored=true
+GET /api/devices
 ```
+
+Each device also carries `poll_interval` (seconds; present only when the device overrides the global default), `effective_poll_interval` (what the poller uses), and, on an SNMPv3 device, `username`, `auth_protocol`, `auth_password`, `priv_protocol` and `priv_password`. Credentials are stored in clear text; see [security-posture.md](operations/security-posture.md).
 
 **Response:**
 ```json
@@ -119,7 +50,7 @@ GET /api/devices?stored=true
       "id": 1,
       "name": "router-1",
       "address": "203.0.113.1",
-      "snmp_version": "2c",
+      "snmp_version": "v2c",
       "community": "public",
       "port": 161,
       "created_at": "2025-10-24T12:00:00Z"
@@ -136,7 +67,7 @@ Content-Type: application/json
 {
   "name": "router-1",
   "address": "203.0.113.1",
-  "snmp_version": "2c",
+  "snmp_version": "v2c",
   "community": "public",
   "port": 161
 }
@@ -148,7 +79,7 @@ Content-Type: application/json
   "id": 1,
   "name": "router-1",
   "address": "203.0.113.1",
-  "snmp_version": "2c",
+  "snmp_version": "v2c",
   "community": "public",
   "port": 161,
   "created_at": "2025-10-24T12:00:00Z"
@@ -168,7 +99,7 @@ Content-Type: application/json
 {
   "name": "router-1",
   "address": "203.0.113.100",
-  "snmp_version": "2c",
+  "snmp_version": "v2c",
   "community": "private",
   "port": 161
 }
@@ -188,21 +119,13 @@ DELETE /api/devices/{id}
 GET /api/devices/{id}/mibs
 ```
 
-Returns all MIBs associated with the device (both direct and via profiles).
+Returns the MIBs assigned directly to the device (`direct_mibs`) and every MIB that applies to it, directly or through its profiles (`all_mibs`). Each entry is the MIB record plus its assignment state.
 
 **Response:**
 ```json
 {
-  "mibs": [
-    {
-      "id": 1,
-      "name": "IF-MIB",
-      "file_path": "/mibs/IF-MIB",
-      "description": "Interface MIB",
-      "object_count": 150,
-      "imported_at": "2025-10-24T12:00:00Z"
-    }
-  ]
+  "direct_mibs": [ { "id": 1, "name": "IF-MIB", "...": "..." } ],
+  "all_mibs": [ { "id": 1, "name": "IF-MIB", "...": "..." } ]
 }
 ```
 
@@ -314,8 +237,10 @@ DELETE /api/devices/{deviceId}/profiles/{profileId}
 
 #### List All MIBs
 ```
-GET /api/mibs?stored=true
+GET /api/mibs
 ```
+
+Optional query parameters: `search` (case-folded text match), `tag`, `limit` and `offset` (non-negative integers), and `filter=available` with `device=<name>` to keep only modules that hold data in Prometheus (for that device, when given). A request with none of `search`, `tag`, `limit` or `offset` returns the plain `mibs` list; with any of them the response also carries a `page` block.
 
 **Response:**
 ```json
@@ -453,23 +378,27 @@ Content-Type: application/json
 }
 ```
 
-**Response:**
+The device and every MIB id must exist (404 otherwise); `device_id` and at least one `mib_id` are required (400).
+
+**Response:** the dashboard object itself (not wrapped):
 ```json
 {
-  "dashboard": {
-    "title": "Router Dashboard",
-    "tags": ["snmp", "auto-generated"],
-    "panels": [...]
-  }
+  "device": "router-1",
+  "title": "Router Dashboard",
+  "panels": [ { "id": "...", "title": "...", "type": "line" } ],
+  "mibs": [],
+  "warnings": []
 }
 ```
+
+Each panel carries its PromQL. `tables` (indexed panels grouped by index), `mib` (set when narrowed to one module) and `catalog_unavailable` (set when Prometheus refused the catalog query) appear when they apply. A device that reports nothing gets an empty dashboard, not an error.
 
 #### Generate Device Dashboard
 ```
 GET /api/devices/{id}/dashboard
 ```
 
-Automatically generates a dashboard using all MIBs assigned to the device.
+Generates a dashboard from all MIBs that apply to the device, in the same shape. `GET /api/mibs/{id}/dashboard?device=<name>` narrows it to one module on one device (`device` is required; 400 without it, 404 for an unknown device).
 
 ## Usage Examples
 
@@ -487,10 +416,12 @@ import (
 
 func main() {
     cfg := api.Config{
-        QueryFunc:      prometheusClient.Query,
-        MIBProvider:    mibProvider,
-        DBPath:         "./data/webui.db",
-        MIBStoragePath: "./mibs",
+        PromClient:      api.NewPrometheusClient("http://localhost:9091"),
+        GoNetmonBaseURL: "http://localhost:9080",
+        DBPath:          "./data/webui",
+        MIBStoragePath:  "./mibs",
+        // Assets, PollerClient, Logger and the rest are optional; a nil
+        // Assets serves no UI. cmd/webui wires all of them.
     }
 
     server, err := api.NewServer(cfg)
@@ -510,17 +441,17 @@ func main() {
 
 ```bash
 # Create device
-curl -X POST http://localhost:8080/api/devices \
+curl -X POST http://localhost:8082/api/devices \
   -H "Content-Type: application/json" \
   -d '{
     "name": "router-1",
     "address": "203.0.113.1",
-    "snmp_version": "2c",
+    "snmp_version": "v2c",
     "community": "public"
   }'
 
 # Create profile
-curl -X POST http://localhost:8080/api/profiles \
+curl -X POST http://localhost:8082/api/profiles \
   -H "Content-Type: application/json" \
   -d '{
     "name": "cisco-router",
@@ -528,27 +459,27 @@ curl -X POST http://localhost:8080/api/profiles \
   }'
 
 # Assign profile to device
-curl -X POST http://localhost:8080/api/devices/1/profiles/1
+curl -X POST http://localhost:8082/api/devices/1/profiles/1
 ```
 
 ### Import and Assign MIB
 
 ```bash
 # Import MIB
-curl -X POST http://localhost:8080/api/mibs/import \
+curl -X POST http://localhost:8082/api/mibs/import \
   -F "file=@IF-MIB.txt"
 
 # Re-import it later, keeping its id and every assignment
-curl -X POST "http://localhost:8080/api/mibs/import?replace=true" \
+curl -X POST "http://localhost:8082/api/mibs/import?replace=true" \
   -F "file=@IF-MIB.txt"
 
 # Assign MIB to device
-curl -X POST http://localhost:8080/api/devices/1/mibs \
+curl -X POST http://localhost:8082/api/devices/1/mibs \
   -H "Content-Type: application/json" \
   -d '{"mib_id": 1}'
 
 # Generate dashboard
-curl http://localhost:8080/api/devices/1/dashboard
+curl http://localhost:8082/api/devices/1/dashboard
 ```
 
 ## Testing
@@ -568,70 +499,45 @@ make test-webui
 make coverage-webui-storage
 ```
 
-### Test Coverage Goals
-- Storage layer: 90%+
-- API handlers: 85%+
-- Integration tests: 80%+
+The `test-webui-api`, `test-webui-client` and `test-webui-websocket` targets (and matching `coverage-webui-*` targets) run the other packages.
 
 ## Error Handling
 
-All endpoints return appropriate HTTP status codes:
+Endpoints use these status codes:
 
 - **200 OK** - Successful GET/PUT requests
-- **201 Created** - Successful POST requests
-- **204 No Content** - Successful DELETE requests
+- **201 Created** - Successful creation (device, profile, MIB import)
+- **204 No Content** - Successful DELETE and assignment requests
 - **400 Bad Request** - Invalid input or missing required fields
 - **404 Not Found** - Resource not found
+- **409 Conflict** - A MIB import of a module that is already imported
 - **500 Internal Server Error** - Server-side errors
 
-Error responses include a message:
-```json
-{
-  "error": "device not found"
-}
+Errors are plain text, written with `http.Error`, not JSON:
+
+```
+HTTP/1.1 404 Not Found
+Content-Type: text/plain; charset=utf-8
+
+device not found
 ```
 
-## Performance Considerations
+## Server Limits
 
-1. **Database Optimization**
-   - Indexes on all foreign keys
-   - WAL mode for concurrent reads/writes
-   - Connection pooling (max 25 connections)
-   - 5-minute connection lifetime
-
-2. **API Performance**
-   - 15-second read/write timeouts
-   - Context cancellation support
-   - Prepared statements for all queries
-
-3. **Concurrency**
-   - Thread-safe database operations
-   - Atomic transactions for multi-step operations
-   - No blocking operations in handlers
+- 15-second read and write timeouts (`ServerReadTimeout`, `ServerWriteTimeout` in `internal/webui/api/timeouts.go`); handler budgets are kept below the write timeout
+- MIB uploads are capped at 10 MB; configuration bundle uploads have their own cap
+- Request contexts are propagated to storage and upstream calls
 
 ## Security Considerations
 
-1. **Input Validation**
-   - All inputs validated before database operations
-   - SQL injection prevention via prepared statements
-   - File upload size limits (10MB)
+- Request bodies are decoded and validated before they are stored
+- The upload file name is reduced to its base name (`filepath.Base`)
+- There is no authentication or authorization; see [operations/security-posture.md](operations/security-posture.md) for what that means for a deployment
+- Device community strings and SNMPv3 passwords are stored in clear text
 
-2. **File Upload Security**
-   - Restricted upload directory
-   - Filename sanitization
-   - MIME type validation
-
-3. **CORS**
-   - Currently allows all origins (development mode)
-   - Should be restricted in production
-
-## Future Enhancements
+## Not Implemented
 
 1. Authentication and authorization
 2. Rate limiting
 3. Audit logging
 4. Bulk operations
-5. Search and filtering
-6. Pagination for large result sets
-7. WebSocket notifications for device state changes
-8. Export/import configuration

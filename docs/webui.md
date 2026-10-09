@@ -1,43 +1,58 @@
 # Web UI Documentation
 
-The go-netmon Web UI provides a complete web-based interface for managing SNMP monitoring configuration, MIB imports, and real-time metrics visualization.
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
+The go-netmon Web UI is a web interface for managing SNMP monitoring configuration (devices, profiles, MIB assignments), importing MIBs, and viewing live metrics. It is served by the `webui` binary (`cmd/webui`).
 
 ## Features
 
-- **Device Management**: Add, edit, and delete SNMP devices
+- **Device Management**: Add, edit, and delete SNMP devices, with an optional per-device poll interval
 - **Device Profiles**: Create reusable collections of MIBs
-- **MIB Management**: Import, browse, and manage MIB definitions
+- **MIB Management**: Import, re-import, browse, tag, and delete MIB definitions
+- **Per-object polling control**: Choose which objects of an assigned MIB a device polls
 - **Real-time Dashboards**: Live metric streaming via WebSocket
-- **Automatic Dashboard Generation**: Generate dashboards from MIB definitions
-- **Dark Theme**: Modern, responsive UI with dark color scheme
+- **Automatic Dashboard Generation**: Dashboards built from the MIBs assigned to a device
+- **Fleet status and alarms**: One-request fleet overview and an alarm bell
+- **Settings**: Configuration export/import and full backup/restore
+- **Dark Theme**: Responsive UI with a dark color scheme
 
 ## Architecture
 
 ### Backend Components
 
-- **Storage Layer** (`internal/webui/storage/`): SQLite database with WAL mode for concurrent access
-- **REST API** (`internal/webui/api/`): 30+ endpoints for CRUD operations
+- **Storage Layer** (`internal/webui/storage/`): embedded PebbleDB key-value store holding devices, profiles, MIB records and the join records between them
+- **REST API** (`internal/webui/api/`): CRUD endpoints for the records above, plus MIB, dashboard, metrics, status and configuration endpoints
 - **WebSocket Hub** (`internal/webui/websocket/`): Real-time metric streaming
 - **MIB Provider** (`internal/webui/provider/`): Integration with MIB loader
+- **Poller Client** (`internal/webui/client/`): pushes devices to the poller and reads their status (see [webui-poller-integration.md](webui-poller-integration.md))
+- **Alarms** (`internal/webui/alarm/`): rule evaluation behind the alarm bell
 - **Dashboard Generator** (`internal/webui/api/dashboard_gen.go`): Automatic dashboard creation
 
 ### Frontend Components
 
+The static assets are compiled into the binary (`internal/webui/assets.go`), so the UI does not depend on the working directory.
+
 - **HTML** (`internal/webui/static/index.html`): Single-page application structure
-- **CSS** (`internal/webui/static/css/style.css`): Dark theme styling with animations
+- **CSS** (`internal/webui/static/css/style.css`): Dark theme styling
 - **JavaScript** (`internal/webui/static/js/app.js`): Vanilla JS with class-based architecture
-- **ECharts**: Real-time charting library
+- **ECharts**: Real-time charting library, loaded from a CDN by `index.html`
 
-### Database Schema
+### Storage Layout
 
-Six tables with proper relationships:
+There is no SQL schema. Each record is stored as JSON under a key prefix (`internal/webui/storage/storage.go`):
 
-1. `devices` - SNMP device configurations
-2. `device_profiles` - Reusable MIB collections
-3. `mibs` - Imported MIB metadata
-4. `device_mibs` - Direct MIB assignments to devices
-5. `profile_mibs` - MIB assignments to profiles
-6. `device_profiles_assigned` - Many-to-many device-profile relationships
+| Prefix | Content |
+| --- | --- |
+| `dev:<id>` | device record |
+| `prof:<id>` | device profile record |
+| `mib:<id>` | imported MIB record (metadata; the parsed objects live in the MIB catalog) |
+| `dev-mib:<deviceId>:<mibId>` | direct MIB assignment to a device (enable state and filters) |
+| `prof-mib:<profileId>:<mibId>` | MIB assignment to a profile (enable state and filters) |
+| `dev-prof:<deviceId>:<profileId>` | profile assigned to a device |
+| `idx:<kind>:<name>` | name-to-id index (`device`, `profile`, `mib`) |
+| `counter:<kind>` | id allocator |
+
+Deleting a device, profile or MIB removes its join records.
 
 ## Building
 
@@ -53,7 +68,7 @@ make build-all
 
 ### Docker (Recommended)
 
-The easiest way to run the Web UI is using Docker Compose:
+The easiest way to run the Web UI is Docker Compose (`docker-compose.yml`, `Dockerfile.webui`):
 
 ```bash
 # Build and run just the Web UI with Prometheus
@@ -63,31 +78,26 @@ make run-webui
 make run
 ```
 
-Then open http://localhost:8081 in your browser.
+Then open http://localhost:8082 in your browser. The compose file publishes the container's port 8080 on host port **8082**.
+
+> The banner that `make run` and `make run-webui` print says `http://localhost:8081`. That is stale; the compose file is authoritative.
 
 **Docker Commands:**
 
 ```bash
-# Build Web UI Docker image
-make docker-build-webui
-
-# Stop Web UI
-make stop-webui
-
-# Restart Web UI
-make restart-webui
-
-# View Web UI logs
-make logs-webui
-
-# Run the full stack
-make run
-# Services available at:
-#   - Web UI:     http://localhost:8081
-#   - go-netmon:  http://localhost:8080
-#   - Prometheus: http://localhost:9091
-#   - Grafana:    http://localhost:3000
+make docker-build-webui   # Build Web UI Docker image
+make stop-webui           # Stop Web UI
+make restart-webui        # Restart Web UI
+make logs-webui           # View Web UI logs
 ```
+
+The full stack (`make run`) publishes:
+
+- Web UI: http://localhost:8082
+- go-netmon API: http://localhost:9080
+- go-netmon metrics: http://localhost:9100/metrics
+- Prometheus: http://localhost:9091
+- Grafana: http://localhost:3000
 
 ### Binary (Local Development)
 
@@ -101,16 +111,22 @@ Run the Web UI binary directly:
 ./bin/webui \
   -listen :8080 \
   -prometheus http://localhost:9091 \
-  -db data/webui.db \
-  -mib-storage data/mibs
+  -poller http://localhost:9080 \
+  -db data/webui \
+  -mib-storage data/mibs \
+  -mib-catalog data/mib.db
 ```
 
 ### Command-line Flags
 
-- `-listen` - HTTP listen address (default: `:8080`)
-- `-prometheus` - Prometheus URL for querying metrics (default: `http://localhost:9091`)
-- `-db` - Database path for Web UI storage (default: `data/webui.db`)
-- `-mib-storage` - Path to store uploaded MIB files (default: `data/mibs`)
+- `-listen` - HTTP listen address (default `:8080`; config `webui.listen_address`, env `NETMON_WEBUI_LISTEN_ADDRESS`)
+- `-prometheus` - Prometheus URL for querying metrics (default `http://localhost:9091`; config `webui.prometheus_url`, env `NETMON_WEBUI_PROMETHEUS_URL`)
+- `-poller` - poller service URL for device management (default `http://localhost:9080`; config `webui.poller_url`, env `NETMON_WEBUI_POLLER_URL`)
+- `-db` - PebbleDB directory for Web UI records (default: `data/webui`)
+- `-mib-storage` - path to store uploaded MIB files (default: `data/mibs`)
+- `-mib-catalog` - PebbleDB directory for the parsed MIB catalog (default: `data/mib.db`)
+
+The three address flags have no default of their own: a flag left unset does not mask the environment variable or the config file. The defaults above come from `internal/config/addresses.go`.
 
 ### With go-netmon Stack (Manual)
 
@@ -133,34 +149,36 @@ Then open http://localhost:8080 in your browser.
 
 ### 1. Import MIBs
 
-Navigate to **MIB Manager** and upload MIB files:
+Navigate to **MIBs** (the MIB library) and upload MIB files:
 
-1. Click "Import MIB"
-2. Select a `.mib` or `.txt` file
-3. The MIB will be parsed and stored
+1. Click "Import MIBs"
+2. Select one or more `.mib`, `.txt` or `.my` files (up to 10 MB per upload)
+3. Each MIB is parsed and stored
 4. View imported MIBs in the table
+
+Importing a module that already exists is refused with `409`; re-import it in place with `POST /api/mibs/import?replace=true`.
 
 ### 2. Create Device Profile
 
 Create reusable MIB collections:
 
 1. Navigate to **Profiles**
-2. Click "+ Add Profile"
+2. Click "Add profile"
 3. Enter name and description
 4. Click on the profile to view details
-5. Click "+ Assign MIB" to add MIBs to the profile
+5. Click "Assign MIB" to add MIBs to the profile
 
 ### 3. Add Device
 
 Configure SNMP devices:
 
 1. Navigate to **Devices**
-2. Click "+ Add Device"
+2. Click "Add device"
 3. Fill in device details:
    - Name (e.g., "core-router-01")
    - IP Address
-   - SNMP Version (v2c or v3)
-   - Community String
+   - SNMP Version (v1, v2c or v3; sent as `v1`, `v2c`, `v3`)
+   - Community String (v1/v2c), or the SNMPv3 username, authentication and privacy protocols and passwords
    - Port (default: 161)
    - Poll interval (optional; blank inherits the global default)
 4. Click "Save"
@@ -171,13 +189,13 @@ Two ways to assign MIBs:
 
 **Option 1: Via Profile**
 1. Open device details
-2. Click "+ Assign Profile" under "Assigned Profiles"
+2. Click "Assign profile" under "Assigned profiles"
 3. Select a profile
 4. All MIBs from the profile will be applied
 
 **Option 2: Direct Assignment**
 1. Open device details
-2. Click "+ Assign MIB" under "Direct MIB Assignments"
+2. Click "Assign MIB" under "Direct MIB assignments"
 3. Select individual MIBs
 
 ### 5. Choose which objects a device polls
@@ -247,12 +265,13 @@ rule for that one device.
 
 ### 6. Generate Dashboard
 
-Once MIBs are assigned to a device:
+Once MIBs are assigned to a device, its dashboard is built from them:
 
 1. Open device details
-2. Scroll to "All Applied MIBs" card
-3. Click "Generate Dashboard"
-4. Dashboard JSON will be generated and available for download
+2. Find the "All applied MIBs" card
+3. Click "Generate dashboard"; the UI opens the device's dashboard
+
+The same dashboard is built when you pick the device on the **Dashboard** view. The panels come from `GET /api/devices/:id/dashboard`; the endpoint also reports which MIBs contributed panels and why the others did not.
 
 ### 7. View Real-time Metrics
 
@@ -260,7 +279,7 @@ Navigate to **Dashboard** to view real-time charts:
 
 - Select device from dropdown
 - Select interface (if applicable)
-- Charts update automatically every 5 seconds via WebSocket
+- Charts update automatically over the WebSocket, at the hub's stream interval (5 seconds unless `webui.stream_interval` says otherwise)
 - No page refreshes required
 
 **Widgets have three states, not two.** A chart card and a "Status &
@@ -269,7 +288,7 @@ share one first-sample window (30s) and one terminal vocabulary:
 
 | state | chart card | status tile |
 | --- | --- | --- |
-| waiting | `Waiting for data…` / *Listening for the first sample.* | `Loading...` |
+| waiting | `Waiting for data…` / *Listening for the first sample.* | `Waiting for data…` |
 | showing | the plotted series | the value |
 | terminal | `No data reported` / *The device returned no samples for this object.* | `No data reported`, tile dashed and muted, hover for the same detail |
 
@@ -281,7 +300,7 @@ was promised, so both keep their place in the grid.
 
 ### 8. Browse MIBs
 
-Navigate to **MIB Browser** to explore MIB definitions:
+Navigate to **Browser** (the MIB browser) to explore MIB definitions:
 
 - View all available MIBs
 - Click on a MIB to see detailed information
@@ -299,6 +318,14 @@ Navigate to **MIB Browser** to explore MIB definitions:
 - `GET /api/devices/:id/mibs` - Get device MIBs (direct + profile)
 - `POST /api/devices/:id/mibs` - Assign MIB to device
 - `DELETE /api/devices/:id/mibs/:mibId` - Remove MIB from device
+- `GET /api/devices/:id/mibs/:mibId/assignment` - Read the device-level assignment (enable state and filters) of a MIB
+- `PUT /api/devices/:id/mibs/:mibId/assignment` - Replace that assignment wholesale
+- `GET /api/devices/:id/profiles` - List the profiles assigned to a device
+- `GET /api/devices/:id/status` - Poller status for one device
+- `GET /api/devices/status/:name` - The same, by device name
+- `GET /api/devices/status` - Fleet status (see *Fleet status*)
+- `POST /api/devices/:id/test-snmp`, `POST /api/snmp/test` - Probe a stored or ad-hoc device over SNMP
+- `GET /api/devices/:id/walk`, `POST /api/snmp/walk` - SNMP walk of a stored or ad-hoc device
 - `GET /api/devices/:id/mibs/:mibId/estimate` - Estimate the Prometheus series a MIB would cost on a device
 - `GET /api/devices/:id/mibs/:mibId/objects` - List a MIB's objects with whether the device polls each one, and why not; accepts `search`, `limit`, `offset` and `polled` (see *Narrowing a list*)
 
@@ -417,9 +444,20 @@ four devices the difference is invisible, at a hundred it is the page load.
       "state": "unknown",
       "error": "poller: status for device \"core-02\" is unavailable: connection refused"
     }
-  ]
+  ],
+  "total": 5,
+  "configured": 5,
+  "summary": {
+    "ok": 1,
+    "unreachable": 1,
+    "never_polled": 1,
+    "not_registered": 1,
+    "unknown": 1
+  }
 }
 ```
+
+`summary` holds only the states that occur; a state with no devices is absent, not `0`.
 
 **`status`** is verbatim what `GET /api/devices/:id/status` returns for the same
 device — the same assembler produces both, and a test pins them together — so
@@ -448,23 +486,31 @@ that are easy to conflate.
 | `failing` | The device answers SNMP but its most recent poll did not fully succeed. It is still collecting. |
 | `unreachable` | The poller is getting no SNMP answers at all and is retrying on a widening interval. |
 | `never_polled` | The poller has the device but has produced no poll result yet — `last_poll_time` is the zero time. Distinct from `failing`: a failed poll is still a poll and stamps the time. |
-| `not_registered` | The device is in the web UI's records but the poller has no record of it. A configuration problem, not a device problem. |
+| `not_registered` | The device is in the web UI's records but the poller's listing does not include it. A configuration problem, not a device problem. |
 | `unknown` | The status could not be obtained. `error` says why; there is no `status`. |
+
+**Narrowing.** The endpoint accepts `search` (case-insensitive, matches name,
+address or state), `state` (keep one state), `limit` and `offset`. Without
+them it returns the whole fleet. The response always carries `total` (rows
+matching the narrowing), `configured` (every configured device) and `summary`
+(a count of every configured device per state, unaffected by the narrowing),
+as in the example above.
+A negative or non-numeric `limit` or `offset` is a `400`; an `offset` past the
+end is an empty page.
 
 Guarantees:
 
 - **Every configured device gets a row**, including one the poller has never
-  picked up. A device the poller 404s becomes a `not_registered` row, never a
-  404 on the whole request.
+  picked up. A device the poller does not list becomes a `not_registered` row,
+  never a 404 on the whole request.
 - **Deterministic order.** Rows come back sorted by device name on every call,
   from the same ordering the device list uses.
-- **One slow device cannot delay or fail the response.** Each device has its own
-  deadline (`FleetStatusDeviceBudget`, 2s) inside one budget for the whole
-  request (`FleetStatusBudget`, 8s), and requests run concurrently up to
-  `FleetStatusConcurrency` (16). The per-device deadline is deliberately shorter
-  than the poller client's own timeout so a hung poller is cut short once per
-  device instead of running the client's retry ladder once per device. A device
-  that runs out of budget is reported as `unknown` — it is never dropped.
+- **One call to the poller.** The poller's device listing already carries every
+  device's status, so the handler asks it once (`GET /api/poller/devices`)
+  rather than once per device. The whole request runs inside one budget
+  (`FleetStatusBudget`, 8s). If the poller cannot be reached, or the budget
+  runs out, every row is reported as `unknown` with the reason in `error`; no
+  row is dropped.
 - **`devices` is always an array**, empty when nothing is configured, never
   `null`.
 
@@ -480,8 +526,12 @@ request into an N+1 inside the handler.
 - `GET /api/profiles/:id` - Get profile details
 - `PUT /api/profiles/:id` - Update profile
 - `DELETE /api/profiles/:id` - Delete profile
+- `GET /api/profiles/:id/mibs` - List the profile's MIBs
 - `POST /api/profiles/:id/mibs` - Assign MIB to profile
 - `DELETE /api/profiles/:id/mibs/:mibId` - Remove MIB from profile
+- `GET /api/profiles/:id/mibs/:mibId/assignment` - Read the profile-level assignment of a MIB
+- `PUT /api/profiles/:id/mibs/:mibId/assignment` - Replace that assignment wholesale
+- `GET /api/profiles/:id/devices` - List the devices using the profile
 
 ### Device-Profile Associations
 
@@ -715,50 +765,79 @@ page count from the length of the array.
   columns, in `INDEX` order, which is what tells a series' genuine index labels
   from the enrichment labels (`ifname`, `ifdescr`, ...) beside them
 - `DELETE /api/mibs/:id` - Delete stored MIB
+- `PUT /api/mibs/:id/tags` - Replace a stored MIB's tags
+- `GET /api/mibs/:id/tables` - Table metadata of a stored MIB
 - `GET /api/mibs/:name` - Get MIB from provider (legacy)
 
 ### Dashboards
 
 - `POST /api/dashboards/generate` - Generate dashboard from MIBs
 - `GET /api/devices/:id/dashboard` - Generate dashboard for device
+- `GET /api/mibs/:id/dashboard` - Generate dashboard for one stored MIB
+
+### Configuration, alarms and metrics
+
+- `GET /api/config/export` - Export the configuration (`format` and `mibs` query parameters select the shape)
+- `POST /api/config/import` - Import a configuration bundle; a dry run unless `apply` is true
+- `GET /api/poller/config` - The poller's configuration as the web UI serves it
+- `GET /api/alarms` - Triggered alarms
+- `POST /api/metrics/query` - Time-range Prometheus query
+- `POST /api/metrics/instant` - Instant Prometheus query
+- `POST /api/metrics/system-info` - System information query
+- `GET /api/learned-tables` - Tables learned by the poller (proxied)
 
 ### WebSocket
 
-- `GET /ws` - WebSocket endpoint for real-time metrics
+- `GET /ws` - WebSocket endpoint for real-time metrics. It is absent from FIPS builds: the RFC 6455 handshake needs SHA-1, which `GODEBUG=fips140=only` refuses, so those builds register a declining handler instead (`internal/webui/api/websocket_fips.go`).
+
+### Error responses
+
+Handlers report errors with `http.Error`: a plain-text message body and the
+status code (`400` for bad input, `404` for a missing record, `409` for a
+conflict such as an already-imported MIB, `500` for a server-side failure,
+`503` when the poller is not configured or unavailable). The body is not JSON.
 
 ## WebSocket Protocol
 
-The WebSocket connection at `/ws` supports bidirectional communication:
+The connection at `/ws` is bidirectional and carries JSON frames
+(`internal/webui/websocket/hub.go`). The hub re-reads each client's subscribed
+Prometheus queries every stream interval (5 seconds by default) and pushes what
+changed. A client may hold at most 2048 subscriptions.
 
 ### Client → Server Messages
 
 ```json
-{
-  "action": "subscribe",
-  "query": "up{device='core-router-01'}"
-}
+{ "type": "subscribe", "queries": ["up{device='core-router-01'}"] }
 ```
 
 ```json
-{
-  "action": "unsubscribe",
-  "query": "up{device='core-router-01'}"
-}
+{ "type": "unsubscribe", "queries": ["up{device='core-router-01'}"] }
 ```
+
+A client message may also carry `"supports": ["all_steady"]`, announcing the frame
+shapes the browser can apply; a client that announces nothing is sent only the
+original frames. A client that has lost its place sends `{ "type": "resync" }`
+and the next round carries a full reading.
 
 ### Server → Client Messages
 
-Metrics are pushed every 5 seconds:
+Each frame has a `type`:
+
+| `type` | Meaning |
+| --- | --- |
+| `metric_snapshot` | A query's whole reading, with its `seq` |
+| `metric_delta` | Only what changed, with the `base_seq` it applies to; a client at any other sequence must discard it and resync |
+| `metrics_unchanged` | The queries re-read this round that are unchanged (`queries`), or `all_steady: true` when every subscription is |
+| `error` | A refused or failed request, in `error` |
 
 ```json
 {
+  "type": "metric_snapshot",
   "query": "up{device='core-router-01'}",
+  "seq": 7,
   "metrics": [
     {
-      "metric": {
-        "device": "core-router-01",
-        "job": "snmp"
-      },
+      "metric": { "device": "core-router-01", "job": "snmp" },
       "value": 1,
       "timestamp": 1234567890
     }
@@ -769,27 +848,30 @@ Metrics are pushed every 5 seconds:
 
 ## Configuration
 
-The Web UI uses the following directory structure:
+The Web UI uses the following layout under its data directory (flag defaults;
+the compose file mounts `webui-data` at `/app/data/webui`):
 
 ```
 data/
-├── webui.db          # SQLite database
-├── mib.db            # MIB storage database
-└── mibs/             # Uploaded MIB files
-    └── <mib-name>/
-        └── <mib-file>
+├── webui/            # PebbleDB directory: devices, profiles, assignments (-db)
+├── mib.db/           # PebbleDB directory: parsed MIB catalog (-mib-catalog)
+└── mibs/             # Uploaded MIB files (-mib-storage)
 ```
 
-Ensure these directories exist or the Web UI will create them automatically.
+The MIB storage directory is shared with the poller, which keeps a catalog of
+its own there and admits only one writer; that is why the web UI's catalog is a
+separate path. The directories are created on first use.
 
 ## Development
 
 ### Frontend Development
 
-The frontend uses vanilla JavaScript with no build step required:
+The frontend uses vanilla JavaScript with no build step required. The assets
+are embedded in the binary, so rebuild (`make build-webui`) to see changes in a
+running server:
 
 - Edit files in `internal/webui/static/`
-- Refresh browser to see changes
+- Rebuild and restart
 - Use browser DevTools for debugging
 
 ### Backend Development
@@ -801,18 +883,21 @@ make test-webui
 # Run specific package tests
 make test-webui-storage
 make test-webui-api
+make test-webui-client
+make test-webui-websocket
 
 # Generate coverage
 make coverage-webui
 ```
 
-### Database Migrations
+### Resetting the data
 
-Database schema is automatically created on first run. To reset:
+The records are created on first run. To reset them, stop the server and remove
+the database directory:
 
 ```bash
-rm data/webui.db
-./bin/webui  # Will recreate schema
+rm -r data/webui
+./bin/webui  # Starts with empty records
 ```
 
 ## Troubleshooting
@@ -821,8 +906,8 @@ rm data/webui.db
 
 Check that:
 1. Web UI server is running
-2. Browser console shows no CORS errors
-3. Prometheus is accessible at configured URL
+2. The build is not a FIPS build (`/ws` is not served there)
+3. Prometheus is accessible at the configured URL
 
 ### No Data in Charts
 
@@ -836,7 +921,7 @@ Verify:
 
 Ensure:
 1. MIB file is valid ASN.1 format
-2. File size is under 10MB limit
+2. File size is under the 10MB limit
 3. Required MIB dependencies are imported first
 
 ### Dashboard Generation Issues
@@ -848,42 +933,21 @@ Check:
 
 ## Security Considerations
 
-The Web UI is designed for internal network use:
+The Web UI is designed for internal network use. See
+[operations/security-posture.md](operations/security-posture.md) for the
+accepted posture.
 
-- No authentication/authorization (add reverse proxy for production)
-- CORS allows all origins (configure for production)
-- File uploads limited to 10MB
-- SQL injection protection via parameterized queries
-- XSS protection via HTML escaping
+- No authentication or authorization; every endpoint is open to whoever reaches the port
+- `GET /api/devices` returns each device's SNMP community string in clear text
+- The WebSocket upgrader accepts any origin
+- File uploads are limited to 10MB
+- Records are stored in the embedded key-value store; there is no SQL
 
-For production deployment, consider:
-- Adding authentication (OAuth, JWT, etc.)
-- Configuring CORS whitelist
-- Using HTTPS with TLS certificates
-- Rate limiting API endpoints
-- Input validation and sanitization
+Do not publish, forward, or proxy the port beyond a trusted network.
 
-## Performance
+## Limits
 
-The Web UI is optimized for:
-
-- Concurrent connections: 100+ simultaneous WebSocket clients
-- Database connections: Pool of 25 connections with WAL mode
-- File uploads: 10MB limit per file
-- Query timeout: 10 seconds for Prometheus queries
-- WebSocket ping/pong: 60-second intervals
-
-## Future Enhancements
-
-Potential improvements:
-
-- [ ] User authentication and authorization
-- [ ] Multi-tenancy support
-- [ ] Advanced search and filtering
-- [ ] Dashboard sharing and export
-- [ ] Alerting configuration
-- [ ] Historical data visualization
-- [ ] Custom metric queries
-- [ ] Bulk device import (CSV)
-- [ ] API documentation (OpenAPI/Swagger)
-- [ ] Audit logging
+- File uploads: 10MB per upload
+- Prometheus queries from the web UI time out after 10 seconds
+- Requests to the poller time out after 3 seconds, and a device push to the poller is capped at 5 seconds
+- The HTTP server has a 15-second read timeout and a 15-second write timeout; configuration import extends its own deadline to 10 minutes

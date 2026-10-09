@@ -1,5 +1,9 @@
 # Bug Fix: MIB Parser Empty OID Fields
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical bug-fix note; not maintained. See the current pages in [docs/README.md](README.md).
+
 ## Problem Summary
 
 The MIB parser was failing to correctly extract OID values from MIB files, causing critical functionality issues:

@@ -1,5 +1,7 @@
 # Metric naming
 
+> **Status: NORMATIVE** · Scope: go-netmon · Last verified: 2026-10-09
+
 Every SNMP sample go-netmon writes to Prometheus is named after **the MIB object
 it instantiates**, and the row it came from is carried in **labels**.
 
@@ -9,8 +11,8 @@ snmp_ifInOctets{device="core-01",ifindex="10",ifname="GigabitEthernet0/0"}
 snmp_cpmProcessMemoryCore{device="core-01",cpmcputotalindex="7",cpmprocesspid="5420"}
 ```
 
-The name never contains the row index. Two routers produce roughly 155 distinct
-metric names, not one per table row.
+The name never contains the row index: one MIB object is one metric name,
+however many rows its table has.
 
 ## The rule
 
@@ -40,8 +42,15 @@ promname.InfoMetricName("ifDescr")    // "snmp_ifdescr_info"
 promname.RawOIDMetricName(oid)        // the unresolved-OID fallback
 ```
 
+The package also derives the entity sensor names and labels
+(`promname.EntitySensorMetricName`, `EntityIndexLabel`, `EntityNameLabel`,
+`SensorTypeLabel`; see [metrics/entity-sensors.md](metrics/entity-sensors.md)),
+recognizes an info metric (`promname.IsInfoMetric`) and recovers the label an
+info metric's value also appears in (`promname.IdentityLabel`).
+
 `promname` composes `metrics.SanitizeMetricName`, so the character rules cannot
-drift from the exporter's.
+drift from the exporter's. Only metric names are sanitized: index labels and
+info metric names are the MIB name lowercased and nothing else.
 
 ### Consumers
 

@@ -1,5 +1,7 @@
 # Web UI Quick Start Guide
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 Get up and running with the go-netmon Web UI in minutes.
 
 ## Prerequisites
@@ -26,34 +28,38 @@ make run-webui
 
 This will:
 - Build the Web UI Docker image
-- Start Prometheus (on port 9091)
-- Start Web UI (on port 8081)
+- Start Prometheus (on host port 9091)
+- Start Web UI (on host port 8082)
+
+`make run-webui` starts the Web UI and Prometheus only; SNMP polling is not running. Use `make run` for the full stack.
 
 ### 3. Access the Web UI
 
 Open your browser and navigate to:
 
 ```
-http://localhost:8081
+http://localhost:8082
 ```
+
+(The banner `make run-webui` prints says port 8081. That is stale: `docker-compose.yml` publishes the Web UI on 8082.)
 
 You should see the go-netmon Web UI dashboard.
 
 ### 4. Import a MIB
 
-1. Click on **MIB Manager** in the navigation
-2. Click **Import MIB** button
-3. Upload a `.mib` or `.txt` file (e.g., SNMPv2-MIB)
-4. The MIB will be parsed and stored
+1. Click on **MIBs** in the navigation
+2. Click the **Import MIBs** button
+3. Upload one or more `.mib`, `.txt` or `.my` files (e.g., SNMPv2-MIB)
+4. Each MIB is parsed and stored
 
 ### 5. Add a Device
 
 1. Click on **Devices** in the navigation
-2. Click **+ Add Device**
+2. Click **Add device**
 3. Fill in the form:
    - Name: `test-router`
    - IP Address: `203.0.113.1`
-   - SNMP Version: `v2c`
+   - SNMP Version: `SNMPv2c`
    - Community: `public`
    - Port: `161`
 4. Click **Save**
@@ -61,7 +67,7 @@ You should see the go-netmon Web UI dashboard.
 ### 6. Create a Profile
 
 1. Click on **Profiles** in the navigation
-2. Click **+ Add Profile**
+2. Click **Add profile**
 3. Enter:
    - Name: `Router Profile`
    - Description: `Standard router monitoring`
@@ -70,29 +76,31 @@ You should see the go-netmon Web UI dashboard.
 ### 7. Assign MIBs to Profile
 
 1. Click on the profile you just created
-2. In the "Assigned MIBs" section, click **+ Assign MIB**
+2. In the "Assigned MIBs" section, click **Assign MIB**
 3. Select the MIBs you want to monitor
-4. Click **Assign**
+4. Confirm the assignment
 
 ### 8. Assign Profile to Device
 
 1. Navigate back to **Devices**
 2. Click on your device
-3. In the "Assigned Profiles" section, click **+ Assign Profile**
+3. In the "Assigned profiles" section, click **Assign profile**
 4. Select your profile
-5. Click **Assign**
+5. Confirm the assignment
 
 ### 9. Generate Dashboard
 
-1. In the device details view, scroll to "All Applied MIBs"
-2. Click **Generate Dashboard**
-3. A Grafana-compatible dashboard JSON will be generated
+1. In the device details view, find the "All applied MIBs" card
+2. Click **Generate dashboard**
+3. The UI opens a dashboard built from the MIBs applied to the device
 
 ### 10. View Real-time Metrics
 
 1. Navigate to **Dashboard**
 2. Select your device from the dropdown
-3. Charts will update automatically every 5 seconds via WebSocket
+3. Charts update automatically over the WebSocket (every 5 seconds by default)
+
+Metrics only appear when the poller is running (see the full stack below).
 
 ## Full Stack
 
@@ -103,13 +111,13 @@ make run
 ```
 
 This starts:
-- **go-netmon**: SNMP poller on port 8080
-- **Web UI**: Management interface on port 8081
+- **go-netmon**: SNMP poller; API on port 9080, metrics on port 9100
+- **Web UI**: Management interface on port 8082
 - **Prometheus**: Metrics storage on port 9091
 - **Grafana**: Visualization on port 3000 (admin/admin)
 
 Access the services:
-- Web UI: http://localhost:8081
+- Web UI: http://localhost:8082
 - Grafana: http://localhost:3000
 - Prometheus: http://localhost:9091
 
@@ -136,13 +144,13 @@ make logs
 
 ### Web UI won't start
 
-Check if port 8081 is already in use:
+Check if port 8082 is already in use:
 
 ```bash
-# Check what's using port 8081
-lsof -i :8081
+# Check what's using port 8082
+lsof -i :8082
 
-# Or use a different port by editing docker-compose.yml
+# Or use a different port by editing the webui ports mapping in docker-compose.yml
 ```
 
 ### Can't connect to Prometheus
@@ -183,7 +191,6 @@ Verify:
 - Read the [full Web UI documentation](webui.md)
 - Configure SNMP devices in your network
 - Create custom device profiles
-- Set up alerting in Grafana
 - Explore the REST API
 
 ## Support
@@ -191,7 +198,7 @@ Verify:
 For issues or questions:
 - Check the [troubleshooting guide](webui.md#troubleshooting)
 - View logs: `make logs-webui`
-- Open an issue on GitHub
+- Open an issue on the project's Gitea repository
 
 ## Clean Up
 
@@ -201,12 +208,8 @@ To stop and remove everything:
 # Stop all containers
 make stop
 
-# Remove all containers, volumes, and images
+# Remove build artifacts
 make clean
 ```
 
-This will remove:
-- All Docker containers
-- All Docker volumes (database data will be lost)
-- Built binaries
-- Coverage reports
+`make stop` stops all Docker services and cleans up the networks. `make clean` removes build artifacts and does not touch Docker or backups.

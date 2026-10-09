@@ -1,5 +1,9 @@
 # Phase 2 Complete: MIB Parser & Storage Foundation
 
+> **Status: ARCHIVE** · Scope: go-netmon
+>
+> Historical phase report; not maintained. See the current pages in [docs/README.md](README.md).
+
 **Date:** 2025-10-23
 **Status:** ✅ CORE COMPLETE (Ready for MIB files)
 

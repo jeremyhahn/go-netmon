@@ -1,5 +1,7 @@
 # Sample Labels
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 How the metrics exporter decides which labels a sample carries, and what
 happens when a device's configured tags collide with the labels that identify
 the series.
@@ -13,8 +15,9 @@ the series.
 | `device` | the polled device's name |
 | `oid` | the instance OID that was read (ordinary readings only) |
 | index labels (`ifindex`, `cbgppeer2remoteaddr`, …) | the row index, decoded against the table's MIB `INDEX` clause |
-| `value` | the status value an `snmp_*_info` metric describes |
-| `sys_name`, `sys_descr`, `sys_location`, … | the system group values `snmp_system_info` reports |
+| friendly-name labels (`ifdescr`, `ifname`, …) | the row's status columns ([friendly-name-labels.md](../friendly-name-labels.md)); present on a reading only once its row's name has been seen |
+| `value` | the status or text value an `snmp_*_info` metric describes |
+| `sys_name`, `sys_descr`, `sys_contact`, `sys_location`, `sys_object_id` | the system group values `snmp_system_info` reports |
 
 **Extra labels** are the device's configured tags (`devices[].tags` in
 `config.yaml`, or the tags the Web UI attaches to a device). They are attached
@@ -22,13 +25,15 @@ to every sample of that device so it can be filtered, federated and joined on.
 
 ## Every sample of a poll gets the same tags
 
-Three converters in `internal/metrics` build samples — the MIB-aware
-`ConvertSNMPResultsWithTableIndexes`, and the MIB-less
-`ConvertSNMPResultsToSamples` and `ConvertSNMPResultsWithInterfaceNames` — and
-each of them produces three kinds of sample: ordinary readings, status info
-metrics (`snmp_*_info`), and `snmp_system_info`. All of them go through the
-same label construction in `sample_labels.go`, so a device's tags appear on all
-of its series or none of them.
+Three converters in `internal/metrics` build samples. The MIB-aware
+`ConvertSNMPResultsWithTableIndexes` produces ordinary readings, scaled entity
+sensor readings, text-scalar and status info metrics (`snmp_*_info`), and
+`snmp_system_info`. The MIB-less `ConvertSNMPResultsToSamples` and
+`ConvertSNMPResultsWithInterfaceNames` produce ordinary readings and
+`snmp_system_info` only. Every one of those samples goes through the same label
+construction in `sample_labels.go` (`newSampleLabels`, `newInstanceLabels`,
+`mergeExtraLabels`), so a device's tags appear on all of its series or none of
+them.
 
 This matters most for info metrics. An info metric is what a dashboard or
 recording rule joins *against*:
@@ -43,7 +48,8 @@ names that describe them.
 
 ## Precedence: structural labels win
 
-A tag whose name collides with a structural label is **dropped**, not merged.
+A tag whose name collides with a label the sample already carries when the tags
+are merged is **dropped**, not merged.
 
 Letting configuration through would let it rewrite series identity: a tag named
 `device` would file one router's readings under another router's name, a tag

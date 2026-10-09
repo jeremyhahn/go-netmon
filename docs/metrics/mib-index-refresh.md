@@ -1,5 +1,7 @@
 # MIB Index Refresh
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 How the metrics exporter keeps metric names and index labels in step with the
 MIB modules the poller loads on demand.
 
@@ -29,15 +31,19 @@ been told about.
 
 `metrics.mibIndex` holds the whole MIB-derived view: the metric name of every
 instantiable object, the index structure of every table, the column-to-table
-map, and the status columns that supply friendly-name labels. It is immutable
+map, the status columns that supply friendly-name labels
+([../friendly-name-labels.md](../friendly-name-labels.md)), and the metric
+catalog ([metric-catalog.md](metric-catalog.md)). Its contents are immutable
 once published.
 
-A rebuild builds a complete new index off to the side and installs it with one
-`atomic.Pointer` store. Readers on the poll path take no lock, so a rebuild
-never stalls a poll — which matters because the sweep reads every object in the
-store, tens of thousands on a production install.
+A rebuild (`TableIndexCache.Refresh`) builds a complete new index off to the
+side and installs it with one `atomic.Pointer` store. A poll reads the published
+pointer without waiting on a rebuild, so a rebuild never stalls a poll — which
+matters because the sweep reads every object in the store, tens of thousands on
+a production install. Rebuilds are serialized against each other by a build
+mutex that readers never take.
 
-Only `friendlyNameCache` stays behind a mutex. It is learned from SNMP
+`friendlyNameCache` stays behind its own mutex. It is learned from SNMP
 responses rather than from MIBs and is written on every poll, so it is genuinely
 mutable state rather than a derived snapshot.
 
@@ -69,8 +75,11 @@ hydration, a device's *first* poll is already named correctly.
 A failed rebuild does not record its revision, so it is retried; and the
 previously published index stays in place, so polling keeps the names it had.
 
-The web UI imports MIBs into a different store in a different process. Those
-imports cannot refresh this cache and this mechanism does not pretend to.
+A module loaded outside hydration — for instance the globally enabled modules
+`ApplyConfiguration` loads — is picked up by the first hydration after it, since
+the revision will have moved. The web UI imports MIBs into a different store in
+a different process. Those imports cannot refresh this cache and this mechanism
+does not pretend to.
 
 ## Observability
 
@@ -79,7 +88,7 @@ imports cannot refresh this cache and this mechanism does not pretend to.
 | `gonetmon_mib_index_objects` | Instantiable MIB objects in the published name index |
 | `gonetmon_mib_index_tables` | Tables with usable index metadata |
 | `gonetmon_mib_index_rebuilds_total{outcome}` | Rebuild attempts, `success` or `error` |
-| `gonetmon_mib_index_last_rebuild_timestamp_seconds` | When the index last changed |
+| `gonetmon_mib_index_last_rebuild_timestamp_seconds` | When the index was last successfully rebuilt from the MIB store |
 | `gonetmon_metric_name_unresolved_samples_total{device}` | Samples that fell back to a raw-OID name |
 
 The last one says samples are unnamed; the others say why. A high unresolved
@@ -89,8 +98,8 @@ describe those OIDs.
 
 ## Performance
 
-The name lookup is a longest-prefix probe over a precomputed map and allocates
-nothing: ~13–16 ns/op, 0 allocs (`BenchmarkObjectNameIndexMetricNameFor`).
+The name lookup is a longest-prefix probe over a precomputed map and is meant to
+allocate nothing (`BenchmarkObjectNameIndexMetricNameFor`).
 `TestLookupPathAllocatesNothing` pins the zero-allocation property for both the
 name lookup and the table lookup.
 

@@ -1,5 +1,7 @@
 # Export ordering: what the receiver actually does
 
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+
 Two different faults are called "out of order", they behave nothing alike, and
 telling them apart is what [#69][69] took fifteen hours and a million samples an
 hour to learn. This is the measured behaviour, and how to reproduce it.
@@ -72,7 +74,8 @@ only sometimes.
 
 ### What it is worth
 
-Both halves fail without their fix. Measured on this stack:
+Both halves fail without their fix. Measured on this stack when the tests were
+written (figures are as recorded then, not re-measured):
 
 - with the per-series sort removed, `TestOverlappingPollsAreRepairedAndNothing
   IsLost` stores **10 of 20** readings for every one of its 64 series — 640
