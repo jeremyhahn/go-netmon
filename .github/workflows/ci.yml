@@ -81,13 +81,15 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      # govulncheck v1.8.0 comes from the runner image, for the reason spelled
+      # govulncheck v1.8.0 and trivy come from the runner image, for the reason spelled
       # out in the lint job above. It was installed here at "@latest", which
       # made the scanner version -- and therefore the finding set -- whatever
       # the proxy served that morning; the baked copy is pinned and recorded.
       #
       # Covers the dependencies and the standard library this project links
-      # against, so a regression in the go.mod toolchain pin fails here.
+      # against, so a regression in the go.mod toolchain pin fails here; trivy fs
+      # adds dependency CVEs and leaked secrets across the tree. A missing
+      # scanner fails the target rather than skipping it.
       - run: make security
 
   test:

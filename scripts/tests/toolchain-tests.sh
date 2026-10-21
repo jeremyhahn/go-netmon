@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for the golangci-lint pin guards in the Makefile: the "lint" and
-# "install-tools" targets.
+# "install-tools" targets, and the missing-scanner guards of "security"
+# (govulncheck, trivy).
 #
 # Those targets exist to make a lint run at the wrong version impossible, so
 # the guards themselves have to be exercised rather than assumed -- an
@@ -151,6 +152,67 @@ test_lint_refuses_an_unreadable_version() {
 test_lint_refuses_a_missing_binary() {
     expect_failure "missing binary refused" lint "GOLANGCI_LINT=$TMPDIR_TEST/does-not-exist" || return 1
     expect_output "missing binary points at install-tools" "Run: make install-tools"
+}
+
+# --- security guard -------------------------------------------------------
+
+# fake_scanner writes a stub that appends its arguments to $path.args and exits
+# with the given status, so a test can assert both what was run and that a
+# finding (nonzero exit) fails the target.
+fake_scanner() {
+    local path="$1" exit_status="$2"
+    # shellcheck disable=SC2016  # writing a script; $* expands when IT runs, not here
+    printf '#!/bin/sh\necho "$*" >>"%s.args"\nexit %s\n' "$path" "$exit_status" >"$path"
+    chmod +x "$path"
+}
+
+# The issue this guard was added for (#155): security ran no trivy scan, and
+# with trivy absent from PATH it must fail, not pass having scanned less.
+test_security_refuses_a_missing_trivy() {
+    local dir="$TMPDIR_TEST/notrivy"
+    mkdir -p "$dir"
+    fake_scanner "$dir/govulncheck" 0
+    expect_failure "missing trivy refused" security "GOVULNCHECK=$dir/govulncheck" \
+        "TRIVY=$TMPDIR_TEST/does-not-exist" || return 1
+    expect_output "missing trivy says so" "trivy not installed"
+    if [ -e "$dir/govulncheck.args" ]; then
+        printf '    FAIL: govulncheck ran although trivy was missing\n' >&2
+        return 1
+    fi
+}
+
+test_security_refuses_a_missing_govulncheck() {
+    local dir="$TMPDIR_TEST/nogovulncheck"
+    mkdir -p "$dir"
+    fake_scanner "$dir/trivy" 0
+    expect_failure "missing govulncheck refused" security "TRIVY=$dir/trivy" \
+        "GOVULNCHECK=$TMPDIR_TEST/does-not-exist" || return 1
+    expect_output "missing govulncheck says so" "govulncheck not installed"
+}
+
+test_security_runs_trivy_fs_with_the_gate_flags() {
+    local dir="$TMPDIR_TEST/trivyflags"
+    mkdir -p "$dir"
+    fake_scanner "$dir/govulncheck" 0
+    fake_scanner "$dir/trivy" 0
+    expect_success "both scanners run" security "GOVULNCHECK=$dir/govulncheck" "TRIVY=$dir/trivy" || return 1
+    local args
+    args="$(cat "$dir/trivy.args")"
+    case "$args" in
+        "fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 "*) ;;
+        *)
+            printf '    FAIL: trivy ran with unexpected arguments: %s\n' "$args" >&2
+            return 1
+            ;;
+    esac
+}
+
+test_security_fails_on_a_trivy_finding() {
+    local dir="$TMPDIR_TEST/trivyfinding"
+    mkdir -p "$dir"
+    fake_scanner "$dir/govulncheck" 0
+    fake_scanner "$dir/trivy" 1
+    expect_failure "trivy finding fails security" security "GOVULNCHECK=$dir/govulncheck" "TRIVY=$dir/trivy"
 }
 
 # --- install-tools guard --------------------------------------------------

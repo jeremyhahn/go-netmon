@@ -107,11 +107,30 @@ test-e2e: ## Run the Playwright browser suite against a running stack
 	@echo "Running end-to-end browser tests..."
 	@cd tests/e2e && npm ci && npx playwright test
 
-security: ## Scan dependencies and the linked standard library for known vulnerabilities
-	@echo "Running govulncheck..."
-	@command -v govulncheck >/dev/null 2>&1 || \
+# The scanners security runs. Variables so the guard tests in
+# scripts/tests/toolchain-tests.sh can substitute fakes; nothing else sets them.
+GOVULNCHECK ?= govulncheck
+TRIVY ?= trivy
+
+# Both tools are checked before either runs, so a missing trivy fails at once
+# rather than after a full govulncheck pass that then reads as the whole suite.
+# A missing scanner is a failure, never a skip: a security target that passes
+# without scanning is worse than none (handbook devops.md section 8).
+#
+# trivy fs gates on dependency CVEs and leaked secrets, CRITICAL and HIGH,
+# without --ignore-unfixed (that flag belongs to trivy image only). The npm
+# tree under tests/e2e is skipped as installed files; its package-lock.json is
+# still scanned.
+security: ## Scan dependencies, the linked standard library and the tree (govulncheck, trivy fs)
+	@command -v "$(GOVULNCHECK)" >/dev/null 2>&1 || \
 		(echo "govulncheck not installed. Run: make install-tools" && exit 1)
-	govulncheck ./...
+	@command -v "$(TRIVY)" >/dev/null 2>&1 || \
+		(echo "trivy not installed. The CI runner image bakes it; locally install the release from https://github.com/aquasecurity/trivy/releases" && exit 1)
+	@echo "Running govulncheck..."
+	"$(GOVULNCHECK)" ./...
+	@echo "Running trivy fs..."
+	"$(TRIVY)" fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 \
+		--skip-dirs tests/e2e/node_modules .
 
 # --- CI entry points ------------------------------------------------------
 #
@@ -470,7 +489,7 @@ test-integration-harness: ## Test the integration harness's compose namespacing 
 test-integration-guard: ## Test the compose project guard and stack.sh verbs (stub docker, no daemon)
 	@./test/integration/guard-tests.sh $(RUN)
 
-test-toolchain: ## Run the golangci-lint pin guard tests (no network, no shared GOPATH/bin)
+test-toolchain: ## Run the golangci-lint pin and security missing-scanner guard tests (no network, no shared GOPATH/bin)
 	@./scripts/tests/toolchain-tests.sh $(RUN)
 
 # print-golangci-version exists so the guard tests can read the pin rather than
