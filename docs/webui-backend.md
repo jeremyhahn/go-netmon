@@ -112,6 +112,22 @@ DELETE /api/devices/{id}
 
 **Response:** 204 No Content
 
+A device is not deleted until nothing is polling it. The poller is asked to
+stop first, and the record is removed only once it has confirmed that it has.
+
+**Response:** 503 Service Unavailable, when the poller could not be told to
+stop polling the device. **Nothing is deleted** in that case: the device is
+still listed, still polled, and still deletable, so the operation can simply be
+retried once the poller is reachable. The alternative order — deleting the
+record and then failing to stop the polling — leaves a device that is
+simultaneously deleted and polling, which the interface cannot show and the
+operator cannot act on.
+
+This applies only to DELETE. Creating and updating a device remain best-effort
+with respect to the poller: they answer 201 and 200 even if the poller cannot be
+reached, because a device the poller has not heard about is merely under-polled,
+which is visible and is corrected by the next successful push.
+
 ### Device MIB Management
 
 #### Get Device MIBs
@@ -512,6 +528,8 @@ Endpoints use these status codes:
 - **404 Not Found** - Resource not found
 - **409 Conflict** - A MIB import of a module that is already imported
 - **500 Internal Server Error** - Server-side errors
+- **503 Service Unavailable** - The poller could not be reached for an
+  operation that depends on it having acted. Nothing was changed; retry.
 
 Errors are plain text, written with `http.Error`, not JSON:
 

@@ -2750,14 +2750,20 @@ class MonitoringApp {
             });
 
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                // The server says WHY a delete did not happen -- most often
+                // that the poller could not be told to stop polling the
+                // device, in which case nothing was deleted and retrying is
+                // the answer. "Failed to delete device" on its own leaves the
+                // operator with no way to tell that from anything else.
+                const reason = (await response.text()).trim();
+                throw new Error(reason || `HTTP error! status: ${response.status}`);
             }
 
             this.showNotification('Device deleted successfully', 'success');
             await this.loadStoredDevices();
         } catch (error) {
             console.error('Error deleting device:', error);
-            this.showNotification('Failed to delete device', 'error');
+            this.showNotification(`Failed to delete device: ${error.message}`, 'error', 6000);
         }
     }
 

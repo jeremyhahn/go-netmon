@@ -165,7 +165,40 @@ func writeDeviceWriteError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
-// handleDeleteDevice deletes a device
+// handleDeleteDevice deletes a device.
+//
+// THE INVARIANT: the poller is the thing that ACTS, and storage is the record
+// of what should be acted on, so A DEVICE IS NOT DELETED UNTIL NOTHING IS
+// POLLING IT. The detach from the poller therefore happens FIRST, and storage
+// is only changed once the poller has confirmed it is no longer polling the
+// device.
+//
+// The two orders fail differently, and that is the whole argument.
+//
+// Storage first -- what this did -- fails into a state the interface cannot
+// represent. The record is gone, the worker is not, and the device is
+// simultaneously deleted and polling: absent from the device list and the fleet
+// view, still generating SNMP traffic, with nothing left on the page to click
+// because the record an operator would act on no longer exists. The only
+// recovery is restarting the poller.
+//
+// Poller first fails into a state that is merely unchanged. The detach failed,
+// so nothing is deleted: the device is still listed, still polling, and still
+// deletable. The operator can see it and try again. Nothing is stranded,
+// because nothing was half-done.
+//
+// The comment this replaces called the old order graceful degradation, on the
+// grounds that "the poller re-reads it on its next configuration sync". There
+// is no such sync. ApplyConfiguration is called exactly once, from
+// cmd/go-netmon/main.go, at poller startup; no periodic reconciliation exists
+// anywhere. So a worker stranded this way ran until the poller process
+// restarted, which is precisely what was reported.
+//
+// The cost, taken deliberately: a delete now FAILS while the poller is
+// unreachable, instead of answering 204 and stranding a worker. Creates and
+// updates stay best-effort, because they fail into something visible and
+// self-correcting -- a device that exists and is under-polled -- whereas a
+// delete the poller misses strands a worker with no way back.
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -174,28 +207,60 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get device name before deletion (needed for poller)
+	// The name is read first because the poller is addressed by name, and
+	// storage is the only thing that knows it.
 	device, err := s.storage.GetDevice(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Delete device from storage
+	// Stop the polling before touching the record. A failure here deletes
+	// nothing, which is the point: the device stays whole rather than half.
+	if err := s.detachFromPoller(r.Context(), device.Name); err != nil {
+		s.log().WarnContext(r.Context(), "a device was not deleted because the poller is still polling it",
+			"device", device.Name, "error", err)
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
 	if err := s.storage.DeleteDevice(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Remove device from poller (graceful degradation - don't fail if poller is down)
-	if s.pollerClient != nil {
-		if err := s.pollerClient.RemoveDevice(r.Context(), device.Name); err != nil {
-			log.Printf("Warning: failed to remove device from poller: %v", err)
-			// Don't fail - device is deleted from DB
-		}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// detachFromPoller stops the poller polling a device, and reports whether it
+// can be relied on to have stopped.
+//
+// The call is bounded by PollerSyncBudget for the same reason every other push
+// to the poller is: a poller that has stopped answering must not hold a request
+// open until the server's write timeout closes the connection unanswered.
+// Exceeding the budget is itself a detach failure, and is reported as one --
+// the device may still be polled, and only a definite answer says otherwise.
+//
+// A poller with no client configured is not a failure. There is no poller, so
+// nothing is polling the device, and the precondition holds trivially.
+//
+// A poller that reports it does not have the device is not a failure either;
+// that is handled in the client, where a 404 to a remove is a poller stating
+// that it is not polling the device -- which is the condition this exists to
+// establish. Without that, a delete could never be retried to completion after
+// a partial failure.
+func (s *Server) detachFromPoller(ctx context.Context, name string) error {
+	if s.pollerClient == nil {
+		return nil
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	callCtx, cancel := context.WithTimeout(ctx, PollerSyncBudget)
+	defer cancel()
+
+	if err := s.pollerClient.RemoveDevice(callCtx, name); err != nil {
+		return &PollerDetachError{Device: name, Err: err}
+	}
+	return nil
 }
 
 // handleGetDeviceMIBs returns all MIBs associated with a device.

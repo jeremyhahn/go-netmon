@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -185,11 +186,27 @@ func (c *PollerClient) UpdateDevice(
 	return nil
 }
 
-// RemoveDevice removes a device from the poller service
+// RemoveDevice removes a device from the poller service.
+//
+// A poller that answers 404 does not have the device, which is precisely the
+// state this call exists to reach, so it is a success. Reporting it as a
+// failure would make every re-issued delete -- and every delete of a device the
+// poller had already dropped, which is any device added while the poller was
+// down -- look like the poller and storage disagreeing when they agree.
+//
+// This is deliberately narrow: 404 is the poller stating what it holds. Every
+// other failure, including one that leaves the answer unknown, stays an error,
+// because "the poller did not say" is not the same as "the poller does not have
+// it" and only one of the two is safe to call done.
 func (c *PollerClient) RemoveDevice(ctx context.Context, deviceName string) error {
 	url := fmt.Sprintf("%s/api/poller/devices/%s", c.baseURL, deviceName)
 	_, err := c.doRequestWithRetry(ctx, http.MethodDelete, url, nil)
 	if err != nil {
+		var status *httpError
+		if errors.As(err, &status) && status.statusCode == http.StatusNotFound {
+			log.Printf("Device %s was already absent from the poller", deviceName)
+			return nil
+		}
 		return fmt.Errorf("failed to remove device: %w", err)
 	}
 

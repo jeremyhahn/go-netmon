@@ -35,6 +35,12 @@ type recordingPoller struct {
 	// for a poller that is not answering.
 	stall bool
 	err   error
+
+	// onRemove runs inside RemoveDevice, before it returns. It is how a test
+	// observes what storage held at the moment the poller was asked, which is
+	// the only way to check the ORDER of a delete rather than its outcome.
+	// Set at construction and never written again, so it needs no lock.
+	onRemove func()
 }
 
 func (p *recordingPoller) record(
@@ -76,6 +82,9 @@ func (p *recordingPoller) UpdateDevice(
 
 func (p *recordingPoller) RemoveDevice(ctx context.Context, name string) error {
 	p.record(&p.removed, name, nil, nil)
+	if p.onRemove != nil {
+		p.onRemove()
+	}
 	return p.blockIfStalled(ctx)
 }
 
@@ -311,9 +320,18 @@ func TestAStalledPollerCannotHoldARequestOpen(t *testing.T) {
 	}
 }
 
-// TestPollerFailuresDoNotUndoADurableChange keeps a device write reported as
-// successful when the poller could not be told about it, since the change is
-// already stored and the poller re-reads it on its next configuration sync.
+// TestPollerFailuresDoNotUndoADurableChange keeps a device CREATE or UPDATE
+// reported as successful when the poller could not be told about it. Those two
+// fail into something visible and self-correcting -- a device that exists and
+// is under-polled -- so the durable change is worth keeping.
+//
+// The delete arm used to be here too, asserting 204, and it is gone
+// deliberately: see TestADeviceIsNotDeletedWhileThePollerStillPollsIt. A delete
+// the poller misses is not an under-polled device, it is a worker polling a
+// device that no longer exists, with nothing left in the UI to act on. The
+// justification the old assertion rested on -- that "the poller re-reads it on
+// its next configuration sync" -- describes a sync that does not exist;
+// ApplyConfiguration runs once, at poller startup.
 func TestPollerFailuresDoNotUndoADurableChange(t *testing.T) {
 	s := newTestServer(t)
 	s.pollerClient = &recordingPoller{err: errors.New("poller is down")}
@@ -333,11 +351,6 @@ func TestPollerFailuresDoNotUndoADurableChange(t *testing.T) {
 		`{"name":"bastion","address":"192.0.2.15","snmp_version":"v2c"}`)
 	if rec.Code != http.StatusOK {
 		t.Errorf("update status = %d, want 200 despite the poller being down", rec.Code)
-	}
-
-	rec = do(t, s, http.MethodDelete, "/api/devices/"+itoa(created.ID), "")
-	if rec.Code != http.StatusNoContent {
-		t.Errorf("delete status = %d, want 204 despite the poller being down", rec.Code)
 	}
 }
 

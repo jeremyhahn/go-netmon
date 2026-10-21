@@ -47,9 +47,20 @@ Integration points in device CRUD handlers that synchronize with the poller serv
 - Uses graceful degradation
 
 **Delete Device:**
-- Deletes device from PebbleDB
-- Removes device from poller
-- Uses graceful degradation
+- Removes the device from the poller **first**
+- Deletes it from PebbleDB only once the poller has stopped polling it
+- Does **not** use graceful degradation: if the poller cannot be told to stop,
+  the request answers 503 and nothing is deleted
+
+The device is not deleted until nothing is polling it. Deleting the record
+first and then failing to stop the polling leaves the device simultaneously
+deleted and polling — absent from the device list and the fleet view, still
+generating SNMP traffic, with nothing left in the UI to act on. Failing the
+whole delete instead leaves the device unchanged and retryable.
+
+A poller that reports it does not have the device satisfies the precondition
+and the delete proceeds, so a delete that failed once can be retried to
+completion.
 
 **MIB/Profile Changes:**
 - When MIBs or profiles are assigned/removed

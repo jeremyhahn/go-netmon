@@ -201,9 +201,21 @@ func TestPollerClient_RemoveDevice(t *testing.T) {
 			wantErr:    false,
 		},
 		{
-			name:       "device not found",
+			// A poller that does not have the device is not polling it, which
+			// is the outcome a removal exists to reach. This asserted an error
+			// until deleting a device was made to depend on the poller having
+			// stopped: a 404 read as a failure left an already-detached device
+			// permanently undeletable, because every retry got the same 404.
+			// See TestRemovingADeviceThePollerDoesNotHaveIsASuccess.
+			name:       "device the poller does not have",
 			deviceName: "nonexistent",
 			statusCode: http.StatusNotFound,
+			wantErr:    false,
+		},
+		{
+			name:       "the poller failed",
+			deviceName: "test-device",
+			statusCode: http.StatusInternalServerError,
 			wantErr:    true,
 		},
 	}
