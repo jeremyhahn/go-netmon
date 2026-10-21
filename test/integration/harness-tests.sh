@@ -286,6 +286,79 @@ test_teardown_removes_the_dind_profile_and_volumes() {
     esac
 }
 
+# make_failing_save_docker writes a stub that behaves like the normal one except
+# that "docker save" fails, which models the seed step failing after dind is
+# already up -- the case that must degrade to "not covered" rather than to a
+# suite that fails on a missing image.
+make_failing_save_docker() {
+    local bin="$1" log="$2"
+    mkdir -p "$bin"
+    cat >"$bin/docker" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$log"
+case "\$1 \$2" in
+    "compose version") echo "Docker Compose version v2.0.0" ;;
+esac
+[ "\$1" = "save" ] && exit 1
+exit 0
+EOF
+    chmod +x "$bin/docker"
+}
+
+# run_harness_with runs run-tests.sh against a named stub factory.
+run_harness_with() {
+    local factory="$1" log="$2" run_id="$3"
+    local bin
+    bin="$(mktemp -d)"
+    "$factory" "$bin" "$log"
+    env PATH="$bin:$PATH" GITHUB_RUN_ID="$run_id" "$RUN_TESTS" >/dev/null 2>&1
+    rm -rf "$bin"
+}
+
+# The helper image must be BUILT here and LOADED into the sibling daemon, never
+# pulled from a registry inside it. dind starts with an empty image store on
+# every run, so a registry-hosted helper is a fresh third-party pull every time
+# -- #37, where a TLS handshake timeout to auth.docker.io failed the suite for a
+# reason unrelated to the code under test.
+test_the_helper_image_is_built_and_loaded_into_the_sibling_daemon() {
+    local log="$TMP/seed.log"
+    run_harness "$log" hhh888
+
+    grep -qE -- '^build .*-f .*/test/integration/Dockerfile\.helper' "$log" \
+        || fail "the helper image is never built" || return 1
+    grep -qE -- '^save ' "$log" \
+        || fail "the helper image is never exported from the host daemon" || return 1
+    grep -qE -- 'exec -T dind docker load' "$log" \
+        || fail "the helper image is never loaded into the sibling daemon" || return 1
+
+    # And the tests must be told which image to use, or they cannot find it.
+    grep -qE -- 'run --rm --build .*NETMON_HELPER_IMAGE=' "$log" \
+        || fail "the helper image name is not passed to the tests" || return 1
+}
+
+# A daemon that came up but could not be seeded is the same situation as one
+# that never came up. It must NOT be offered to the tests: with DOCKER_HOST set
+# and no helper image present, every backup test fails on a missing image
+# instead of reporting that the coverage was not obtained.
+test_a_daemon_that_cannot_be_seeded_is_not_offered_to_the_tests() {
+    local log="$TMP/seedfail.log"
+    run_harness_with make_failing_save_docker "$log" iii999
+
+    local run
+    run="$(grep -E -- 'run --rm --build' "$log" || true)"
+    [ -n "$run" ] || fail "the test runner was never invoked" || return 1
+
+    case "$run" in
+        *DOCKER_HOST*) fail "a daemon that could not be seeded was still offered to the tests: $run"; return 1 ;;
+    esac
+    case "$run" in
+        *NETMON_HELPER_IMAGE*) fail "a helper image that was never loaded was still named: $run"; return 1 ;;
+    esac
+
+    grep -qE -- 'rm -sf dind' "$log" \
+        || fail "the unusable privileged container was left running" || return 1
+}
+
 # --- the scope of the run -------------------------------------------------
 
 # go_test_command prints the "go test" command line the runner handed to

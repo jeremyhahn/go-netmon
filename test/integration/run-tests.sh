@@ -91,6 +91,51 @@ compose() {
     docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
 }
 
+# The helper image the backup/restore tests run volume work inside, and the ONE
+# place its name is written. run-tests.sh builds it, loads it into the sibling
+# daemon, and passes the name to the tests in NETMON_HELPER_IMAGE, so neither
+# the Go tests nor the compose file carries a second copy of the string.
+#
+# The name is local and never pushed: it names an image that exists only in
+# this host's daemon and, after the load below, in this run's dind.
+HELPER_IMAGE="netmon-integration-helper:local"
+
+# seed_helper_image builds the helper and loads it into the sibling daemon.
+#
+# dind is recreated for every run and starts with an EMPTY image store, so
+# whatever image the backup tests name is fetched fresh on every run. Naming a
+# registry-hosted image there made the suite's success conditional on a
+# rate-limited third party being reachable, every time: measured 2026-08-28
+# (#37) as a TLS handshake timeout to auth.docker.io that failed the run, with
+# the immediately following re-run passing.
+#
+# Building and piping it in instead removes that per-run pull. The helper is
+# derived from the base Dockerfile.test already builds from
+# (test/integration/Dockerfile.helper), so it introduces no upstream artifact
+# the suite did not already need, and it is ~1.5 MB to keep the pipe cheap.
+#
+# The load goes through "compose exec dind" rather than a host-side DOCKER_HOST:
+# dind publishes no ports and lives on the internal test-network, so the host
+# cannot reach tcp://dind:2375 -- only the containers on that network can.
+#
+# Returns non-zero rather than dying. A daemon that came up but could not be
+# seeded is the same situation as one that never came up: the caller announces
+# that the coverage was not obtained and the rest of the suite runs.
+seed_helper_image() {
+    echo "  building the volume helper image ($HELPER_IMAGE)..."
+    if ! docker build -q -t "$HELPER_IMAGE" \
+        -f "$PROJECT_ROOT/test/integration/Dockerfile.helper" "$PROJECT_ROOT" >/dev/null; then
+        echo "  WARNING: could not build the volume helper image." >&2
+        return 1
+    fi
+
+    echo "  loading it into the sibling daemon..."
+    if ! docker save "$HELPER_IMAGE" | compose --profile dind exec -T dind docker load >/dev/null; then
+        echo "  WARNING: could not load the volume helper image into the sibling daemon." >&2
+        return 1
+    fi
+}
+
 # --- preflight ------------------------------------------------------------
 
 command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH"
@@ -181,11 +226,11 @@ compose up -d --build --wait --remove-orphans "${SERVICES[@]}"
 # honest outcome: the coverage was not obtained, and the log says which.
 DIND_ENV=()
 echo "Starting the sibling Docker daemon (for backup/restore coverage)..."
-if compose --profile dind up -d --wait dind 2>/dev/null; then
-    DIND_ENV=(-e "DOCKER_HOST=tcp://dind:2375")
-    echo "  sibling daemon is up; backup/restore will be tested against a real daemon"
+if compose --profile dind up -d --wait dind 2>/dev/null && seed_helper_image; then
+    DIND_ENV=(-e "DOCKER_HOST=tcp://dind:2375" -e "NETMON_HELPER_IMAGE=$HELPER_IMAGE")
+    echo "  sibling daemon is up and seeded; backup/restore will be tested against a real daemon"
 else
-    echo "  WARNING: could not start the sibling Docker daemon." >&2
+    echo "  WARNING: could not start the sibling Docker daemon, or could not seed it." >&2
     echo "  WARNING: backup/restore will NOT be covered against a real daemon in this run." >&2
     echo "  WARNING: this usually means the runner cannot start a privileged container." >&2
     compose --profile dind rm -sf dind >/dev/null 2>&1 || true

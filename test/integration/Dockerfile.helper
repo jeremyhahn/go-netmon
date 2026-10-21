@@ -1,0 +1,45 @@
+# The helper image the backup/restore tests run volume work inside.
+#
+# WHY THIS EXISTS AT ALL. backup.CLI does volume work by running a throwaway
+# container over the volume -- du, tar, find -- so the tests need some image
+# with those applets in the sibling "dind" daemon. That daemon is recreated for
+# every run and starts with an EMPTY image store, so naming a registry-hosted
+# image there means a fresh third-party pull on every single run, in CI and
+# locally. Measured 2026-08-28 (#37): a TLS handshake timeout to auth.docker.io
+# failed the suite for a reason with nothing to do with the code under test,
+# and the immediately following re-run passed.
+#
+# WHY IT IS DERIVED RATHER THAN PULLED. The base is the image
+# test/integration/Dockerfile.test already builds from, so this file adds no
+# artifact the suite did not already require: if the stack can build its own
+# test image, it can build this. Pulling busybox instead added a SECOND
+# upstream dependency, on a rate-limited registry, for applets the first one
+# already carried.
+#
+# This does NOT make the suite run with no network at all -- Dockerfile.test
+# still runs "apk add" and "go mod download". It removes the per-run pull into
+# dind, which is the dependency #37 is about.
+#
+# Pinned to the digest, and it must stay equal to Dockerfile.test's FROM line.
+ARG HELPER_BASE=golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd
+
+FROM ${HELPER_BASE} AS src
+
+# busybox and the musl loader it is linked against, plus a symlink per applet
+# so the applets are reachable as argv[0]. The applet list is read from the
+# binary rather than hand-listed: the production client calls du, tar and find,
+# the test fixtures additionally call sh, mkdir, echo, chown and stat, and a
+# hand-written list is one future call site away from being wrong.
+#
+# The ld-musl glob covers the architecture: linux/amd64 and linux/arm64 name
+# that file differently.
+RUN set -eu; \
+    mkdir -p /helper/bin /helper/lib /helper/tmp; \
+    cp /bin/busybox /helper/bin/busybox; \
+    cp /lib/ld-musl-*.so.1 /helper/lib/; \
+    for applet in $(/bin/busybox --list); do ln -sf busybox "/helper/bin/$applet"; done
+
+# FROM scratch, so the loaded image is ~1.5 MB. It is piped into the sibling
+# daemon on every run, and the base it came from is 250 MB.
+FROM scratch
+COPY --from=src /helper/ /

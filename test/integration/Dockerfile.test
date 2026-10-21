@@ -1,4 +1,8 @@
-FROM golang:1.27.3-alpine
+# Pinned to the digest, and it must stay equal to Dockerfile.helper's
+# HELPER_BASE default. The helper is derived from this base precisely so that it
+# adds no artifact the suite did not already need; if the two drift apart the
+# host pulls two images instead of one, and that claim quietly stops holding.
+FROM golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd
 
 # Install dependencies including net-snmp for snmptranslate.
 #

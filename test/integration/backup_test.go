@@ -60,7 +60,7 @@ func requireDinD(t *testing.T) *backup.CLI {
 		Project: dindProject,
 		// No compose method is called here; the client only requires a value.
 		ComposeFile: "/workspace/docker-compose.test.yml",
-		HelperImage: busyboxImage,
+		HelperImage: helperImage(t),
 	})
 	if err != nil {
 		t.Fatalf("build a docker client: %v", err)
@@ -74,9 +74,34 @@ func requireDinD(t *testing.T) *backup.CLI {
 	return cli
 }
 
-// busyboxImage is the helper the client runs volume work inside. Pinned so a
-// slow first pull happens once and the tests do not depend on :latest moving.
-const busyboxImage = "busybox:1.36"
+// helperImage is the image the client runs volume work inside.
+//
+// It is BUILT by run-tests.sh and loaded into the sibling daemon rather than
+// pulled from a registry inside it, and its name arrives in
+// NETMON_HELPER_IMAGE so that the script holds the only copy of the string.
+//
+// The previous value was the literal "busybox:1.36". dind is recreated for
+// every run and starts with an empty image store, so that was a fresh Docker
+// Hub pull on EVERY run -- measured 2026-08-28 (#37) as a TLS handshake
+// timeout to auth.docker.io that failed the suite for a reason unrelated to
+// the code under test. A tag pin fixes WHICH image, not whether it can be
+// fetched.
+//
+// Fatal rather than skip: DOCKER_HOST is already set by the time this is
+// reached, so the daemon was offered. A missing helper image is the harness
+// being wrong, not this coverage being unavailable, and silently skipping
+// would hide that.
+func helperImage(t *testing.T) string {
+	t.Helper()
+
+	image := os.Getenv("NETMON_HELPER_IMAGE")
+	if image == "" {
+		t.Fatal("NETMON_HELPER_IMAGE is unset while DOCKER_HOST is set: the sibling daemon " +
+			"was offered without the helper image run-tests.sh loads into it, so these " +
+			"tests would fail on a missing image rather than on the code under test")
+	}
+	return image
+}
 
 // dockerRun runs a docker command against the sibling daemon, for fixtures.
 func dockerRun(t *testing.T, args ...string) string {
@@ -264,7 +289,7 @@ func TestOwnershipSurvivesTheRoundTrip(t *testing.T) {
 	source := newVolume(t, dindProject+"_owned", dindProject)
 
 	// 65534 is nobody: present in every image and never the uid a test runs as.
-	dockerRun(t, "run", "--rm", "-v", source+":/dst", busyboxImage,
+	dockerRun(t, "run", "--rm", "-v", source+":/dst", helperImage(t),
 		"sh", "-c", "mkdir -p /dst/data && echo x > /dst/data/owned.db && chown -R 65534:65534 /dst/data")
 
 	var exported bytes.Buffer
@@ -277,7 +302,7 @@ func TestOwnershipSurvivesTheRoundTrip(t *testing.T) {
 		t.Fatalf("import: %v", err)
 	}
 
-	owner := dockerRun(t, "run", "--rm", "-v", restored+":/src", busyboxImage,
+	owner := dockerRun(t, "run", "--rm", "-v", restored+":/src", helperImage(t),
 		"stat", "-c", "%u:%g", "/src/data/owned.db")
 	if owner != "65534:65534" {
 		t.Errorf("the restored file is owned by %s, want 65534:65534: a restore that "+

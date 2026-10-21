@@ -69,13 +69,23 @@ func (f *fakeExec) last() []string {
 	return f.calls[len(f.calls)-1]
 }
 
+// testHelperImage is an ARBITRARY image name, and the only thing these tests
+// need from it is that it is not DefaultHelperImage: they assert that a
+// configured HelperImage reaches the argument vector, so a value equal to the
+// default would pass whether or not the option was honored. Nothing here runs
+// a container or fetches anything -- the process runner is a fake.
+//
+// It has one definition because it had five, and a literal repeated at every
+// assertion is a literal that gets updated at four of them.
+const testHelperImage = "helper-image-under-test:1.0"
+
 // cliWith builds a CLI wired to a fake process runner.
 func cliWith(t *testing.T, fake *fakeExec) *CLI {
 	t.Helper()
 
 	c, err := NewCLI(CLIOptions{
 		Project: "go-netmon", ComposeFile: "/srv/docker-compose.yml",
-		Binary: "docker", HelperImage: "busybox:1.36",
+		Binary: "docker", HelperImage: testHelperImage,
 	})
 	if err != nil {
 		t.Fatalf("NewCLI: %v", err)
@@ -125,6 +135,14 @@ func TestNewCLIRefusesWhatItCannotPin(t *testing.T) {
 	}
 	if c.binary != DefaultDockerBinary || c.helperImage != DefaultHelperImage {
 		t.Errorf("defaults not applied: binary=%q helper=%q", c.binary, c.helperImage)
+	}
+
+	// And the override the vector tests configure must DIFFER from that
+	// default, or every assertion that a configured HelperImage reaches the
+	// argument vector would hold whether or not the option was honored.
+	if testHelperImage == DefaultHelperImage {
+		t.Errorf("testHelperImage equals DefaultHelperImage (%q): the vector tests can no "+
+			"longer tell an honored HelperImage from an ignored one", DefaultHelperImage)
 	}
 }
 
@@ -227,7 +245,7 @@ func TestVolumeVectorsScopeTheirReach(t *testing.T) {
 		}
 		expectVector(t, fake.last(), []string{
 			"run", "--rm", "--network", "none",
-			"-v", "go-netmon_webui-data:/src:ro", "busybox:1.36",
+			"-v", "go-netmon_webui-data:/src:ro", testHelperImage,
 			"tar", "-C", "/src", "--numeric-owner", "-cf", "-", ".",
 		})
 		if out.String() != "tar-bytes" {
@@ -248,12 +266,12 @@ func TestVolumeVectorsScopeTheirReach(t *testing.T) {
 		// the directory itself -- a restore replaces contents, not the volume.
 		expectVector(t, fake.calls[0], []string{
 			"run", "--rm", "--network", "none",
-			"-v", "go-netmon_webui-data:/dst", "busybox:1.36",
+			"-v", "go-netmon_webui-data:/dst", testHelperImage,
 			"find", "/dst", "-mindepth", "1", "-delete",
 		})
 		expectVector(t, fake.calls[1], []string{
 			"run", "--rm", "-i", "--network", "none",
-			"-v", "go-netmon_webui-data:/dst", "busybox:1.36",
+			"-v", "go-netmon_webui-data:/dst", testHelperImage,
 			"tar", "-C", "/dst", "--numeric-owner", "-xf", "-",
 		})
 		if fake.stdin != "payload" {
@@ -354,7 +372,7 @@ func TestVolumeBytesReadsTheHelpersAnswer(t *testing.T) {
 	}
 	expectVector(t, fake.last(), []string{
 		"run", "--rm", "--network", "none",
-		"-v", "go-netmon_webui-data:/src:ro", "busybox:1.36",
+		"-v", "go-netmon_webui-data:/src:ro", testHelperImage,
 		"du", "-sb", "/src",
 	})
 }
