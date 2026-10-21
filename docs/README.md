@@ -66,6 +66,7 @@ MIB dashboard redesign proposal; they are listed under Archive.
 - [operations/backup-restore.md](operations/backup-restore.md) — backup and restore
 - [operations/config-export-import.md](operations/config-export-import.md) — configuration export and import
 - [operations/export-health.md](operations/export-health.md) — reading the export counters
+- [operations/releasing.md](operations/releasing.md) — cutting a release
 - [operations/restart-and-startup.md](operations/restart-and-startup.md) — restarting the web UI is a dashboard outage
 - [operations/scaling.md](operations/scaling.md) — scaling
 - [operations/security-posture.md](operations/security-posture.md) — security posture

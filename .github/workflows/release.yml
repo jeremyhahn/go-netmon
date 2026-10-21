@@ -1,0 +1,187 @@
+# Release for go-netmon, on every pushed `v*` tag (release-versioning.md §5).
+#
+# `make release-alpha`, `make release-candidate` or `make release` folds
+# changelog.d/ into CHANGELOG.md, writes VERSION, commits, tags and pushes
+# main and the tag; the tag is vX.Y.Z-alpha, vX.Y.Z-rc.N or vX.Y.Z.
+# Everything after that is here, and nothing is created by hand on the forge:
+#
+#   verify   the tree carries the release the tag names, on main
+#   lint, security, test, build, scripts, fips, integration
+#            the gate: every job ci.yml's "CI Passed" needs, by the same
+#            name and commands, on the tagged commit
+#   publish  the forge release: the tag's CHANGELOG section as its body, the
+#            binaries and their SHA256SUMS attached, a pre-release for
+#            -alpha and -rc.N; created as a draft and published only once
+#            every asset is attached and checked. Gitea only: agents never
+#            publish to github (release-versioning.md §5, version-control.md
+#            §5a).
+#
+# docs/operations/releasing.md is the operator's page.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# One run per tag, never cancelled: a half-published release is worse than a
+# slow one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION_FILE: go.mod
+
+jobs:
+  verify:
+    name: Tag matches the tree
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the check needs origin/main to prove the tagged commit
+      # is on it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # VERSION equals the tag unprefixed, CHANGELOG.md has exactly one
+      # non-empty section for it, no fragment is waiting in changelog.d/,
+      # [Unreleased] is empty -- the check the release targets run before
+      # they commit -- and the tagged commit is on main: every release kind is
+      # a tag on main (release-versioning.md §1a), and a tag on a branch
+      # commit would release code main never received.
+      #
+      # The tag reaches make ONLY through the environment, never as a make
+      # argument or spliced into the script.
+      - name: make release-verify
+        env:
+          TAG: ${{ github.ref_name }}
+        run: make release-verify
+
+  # The gate: every job ci.yml's "CI Passed" needs, by the same name and
+  # running the same commands, on exactly the tagged commit -- a release never
+  # ships what CI would have stopped. scripts/tests/release-tests.sh fails if
+  # a job ci.yml gates on is missing here, runs a command this copy does not,
+  # or is not in publish's needs. ci.yml carries the reasons for each step.
+  lint:
+    name: Format, Vet & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - run: make fmt-check
+      - run: make vet
+      - run: make vet-tags
+      - run: make lint
+      - name: Lint workflows
+        run: actionlint
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - run: make security
+
+  test:
+    name: Unit Tests (race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: Run unit tests
+        run: make test
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -25
+
+  build:
+    name: Build All Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - run: make build-all
+
+  scripts:
+    name: Shell Suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: Shell test suites
+        run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard test-release
+      - name: Lint shell scripts
+        run: make lint-scripts
+
+  fips:
+    name: FIPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOFIPS140: latest
+      # Strict mode, as in ci.yml: never weakened to `on`.
+      GODEBUG: fips140=only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: Build all packages (FIPS mode)
+        run: go build -tags fips ./...
+      - name: Unit tests (FIPS mode)
+        run: go test -count=1 -timeout=900s -tags fips ./...
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - run: make integration-test
+
+  publish:
+    name: Publish the release
+    # Without status functions in its `if`, a job runs only when every job it
+    # needs succeeded: a failed or skipped gate job publishes nothing.
+    needs: [verify, lint, security, test, build, scripts, fips, integration]
+    if: github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      # VERSION equals the tag (verify), so the binaries are stamped with it.
+      - run: make build-all
+
+      - name: make release-publish
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          # The project agent creates the release, as it creates every other
+          # object on the forge.
+          TOKEN: ${{ secrets.AGENT_TOKEN }}
+        run: make release-publish

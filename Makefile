@@ -1,4 +1,4 @@
-.PHONY: integration-test-ordering deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags
+.PHONY: integration-test-ordering deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags release-alpha release-candidate release release-verify release-notes release-publish test-release
 
 # Variables
 BINARY_NAME=go-netmon
@@ -14,6 +14,10 @@ BACKUP_PATH=./cmd/netmon-backup
 BUILD_DIR=./bin
 COVERAGE_DIR=./coverage
 DOCKER_COMPOSE=docker-compose.yml
+
+# Values the release targets take, never exported: see "Releases" below. It
+# precedes every $(shell ...), each of which would otherwise expand them.
+unexport VERSION TAG RELEASE_REMOTE RELEASE_GIT
 
 # Version metadata stamped into the CLI
 VERSION?=$(shell cat VERSION 2>/dev/null || echo dev)
@@ -160,7 +164,7 @@ validate-mibs: build-cli ## Check that each bundled MIB tree parses and resolves
 	@echo "Validating the Dell tree..."
 	@$(BUILD_DIR)/$(CLI) mib validate --quiet mibs/r640 mibs/standard
 
-ci-fast: check-tracked fmt-check vet vet-tags lint test-toolchain test-teardown test-integration-harness test-integration-guard test build-all validate-mibs ## Everything that does not need Docker
+ci-fast: check-tracked fmt-check vet vet-tags lint test-toolchain test-teardown test-integration-harness test-integration-guard test-release test build-all validate-mibs ## Everything that does not need Docker
 	@echo "ci-fast: passed"
 
 ci: ci-fast integration-test ## Everything a pull request must pass
@@ -529,6 +533,59 @@ lint-scripts: ## Shellcheck every shell script in the repository
 	@shellcheck -x $(SHELLCHECK_INTEGRATION)
 	@shellcheck -x $(SHELLCHECK_OTHER)
 	@echo "shellcheck: clean"
+
+# --- Releases ---------------------------------------------------------------
+#
+# One target per kind (release-versioning.md §1a); each refuses the other two.
+# All three run scripts/release.sh, which checks everything before it writes
+# anything and pushes main and the tag to $(RELEASE_REMOTE) atomically; the
+# tag starts .github/workflows/release.yml. docs/operations/releasing.md is
+# the operator's page.
+#
+# VERSION is also this Makefile's build stamp, defaulted from the VERSION
+# file. The release targets take it only when it was GIVEN (command line or
+# environment): a defaulted 0.1.3 is not a request to release 0.1.3. Every
+# value reaches the scripts through the environment, unexpanded ($(value)),
+# never spliced into a shell command line.
+RELEASE_REMOTE?=dev
+RELEASE_GIVEN_VERSION = $(if $(filter command line environment environment override,$(origin VERSION)),$(value VERSION))
+
+#
+# "override export X := $(value X)" plus the unexport is what keeps a value
+# raw: make 4.4 expands a command-line variable whenever it exports it, to a
+# recipe or to any $(shell ...) in this file, so VERSION='$(shell ...)' would
+# run before the script could refuse it. DRY_RUN stays exported everywhere:
+# scripts/deploy.sh and migrate.sh read it from the environment. The unexport
+# itself sits at the top of this file, before the first $(shell ...).
+release-alpha release-candidate release: override export VERSION := $(RELEASE_GIVEN_VERSION)
+release-alpha release-candidate release: override export DRY_RUN := $(value DRY_RUN)
+release-alpha release-candidate release: override export RELEASE_REMOTE := $(value RELEASE_REMOTE)
+release-alpha release-candidate release: override export RELEASE_GIT := $(value RELEASE_GIT)
+
+release-alpha: ## Tag and push an alpha: [VERSION=vX.Y.Z-alpha] (default: next patch) [DRY_RUN=1]
+	@./scripts/release.sh alpha
+
+release-candidate: ## Tag and push a release candidate: VERSION=vX.Y.Z-rc.N [DRY_RUN=1]
+	@./scripts/release.sh candidate
+
+release: ## Tag and push a production release: VERSION=vX.Y.Z [DRY_RUN=1]
+	@./scripts/release.sh release
+
+release-verify release-notes release-publish: override export TAG := $(value TAG)
+
+# release.yml runs this on the tagged commit: the tree matches the tag and the
+# commit is on origin/main.
+release-verify: ## Check the checked-out tree carries the release TAG=vX.Y.Z[-alpha|-rc.N] and is on main
+	@./scripts/release-check-tag.sh "$$TAG" origin/main
+
+release-notes: ## Print the CHANGELOG section of TAG=vX.Y.Z[-alpha|-rc.N]
+	@./scripts/release-notes.sh "$$TAG"
+
+release-publish: ## Publish TAG as a Gitea release with bin/ attached (REPO_API, TOKEN from the environment)
+	@./scripts/release-publish.sh
+
+test-release: ## Test the release scripts and targets (scratch repositories, fake curl, no network)
+	@./scripts/tests/release-tests.sh $(RUN)
 
 # The compose project this repository deploys into. Every docker compose
 # invocation below pins it explicitly. Without -p, compose derives the project

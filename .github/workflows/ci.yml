@@ -165,7 +165,7 @@ jobs:
       # re-run lint, the unit tests and every binary build that the lint,
       # test and build jobs already run.
       - name: Shell test suites
-        run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard
+        run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard test-release
 
       # The linter, which this job left behind when it was created.
       #

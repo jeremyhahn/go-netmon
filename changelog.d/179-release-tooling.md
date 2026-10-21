@@ -1,0 +1,5 @@
+### Added
+
+- **`make release-alpha`, `make release-candidate VERSION=vX.Y.Z-rc.N` and `make release VERSION=vX.Y.Z`** (#179). One target per release kind, each refusing the other two; an alpha without a version is the next patch of `VERSION`. Every check runs before anything is written, and `DRY_RUN=1` runs them all, the changelog fold included, and prints the tag without writing. The targets fold `changelog.d/` fragments into `CHANGELOG.md`, write `VERSION`, commit, tag and push `main` and the tag atomically to `dev`.
+- **`.github/workflows/release.yml`** (#179). On a `v*` tag: checks the tag against `VERSION`, `CHANGELOG.md` and `main` (`make release-verify`), runs every job CI gates `main` on, and on Gitea publishes the release with the tag's CHANGELOG section, the binaries and their `SHA256SUMS`, as a pre-release for `-alpha` and `-rc.N`. The release stays a draft until every asset is attached and checked; a rerun finishes an interrupted one.
+- **`changelog.d/`** (#179). A change adds a fragment instead of editing `CHANGELOG.md`.
