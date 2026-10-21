@@ -258,6 +258,10 @@ case "\$1" in
 esac
 EOF
     chmod +x "$bin/docker"
+    # run-tests.sh vendors the modules for the image build before compose;
+    # nothing is built here, so the stub vendors nothing.
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$bin/go"
+    chmod +x "$bin/go"
 }
 
 # run_stack runs a stack.sh verb against a fresh stub, capturing combined

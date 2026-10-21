@@ -13,11 +13,14 @@ RUN apk add --no-cache git make gcc musl-dev libsmi libsmi-dev
 # Set working directory
 WORKDIR /build
 
-# Copy go mod files
-COPY go.mod go.sum ./
-
-# Download dependencies
-RUN go mod download
+# The modules come from the host, never the network: the build has no
+# credential for the private go-enclave module and must never be given one.
+# "go-vendor" is a named build context made by scripts/docker-vendor.sh (the
+# Makefile's docker-vendor target) -- not a stage or an image; built without
+# it, BuildKit tries to pull an image of that name. GOPROXY=off turns a module
+# missing from it into a failure instead of a fetch.
+COPY --from=go-vendor . ./vendor
+ENV GOFLAGS=-mod=vendor GOPROXY=off
 
 # Copy source code
 COPY . .

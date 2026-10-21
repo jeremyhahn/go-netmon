@@ -13,6 +13,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
+	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
 // This file provides a real SNMPv2c agent that runs inside the test process on
@@ -56,11 +57,30 @@ type testAgent struct {
 	// requests counts the datagrams the agent has accepted.
 	requests atomic.Int64
 
+	// community, when set, is the only community the agent answers; any
+	// other is dropped unanswered, as a real agent does.
+	community string
+
+	// usm, when set, makes this an SNMPv3 agent with this one user: it
+	// answers engine discovery and only requests that authenticate and
+	// decrypt under the user's keys (see agent_v3_test.go).
+	usm *testsupport.USMEngine
+
+	// rejected counts the requests dropped for bad credentials.
+	rejected atomic.Int64
+
 	wg sync.WaitGroup
 }
 
 // newTestAgent starts an agent serving pdus and stops it when the test ends.
 func newTestAgent(t *testing.T, pdus ...gosnmp.SnmpPDU) *testAgent {
+	t.Helper()
+	return newConfiguredAgent(t, func(*testAgent) {}, pdus...)
+}
+
+// newConfiguredAgent is newTestAgent with configure applied before the agent
+// starts serving, for the settings the serving goroutine reads unguarded.
+func newConfiguredAgent(t *testing.T, configure func(*testAgent), pdus ...gosnmp.SnmpPDU) *testAgent {
 	t.Helper()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -74,6 +94,7 @@ func newTestAgent(t *testing.T, pdus ...gosnmp.SnmpPDU) *testAgent {
 	})
 
 	a := &testAgent{conn: conn, mib: mib}
+	configure(a)
 	a.wg.Add(1)
 	go a.serve()
 
@@ -108,12 +129,25 @@ func (a *testAgent) serve() {
 			continue
 		}
 
+		if a.usm != nil {
+			if wire, ok := a.serveV3(buf[:n]); ok {
+				if _, werr := a.conn.WriteToUDP(wire, from); werr != nil {
+					return
+				}
+			}
+			continue
+		}
+
 		// Decoding uses gosnmp itself, so the agent reads exactly the bytes the
 		// client wrote rather than a test-only approximation of them.
 		decoder := &gosnmp.GoSNMP{Version: gosnmp.Version2c}
 		request, err := decoder.SnmpDecodePacket(buf[:n])
 		if err != nil {
 			continue // a malformed datagram gets no reply, as on a real agent
+		}
+		if a.community != "" && request.Community != a.community {
+			a.rejected.Add(1)
+			continue
 		}
 
 		wire, err := a.respond(request).MarshalMsg()

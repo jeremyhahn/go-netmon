@@ -211,6 +211,11 @@ echo "Compose file:    $COMPOSE_FILE"
 # does not. The previous loop polled "docker compose ps | grep healthy", which
 # matched as soon as any one service was healthy and let the suite start
 # against a simulator that had not come up.
+# The test image takes its Go modules from the host, as the named build context
+# compose passes it, because the build has no credential for the private
+# go-enclave module and must never be given one. See scripts/docker-vendor.sh.
+"$PROJECT_ROOT/scripts/docker-vendor.sh"
+
 echo "Building and starting services..."
 compose up -d --build --wait --remove-orphans "${SERVICES[@]}"
 

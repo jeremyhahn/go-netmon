@@ -103,6 +103,47 @@ END
 	}
 }
 
+// A module that resolves its OIDs but takes a type from an absent module is
+// usable, so validation passes, but the report names what it could not
+// import (#62).
+func TestValidateWarnsWhenATypeImportIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeMIB(t, dir, "DEGRADED-MIB.mib", `DEGRADED-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE
+        FROM SNMPv2-SMI
+    AbsentStatus
+        FROM ABSENT-TC-MIB;
+
+degradedModule MODULE-IDENTITY
+    LAST-UPDATED "202610210000Z"
+    ORGANIZATION "test"
+    CONTACT-INFO "test"
+    DESCRIPTION  "A module typed partly from an absent module."
+    ::= { 1 3 6 1 4 1 99962 }
+
+degradedStatus OBJECT-TYPE
+    SYNTAX      AbsentStatus
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Typed by a module this directory does not define."
+    ::= { degradedModule 1 }
+
+END
+`)
+
+	var out bytes.Buffer
+	if err := runMIBValidate(&out, []string{dir}, true); err != nil {
+		t.Fatalf("a degraded module failed validation: %v\n%s", err, out.String())
+	}
+	text := out.String()
+	for _, want := range []string{"WARN", "DEGRADED-MIB", "ABSENT-TC-MIB", "1 ok with unresolved imports"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report does not mention %q:\n%s", want, text)
+		}
+	}
+}
+
 // TestValidateSkipsFilesThatAreNotMIBs covers the first false positive: a MIB
 // directory routinely holds a README, and calling those failures made the
 // report cry wolf on both real trees in this repository.

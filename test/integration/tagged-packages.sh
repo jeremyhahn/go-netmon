@@ -30,7 +30,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
-grep -rl --include='*.go' '^//go:build integration' . |
+# The vendor trees are other modules' code, which ./... never runs either.
+grep -rl --include='*.go' --exclude-dir=.docker-vendor --exclude-dir=vendor \
+    '^//go:build integration' . |
     xargs -r -n1 dirname |
     sort -u |
     sed 's|$|/...|'

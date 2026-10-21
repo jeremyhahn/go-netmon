@@ -326,9 +326,16 @@ func (l *Loader) parseModule(moduleName string) (*parsedModule, error) {
 	// file declares is info.Name, and it is the one the parser knows.
 	moduleName = info.Name
 
-	oids, err := l.parser.ParseModule(moduleName)
+	oids, report, err := l.parser.ParseModuleWithReport(moduleName)
 	if err != nil {
 		return nil, &ModuleLoadError{Module: moduleName, Op: "parse", Err: err}
+	}
+
+	// A module whose IMPORTS did not all resolve still loads, but its objects
+	// typed by a missing module have no type, units, hint or enum. That is
+	// worth knowing and not worth refusing the module over (#62).
+	if degraded := report.Err(); degraded != nil {
+		log.Printf("Warning: %v", degraded)
 	}
 
 	// Table metadata is an enrichment: a module with no tables is perfectly

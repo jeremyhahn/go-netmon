@@ -36,6 +36,8 @@ echo ""
 
 # Build and start services
 echo "🔨 Building and starting services..."
+# The image takes its Go modules from this host; see scripts/docker-vendor.sh.
+./scripts/docker-vendor.sh
 docker compose -f docker-compose.prod.yml up -d --build
 
 echo ""

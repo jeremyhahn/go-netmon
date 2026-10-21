@@ -151,11 +151,24 @@ func (p *Parser) loadModuleLocked(moduleName string) (*mib.ModuleInfo, error) {
 
 // ParseReport describes what parsing a module could not use.
 type ParseReport struct {
+	// Module is the module the report is about.
+	Module string
+
 	// Unresolved names the objects that came out with no OID. An object
 	// without one cannot be polled, stored under its OID, or named in a
 	// metric, so it is discarded rather than kept as a record that looks like
 	// an object and behaves like nothing.
 	Unresolved []string
+
+	// MissingImports names the modules this one IMPORTS from that could not
+	// be loaded. The module is still parsed; see Err.
+	MissingImports []string
+
+	// Untyped names the objects that were kept but whose type did not
+	// resolve, nearly always because the module defining it is one of
+	// MissingImports. They poll, but have no Type, Units, DisplayHint or
+	// EnumValues.
+	Untyped []string
 }
 
 // UnresolvedCount is how many objects were discarded.
@@ -234,7 +247,10 @@ func (p *Parser) parseModuleLocked(
 
 	nodes := module.GetNodes()
 	oids := make([]*mib.OIDMetadata, 0, len(nodes))
-	report := &ParseReport{}
+	report := &ParseReport{
+		Module:         moduleName,
+		MissingImports: missingImports(module),
+	}
 
 	for _, node := range nodes {
 		meta := p.parseNode(node, moduleName)
@@ -244,6 +260,13 @@ func (p *Parser) parseModuleLocked(
 		if meta.OID == "" {
 			report.Unresolved = append(report.Unresolved, meta.Name)
 			continue
+		}
+		// A scalar or column always has a SYNTAX. With no type node, the type
+		// it names was never found, and parseNode left Type, Units,
+		// DisplayHint and EnumValues empty.
+		kind := node.GetRaw().NodeKind
+		if node.SmiType == nil && (kind == types.NodeScalar || kind == types.NodeColumn) {
+			report.Untyped = append(report.Untyped, meta.Name)
 		}
 		oids = append(oids, meta)
 	}

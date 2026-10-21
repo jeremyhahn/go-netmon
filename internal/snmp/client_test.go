@@ -27,16 +27,24 @@ func TestNewClient_ValidSNMPv2c(t *testing.T) {
 		t.Fatal("Expected client to be created")
 	}
 
-	if client.device != device {
-		t.Error("Client device doesn't match input device")
+	if client.device == device || client.device.Name != device.Name {
+		t.Error("Client should keep its own copy of the input device")
 	}
 
 	if client.conn.Version != gosnmp.Version2c {
 		t.Errorf("Expected Version2c, got %v", client.conn.Version)
 	}
 
-	if client.conn.Community != "public" {
-		t.Errorf("Expected community 'public', got %s", client.conn.Community)
+	// The community is sealed: it is on neither the connection nor the
+	// client's device between requests, and the caller's device is untouched.
+	if client.conn.Community != "" || client.device.Community != "" {
+		t.Error("community held in the clear by the client")
+	}
+	if !client.creds.hasCommunity() {
+		t.Error("community was not sealed")
+	}
+	if device.Community != "public" {
+		t.Errorf("caller's device was modified: community %q", device.Community)
 	}
 }
 
@@ -171,8 +179,12 @@ func TestClient_GetDevice(t *testing.T) {
 		t.Fatalf("Failed to create client: %v", err)
 	}
 
-	if client.GetDevice() != device {
-		t.Error("GetDevice() returned wrong device")
+	got := client.GetDevice()
+	if got.Name != device.Name || got.Address != device.Address || got.SNMPVersion != device.SNMPVersion {
+		t.Errorf("GetDevice() returned wrong device: %+v", got)
+	}
+	if got.Community != "" {
+		t.Error("GetDevice() exposes the community")
 	}
 }
 

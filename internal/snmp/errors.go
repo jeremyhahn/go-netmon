@@ -6,6 +6,26 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
+// CredentialError reports a device credential that could not be sealed, or
+// could not be opened for a request. It never carries the credential.
+type CredentialError struct {
+	Device string
+	// Field names the credential that failed to seal. It is empty for a
+	// failed open, which opens them together.
+	Field string
+	Err   error
+}
+
+func (e *CredentialError) Error() string {
+	what := "credentials"
+	if e.Field != "" {
+		what = e.Field
+	}
+	return "snmp: " + what + " for device " + e.Device + ": " + e.Err.Error()
+}
+
+func (e *CredentialError) Unwrap() error { return e.Err }
+
 // NoOIDsError reports a request that named no OIDs.
 type NoOIDsError struct{}
 

@@ -19,6 +19,8 @@
 !Dockerfile.test
 !**/Dockerfile.test
 /vendor/
+# Modules vendored on the host for the image builds (scripts/docker-vendor.sh)
+/.docker-vendor/
 /bin/
 /dist/
 

@@ -93,6 +93,9 @@ func (s *Server) handleGetStoredMIB(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	// Show the file the module is read from now, not the path recorded when
+	// it was imported, which may name a directory that no longer exists.
+	record.FilePath = s.mibSourcePath(record.Name, record.FilePath)
 
 	// Add the module's objects from the loader's metadata store. The lookup is
 	// scoped to the module: reading the whole store to answer a question about

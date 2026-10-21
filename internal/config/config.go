@@ -191,3 +191,14 @@ func (c *Config) GetDeviceByName(name string) (*Device, bool) {
 	}
 	return nil, false
 }
+
+// ScrubCredentials removes every device's SNMP secrets -- the community and
+// the v3 passphrases -- from the configuration, for a process that has sealed
+// them elsewhere and must not keep them here in the clear.
+func (c *Config) ScrubCredentials() {
+	for i := range c.Devices {
+		c.Devices[i].Community = ""
+		c.Devices[i].AuthPassword = ""
+		c.Devices[i].PrivPassword = ""
+	}
+}

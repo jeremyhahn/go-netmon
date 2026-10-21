@@ -14,7 +14,32 @@ and `USER` is an SSH account on it that can `sudo` without a password.
 - Disk for the metric history. Budget from measurement, not hope: this
   deployment writes about **180 MB of TSDB per day** at ~35k active series, so
   the configured 90-day retention needs roughly 16 GB.
+- Locked memory (`RLIMIT_MEMLOCK`) for the SNMP credentials; the units ask for
+  it themselves, see [Locked memory](#locked-memory).
 - Nothing else. No Docker, no Go toolchain, no checkout of this repository.
+
+### Locked memory
+
+The poller and the web UI keep every device's SNMP community string and v3
+passphrases sealed, and open them into locked memory only for the length of
+one request. One open locks at most 24 KiB — three secrets, each a 4 KiB
+plaintext page and its data key's page — and the sealer keeps 12 KiB of keys
+locked for the life of the process. Both processes size a budget from the
+`RLIMIT_MEMLOCK` they start with, log it once
+(`credential locked-memory budget`), and make an open wait while the budget is
+in use rather than fail.
+
+| Where | Setting | Holds at once |
+|---|---|---|
+| systemd units in `deploy/` | `LimitMEMLOCK=16M` | about 680 opens: a 256-device fleet polling at the same instant, better than 2x over |
+| Docker Compose files | `ulimits: memlock` of 16777216 | the same |
+| Docker default, or systemd before 253 | 64 KiB | two — every other poll waits |
+
+A limit too small to open even one device's credentials stops the service at
+startup with `RLIMIT_MEMLOCK is N bytes, below the M bytes opening a credential
+needs`. Raise it: `LimitMEMLOCK=` in the unit, `ulimits: memlock` in Compose,
+`docker run --ulimit memlock=<bytes>`, or `ulimit -l`. For a fleet larger than
+256 devices, give each device 24 KiB plus 12 KiB in all, and round up.
 
 The machine that runs `make deploy` needs a Go toolchain and, for
 `make prometheus-bin`, Docker.

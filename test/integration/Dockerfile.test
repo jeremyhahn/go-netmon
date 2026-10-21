@@ -15,9 +15,15 @@ RUN apk add --no-cache git make bash curl net-snmp net-snmp-tools docker-cli doc
 # Set working directory
 WORKDIR /workspace
 
-# Copy go mod files first for better caching
-COPY go.mod go.sum ./
-RUN go mod download
+# The modules come from the host, never the network: the build has no
+# credential for the private go-enclave module and must never be given one.
+# "go-vendor" is a named build context made by scripts/docker-vendor.sh, which
+# run-tests.sh calls -- not a stage or an image; built without it, BuildKit
+# tries to pull an image of that name. GOPROXY=off turns a module missing from
+# it into a failure instead of a fetch. Both settings stay in the image,
+# because the suite runs "go test" in it.
+COPY --from=go-vendor . ./vendor
+ENV GOFLAGS=-mod=vendor GOPROXY=off
 
 # Copy the entire project
 COPY . .

@@ -3,10 +3,24 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Modules vendored on the host; see scripts/docker-vendor.sh.
+      additional_contexts:
+        go-vendor: ./.docker-vendor
     image: go-netmon:latest
     container_name: go-netmon
     hostname: go-netmon
     restart: unless-stopped
+    # Locked memory for the sealed SNMP credentials (go-enclave). A device's
+    # credentials are open only for the length of its request, and one open
+    # locks at most 24 KiB: three secrets, each a 4 KiB plaintext page and its
+    # data key's page. 16 MiB, less the sealer's own 12 KiB of keys, holds
+    # about 680 opens at once: a 256-device fleet polling at the same instant,
+    # with better than 2x headroom. Past that, polls wait their turn instead of
+    # failing. Docker's 64 KiB default holds two. See docs/deployment/user.md.
+    ulimits:
+      memlock:
+        soft: 16777216
+        hard: 16777216
     ports:
       - "9080:9080"  # API/Web UI
       - "9100:9100"  # Metrics endpoint (metrics.listen_address in config.yaml,
@@ -76,10 +90,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.webui
+      # Modules vendored on the host; see scripts/docker-vendor.sh.
+      additional_contexts:
+        go-vendor: ./.docker-vendor
     image: go-netmon-webui:latest
     container_name: go-netmon-webui
     hostname: webui
     restart: unless-stopped
+    # The web UI seals and opens SNMP credentials too; sized as for go-netmon.
+    ulimits:
+      memlock:
+        soft: 16777216
+        hard: 16777216
     ports:
       # UNAUTHENTICATED. Every endpoint here is open to whoever reaches the
       # port, and GET /api/devices returns each device's SNMP community string

@@ -27,6 +27,21 @@ func NewPool(timeout time.Duration, retries int) *Pool {
 
 // GetOrCreate returns an existing client or creates a new one
 func (p *Pool) GetOrCreate(device *config.Device) (*Client, error) {
+	return p.getOrCreate(device, func() (*Client, error) {
+		return NewClient(device, p.timeout, p.retries)
+	})
+}
+
+// GetOrCreateWithCredentials is GetOrCreate for a device whose credentials
+// the caller has sealed and keeps: the pooled client borrows creds, and the
+// caller destroys them once the device is removed from the pool.
+func (p *Pool) GetOrCreateWithCredentials(device *config.Device, creds *Credentials) (*Client, error) {
+	return p.getOrCreate(device, func() (*Client, error) {
+		return NewClientWithCredentials(device, creds, p.timeout, p.retries)
+	})
+}
+
+func (p *Pool) getOrCreate(device *config.Device, newClient func() (*Client, error)) (*Client, error) {
 	if device == nil {
 		return nil, fmt.Errorf("device cannot be nil")
 	}
@@ -50,20 +65,20 @@ func (p *Pool) GetOrCreate(device *config.Device) (*Client, error) {
 	}
 
 	// Create new client
-	newClient, err := NewClient(device, p.timeout, p.retries)
+	created, err := newClient()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SNMP client: %w", err)
 	}
 
 	// Connect to device
-	if err := newClient.Connect(); err != nil {
+	if err := created.Connect(); err != nil {
 		return nil, fmt.Errorf("failed to connect to device: %w", err)
 	}
 
 	// Store in pool
-	p.clients[device.Name] = newClient
+	p.clients[device.Name] = created
 
-	return newClient, nil
+	return created, nil
 }
 
 // Get returns an existing client without creating a new one

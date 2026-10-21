@@ -96,6 +96,8 @@ TimeoutStartSec=900
 # room; it is a runaway guard, not a target.
 MemoryMax=512M
 MemoryHigh=448M
+# Locked memory for the sealed SNMP credentials; sized as for go-netmon.service.
+LimitMEMLOCK=16M
 
 NoNewPrivileges=yes
 ProtectSystem=strict

@@ -50,6 +50,10 @@ type validation struct {
 	// empty marks a module that loaded but contributed no objects, which means
 	// its imports did not resolve.
 	empty bool
+	// degraded is set when the module loaded but some of its IMPORTS did not
+	// resolve, leaving objects without a type (#62). It is a warning: the
+	// module is usable, just not whole.
+	degraded error
 	// skipped marks a file that is not a MIB module at all. A directory of MIBs
 	// routinely holds a README or a notes file, and calling those failures
 	// makes the report cry wolf on every real tree.
@@ -185,13 +189,14 @@ func validateModule(p *parser.Parser, file string) (result validation) {
 		result.module = info.Name
 	}
 
-	oids, err := p.ParseModule(result.module)
+	oids, report, err := p.ParseModuleWithReport(result.module)
 	if err != nil {
 		result.err = err
 		return result
 	}
 
 	result.objects = len(oids)
+	result.degraded = report.Err()
 	result.empty = result.objects == 0 && definesObjects(file)
 	return result
 }
@@ -255,7 +260,7 @@ func declaredModule(path string) string {
 // reportValidation prints the outcome and returns an error if the directories
 // would not stand on their own.
 func reportValidation(out io.Writer, dirs []string, results []validation, quiet bool) error {
-	var empty, failed, skipped int
+	var empty, failed, skipped, degraded int
 
 	for _, r := range results {
 		name := r.module
@@ -274,6 +279,10 @@ func reportValidation(out io.Writer, dirs []string, results []validation, quiet 
 		case r.empty:
 			empty++
 			fmt.Fprintf(out, "EMPTY   %-40s imports did not resolve; contributed no objects\n", name)
+		case r.degraded != nil:
+			// Shown even when quiet: the module works, but not completely.
+			degraded++
+			fmt.Fprintf(out, "WARN    %-40s %d objects; %s\n", name, r.objects, r.degraded)
 		case !quiet:
 			fmt.Fprintf(out, "ok      %-40s %d objects\n", name, r.objects)
 		}
@@ -282,6 +291,9 @@ func reportValidation(out io.Writer, dirs []string, results []validation, quiet 
 	modules := len(results) - skipped
 	fmt.Fprintf(out, "\n%d modules in %s: %d ok, %d empty, %d failed",
 		modules, strings.Join(dirs, ", "), modules-empty-failed, empty, failed)
+	if degraded > 0 {
+		fmt.Fprintf(out, " (%d ok with unresolved imports)", degraded)
+	}
 	if skipped > 0 {
 		fmt.Fprintf(out, " (%d non-MIB files skipped)", skipped)
 	}

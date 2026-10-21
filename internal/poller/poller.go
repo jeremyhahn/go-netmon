@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
+	"github.com/jeremyhahn/go-netmon/internal/credential"
 	"github.com/jeremyhahn/go-netmon/internal/logging"
 	"github.com/jeremyhahn/go-netmon/internal/metrics"
 	"github.com/jeremyhahn/go-netmon/internal/mib"
@@ -26,6 +27,9 @@ type Poller struct {
 	mibLoader *loader.Loader
 	exporter  metrics.Exporter
 	pool      *snmp.Pool
+	// sealer seals each device's SNMP credentials when its worker starts.
+	// See WithSealer.
+	sealer credential.Sealer
 	// registry is who owns each device name right now.
 	//
 	// ONE map, deliberately. It used to be two -- a worker map and a retiring
@@ -108,9 +112,24 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(p *Poller) { p.logger = logging.OrDiscard(logger) }
 }
 
+// WithSealer sets the sealer the poller keeps device credentials in. Without
+// it the poller uses credential.Default, the process's one go-enclave
+// provider.
+func WithSealer(sealer credential.Sealer) Option {
+	return func(p *Poller) {
+		if sealer != nil {
+			p.sealer = sealer
+		}
+	}
+}
+
 // worker represents a polling worker for a single device
 type worker struct {
+	// device is the worker's own copy of the device, with its credentials
+	// sealed out of it into creds. The worker owns creds; its pooled client
+	// borrows them, and the poller destroys them once the device is gone.
 	device     *config.Device
+	creds      *snmp.Credentials
 	client     *snmp.Client
 	oids       []*mib.OIDMetadata // OIDs to poll for this device
 	interval   time.Duration
@@ -238,6 +257,7 @@ func NewWithExporter(cfg *config.Config, mibLoader *loader.Loader, exporter metr
 		mibLoader:  mibLoader,
 		exporter:   exporter,
 		pool:       snmp.NewPool(timeout, retries),
+		sealer:     credential.Default(),
 		registry:   make(map[string]*registration),
 		resultChan: make(chan *PollResult, 100),
 		logger:     logging.Discard(),
@@ -284,6 +304,10 @@ func (p *Poller) Start(ctx context.Context) error {
 		}
 	}
 
+	// Every worker now holds its device's credentials sealed, and nothing
+	// reads them from the loaded configuration again, so it keeps none.
+	p.config.ScrubCredentials()
+
 	return nil
 }
 
@@ -316,16 +340,22 @@ func (p *Poller) Stop() error {
 	//
 	// After wg.Wait, which means no worker is left to republish.
 	p.mu.Lock()
+	var creds []*snmp.Credentials
 	for _, entry := range p.registry {
 		if entry.live() {
 			entry.worker.health.forget()
+			creds = append(creds, entry.worker.creds)
 		}
 	}
 	p.mu.Unlock()
 
-	// Close all SNMP connections
-	if err := p.pool.CloseAll(); err != nil {
-		return fmt.Errorf("error closing SNMP connections: %w", err)
+	// Close all SNMP connections, then destroy the credentials they borrowed.
+	closeErr := p.pool.CloseAll()
+	for _, c := range creds {
+		_ = c.Destroy()
+	}
+	if closeErr != nil {
+		return fmt.Errorf("error closing SNMP connections: %w", closeErr)
 	}
 
 	// Close result channel
@@ -401,8 +431,17 @@ func (p *Poller) startWorker(device *config.Device) error {
 		return &IntervalError{Device: device.Name, Interval: interval}
 	}
 
+	// The worker keeps its own copy of the device, and the copy keeps no
+	// credentials: they are sealed here and opened only for each request.
+	owned := *device
+	creds, err := snmp.SealCredentials(context.Background(), p.sealer, &owned)
+	if err != nil {
+		return err
+	}
+
 	w := &worker{
-		device:     device,
+		device:     &owned,
+		creds:      creds,
 		client:     nil, // Lazy initialization
 		oids:       oids,
 		interval:   interval,
@@ -502,7 +541,7 @@ func (w *worker) ensureClient() error {
 	}
 
 	// Create SNMP client
-	client, err := w.pool.GetOrCreate(w.device)
+	client, err := w.pool.GetOrCreateWithCredentials(w.device, w.creds)
 	if err != nil {
 		return fmt.Errorf("failed to create SNMP client: %w", err)
 	}
@@ -642,7 +681,7 @@ func (w *worker) poll(ctx context.Context) {
 	if len(scalarOIDs) > 0 {
 		// Chunk OIDs into batches to avoid exceeding MaxOids limit
 		for i := 0; i < len(scalarOIDs); i += maxOIDsPerRequest {
-			if w.abandon(&health) {
+			if w.abandon(ctx, &health) {
 				break
 			}
 			attempted++
@@ -661,7 +700,7 @@ func (w *worker) poll(ctx context.Context) {
 			if i == 0 && len(chunk) > 0 && traceOIDs {
 				w.logger.DebugContext(ctx, "first chunk sample", "oids", chunk[:min(5, len(chunk))])
 			}
-			results, err := w.client.GetMultiple(chunk)
+			results, err := w.client.GetMultipleContext(ctx, chunk)
 			if err != nil {
 				log.Printf("Error polling scalar OID chunk (%d-%d/%d) for device %s: %v",
 					i, end, len(scalarOIDs), w.device.Name, err)
@@ -684,12 +723,12 @@ func (w *worker) poll(ctx context.Context) {
 
 	// Walk table/column OIDs using BulkWalkAll
 	for _, tableOID := range tableOIDs {
-		if w.abandon(&health) {
+		if w.abandon(ctx, &health) {
 			break
 		}
 		attempted++
 
-		results, err := w.client.BulkWalkAll(tableOID.OID)
+		results, err := w.client.BulkWalkAllContext(ctx, tableOID.OID)
 		if err != nil {
 			log.Printf("Error walking table OID %s (%s) for device %s: %v",
 				tableOID.Name, tableOID.OID, w.device.Name, err)
@@ -744,7 +783,7 @@ func (w *worker) poll(ctx context.Context) {
 // Being wrong in the other direction — treating a device that answers most of
 // its objects as dead — would stop collecting real data, which is far worse
 // than paying for one extra request on a device that is genuinely down.
-func (w *worker) abandon(c *cycle) bool {
+func (w *worker) abandon(ctx context.Context, c *cycle) bool {
 	if !c.abandoned() {
 		return false
 	}
@@ -753,7 +792,7 @@ func (w *worker) abandon(c *cycle) bool {
 	}
 	c.probed = true
 
-	_, err := w.client.GetMultiple([]string{sysUpTimeOID})
+	_, err := w.client.GetMultipleContext(ctx, []string{sysUpTimeOID})
 	if err != nil {
 		log.Printf("Device %s did not answer %d operations; direct probe of sysUpTime also failed: %v",
 			w.device.Name, c.silent, err)
@@ -971,6 +1010,10 @@ func (p *Poller) RemoveDevice(deviceName string) error {
 	// Now that nothing more can be published for this device, its series goes.
 	// Done here rather than by the worker, which does not own the name.
 	w.health.forget()
+
+	// The credentials go with the device, whether or not its connection
+	// closes cleanly. A poll still in flight fails rather than reopening them.
+	defer func() { _ = w.creds.Destroy() }()
 
 	if err := p.pool.Remove(w.device.Name); err != nil {
 		return fmt.Errorf("failed to remove device from pool: %w", err)

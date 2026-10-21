@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
+	"github.com/jeremyhahn/go-netmon/internal/credential"
 	"github.com/jeremyhahn/go-netmon/internal/logging"
 	"github.com/jeremyhahn/go-netmon/internal/metrics"
 	"github.com/jeremyhahn/go-netmon/internal/mib"
@@ -101,9 +102,17 @@ func pollingWorker(t *testing.T, addr string, interval time.Duration, oids ...*m
 	pool := snmp.NewPool(testSNMPBudget, 0)
 	t.Cleanup(func() { _ = pool.CloseAll() })
 
+	// Sealed as startWorker seals them.
+	creds, err := snmp.SealCredentials(context.Background(), credential.Default(), device)
+	if err != nil {
+		t.Fatalf("seal credentials: %v", err)
+	}
+	t.Cleanup(func() { _ = creds.Destroy() })
+
 	results := make(chan *PollResult, 16)
 	w := &worker{
 		device:     device,
+		creds:      creds,
 		oids:       oids,
 		interval:   interval,
 		stopChan:   make(chan struct{}),

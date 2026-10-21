@@ -1,4 +1,4 @@
-.PHONY: integration-test-ordering deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags release-alpha release-candidate release release-verify release-notes release-publish test-release
+.PHONY: integration-test-ordering deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-vendor docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags release-alpha release-candidate release release-verify release-notes release-publish test-release
 
 # Variables
 BINARY_NAME=go-netmon
@@ -603,7 +603,7 @@ STRAY_ARTIFACTS=api.test go-netmon webui mib-importer netmon
 
 clean: ## Remove build artifacts (does not touch Docker or backups)
 	@echo "Cleaning build artifacts..."
-	@rm -rf $(BUILD_DIR)
+	@rm -rf $(BUILD_DIR) .docker-vendor
 	@rm -rf $(COVERAGE_DIR)
 	@rm -f coverage*.out
 	@for f in $(STRAY_ARTIFACTS); do \
@@ -649,7 +649,7 @@ network-clean: ## Clean up stale Docker networks
 	@docker network rm go-netmon_trusted0 2>/dev/null || true
 	@docker network prune -f 2>/dev/null || true
 
-run: network-clean ## Build and run the entire Docker stack (go-netmon + Prometheus + Grafana + Web UI)
+run: network-clean docker-vendor ## Build and run the entire Docker stack (go-netmon + Prometheus + Grafana + Web UI)
 	@echo "Building Docker images..."
 	@docker compose build
 	@echo "Starting Docker Compose stack..."
@@ -686,7 +686,7 @@ run: network-clean ## Build and run the entire Docker stack (go-netmon + Prometh
 	@sleep 5
 	@docker compose ps
 
-run-webui: ## Build and run only the Web UI with Prometheus (no SNMP polling)
+run-webui: docker-vendor ## Build and run only the Web UI with Prometheus (no SNMP polling)
 	@echo "Building Web UI Docker image..."
 	@docker compose build webui
 	@echo "Starting Web UI and Prometheus..."
@@ -728,7 +728,7 @@ stop-webui: ## Stop only Web UI
 	@docker compose stop webui
 	@echo "Web UI stopped"
 
-restart: network-clean ## Restart the entire stack
+restart: network-clean docker-vendor ## Restart the entire stack
 	@echo "Restarting Docker Compose stack..."
 	@docker compose build
 	@docker compose up -d
@@ -795,13 +795,16 @@ generate-dashboards: ## Generate Grafana dashboards from loaded MIBs
 	@sleep 5
 	@echo "✓ View dashboards at: http://localhost:3000"
 
-docker-build: ## Build Docker image
-	@echo "Building Docker image..."
-	docker buildx build --load -t go-netmon:latest .
+docker-vendor: ## Vendor modules on the host for the image builds (they fetch none)
+	@./scripts/docker-vendor.sh
 
-docker-build-webui: ## Build Web UI Docker image
+docker-build: docker-vendor ## Build Docker image
+	@echo "Building Docker image..."
+	docker buildx build --load --build-context go-vendor=.docker-vendor -t go-netmon:latest .
+
+docker-build-webui: docker-vendor ## Build Web UI Docker image
 	@echo "Building Web UI Docker image..."
-	docker buildx build --load -f Dockerfile.webui -t go-netmon-webui:latest .
+	docker buildx build --load --build-context go-vendor=.docker-vendor -f Dockerfile.webui -t go-netmon-webui:latest .
 
 redeploy: docker-build ## Rebuild and restart main service
 	@echo "Redeploying go-netmon..."
@@ -813,7 +816,7 @@ redeploy-webui: docker-build-webui ## Rebuild and restart Web UI
 	@docker compose up -d webui
 	@echo "Web UI redeployed"
 
-redeploy-webui-fresh: ## Rebuild Web UI, clear MIB database, and restart with fresh data
+redeploy-webui-fresh: docker-vendor ## Rebuild Web UI, clear MIB database, and restart with fresh data
 	@echo "=== Rebuilding and Redeploying Web UI with Fresh MIB Database ==="
 	@echo ""
 	@echo "Step 1: Stopping and removing Web UI container..."
@@ -844,7 +847,7 @@ redeploy-webui-fresh: ## Rebuild Web UI, clear MIB database, and restart with fr
 	@echo ""
 	@docker compose ps webui
 
-docker-up: ## Start Docker Compose stack
+docker-up: docker-vendor ## Start Docker Compose stack
 	@echo "Starting Docker Compose stack..."
 	docker compose -f $(DOCKER_COMPOSE) up -d
 

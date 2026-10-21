@@ -105,7 +105,9 @@ type configService struct {
 	modules   moduleImporter
 	poller    pollerNotifier
 	backupDir string
-	logger    *slog.Logger
+	// mibDir is the upload directory every module's source is resolved in.
+	mibDir string
+	logger *slog.Logger
 }
 
 // newConfigService wires the use case to the server's collaborators.
@@ -115,6 +117,7 @@ func newConfigService(s *Server) *configService {
 		modules:   s,
 		poller:    s,
 		backupDir: s.configBackupDir(),
+		mibDir:    s.uploadedMIBDir(),
 		logger:    s.log(),
 	}
 }
@@ -140,7 +143,7 @@ func (c *configService) export(
 	result := &ExportResult{Bundle: &ConfigBundle{Config: doc, MIBFiles: map[string][]byte{}}}
 	for i := range doc.MIBs {
 		entry := &doc.MIBs[i]
-		content, readErr := readMIBSource(pathByModule[entry.Name])
+		fileName, content, readErr := readMIBSource(c.mibDir, entry.Name, pathByModule[entry.Name])
 		if readErr != nil {
 			c.logger.WarnContext(ctx, "configuration export cannot carry a MIB source file",
 				"module", entry.Name, "path", pathByModule[entry.Name], "error", readErr)
@@ -148,35 +151,11 @@ func (c *configService) export(
 			continue
 		}
 
-		entry.File = path.Join(bundleMIBDir, sourceFileName(entry.Name, pathByModule[entry.Name]))
+		entry.File = path.Join(bundleMIBDir, fileName)
 		entry.SHA256 = checksum(content)
 		result.Bundle.MIBFiles[entry.File] = content
 	}
 	return result, nil
-}
-
-// readMIBSource reads one stored module's source file.
-func readMIBSource(storedPath string) ([]byte, error) {
-	if storedPath == "" {
-		return nil, &MIBUploadError{
-			Op: "read source", Path: "", Err: os.ErrNotExist,
-		}
-	}
-	// storedPath was written by this server when the module was imported.
-	content, err := os.ReadFile(storedPath) // #nosec G304 -- the path is this server's own record of where it saved the module
-	if err != nil {
-		return nil, &MIBUploadError{Op: "read source", Path: storedPath, Err: err}
-	}
-	return content, nil
-}
-
-// sourceFileName names a module's file inside the bundle, keeping the name it
-// was uploaded under so a round trip does not rename anything on disk.
-func sourceFileName(module, storedPath string) string {
-	if base := filepath.Base(storedPath); base != "." && base != string(filepath.Separator) {
-		return base
-	}
-	return module
 }
 
 // plan reports what importing a bundle would do, changing nothing.

@@ -1,0 +1,5 @@
+# The modules reach the image builds as their own named context, "go-vendor"
+# (see scripts/docker-vendor.sh), not as part of the source. A vendor/ left on
+# the host must not reach the build either, or it would shadow that context.
+/.docker-vendor
+/vendor

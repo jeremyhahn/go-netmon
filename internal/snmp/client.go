@@ -1,6 +1,7 @@
 package snmp
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -10,13 +11,23 @@ import (
 	"github.com/gosnmp/gosnmp"
 
 	"github.com/jeremyhahn/go-netmon/internal/config"
+	"github.com/jeremyhahn/go-netmon/internal/credential"
 )
 
 // Client wraps gosnmp.GoSNMP with additional functionality
 type Client struct {
+	// device is the client's own record of the device, without its
+	// credentials: those are sealed in creds, which the client borrows.
 	device *config.Device
+	creds  *Credentials
 	conn   *gosnmp.GoSNMP
-	mu     sync.RWMutex
+	// mu guards the connection's lifetime: Connect holds it exclusively,
+	// requests and Close share it, so Close can interrupt a request that
+	// is blocked on the socket.
+	mu sync.RWMutex
+	// credMu admits one request at a time to conn while its credentials
+	// are installed on it.
+	credMu sync.Mutex
 }
 
 // NewClient creates a new SNMP client for a device
@@ -26,6 +37,38 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 	}
 
 	if err := device.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid device configuration: %w", err)
+	}
+
+	// The client keeps its own copy of the device, with the credentials sealed
+	// out of it; the caller's is left as it was. The sealed copy holds no
+	// locked memory and goes with the client.
+	owned := *device
+	creds, err := SealCredentials(context.Background(), credential.Default(), &owned)
+	if err != nil {
+		return nil, err
+	}
+	client, err := NewClientWithCredentials(&owned, creds, timeout, retries)
+	if err != nil {
+		_ = creds.Destroy()
+		return nil, err
+	}
+	return client, nil
+}
+
+// NewClientWithCredentials creates an SNMP client for a device whose
+// credentials have already been sealed out of it by SealCredentials.
+//
+// The client borrows creds: it opens them for each request and never destroys
+// them. Their owner destroys them once the client is no longer used.
+func NewClientWithCredentials(
+	device *config.Device, creds *Credentials, timeout time.Duration, retries int,
+) (*Client, error) {
+	if device == nil {
+		return nil, fmt.Errorf("device cannot be nil")
+	}
+
+	if err := device.ValidateSealed(creds.hasCommunity()); err != nil {
 		return nil, fmt.Errorf("invalid device configuration: %w", err)
 	}
 
@@ -51,7 +94,8 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 		MaxOids:   100, // Increase from default 60 to handle larger OID sets
 	}
 
-	// Configure SNMP version and authentication
+	// Configure SNMP version and authentication. The connection is given no
+	// secret here: call installs them for each request and removes them after.
 	switch device.SNMPVersion {
 	case "1":
 		// SNMPv1 is still what a lot of embedded equipment offers — KVMs, PDUs,
@@ -60,18 +104,14 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 		// walk that runs off the end of the tree is reported as the
 		// NoSuchName error rather than as an endOfMibView marker.
 		conn.Version = gosnmp.Version1
-		conn.Community = device.Community
 	case "2c":
 		conn.Version = gosnmp.Version2c
-		conn.Community = device.Community
 	case "3":
-		if err := ConfigureV3(conn, V3Credentials{
+		if err := configureV3(conn, V3Credentials{
 			Username:     device.Username,
 			AuthProtocol: device.AuthProtocol,
-			AuthPassword: device.AuthPassword,
 			PrivProtocol: device.PrivProtocol,
-			PrivPassword: device.PrivPassword,
-		}); err != nil {
+		}, creds.hasAuth(), creds.hasPriv()); err != nil {
 			return nil, err
 		}
 	default:
@@ -80,20 +120,101 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 
 	return &Client{
 		device: device,
+		creds:  creds,
 		conn:   conn,
 	}, nil
+}
+
+// call runs op with the device's credentials installed on the connection and
+// removes them before it returns.
+//
+// It holds the client exclusively: the connection carries the secrets for the
+// length of op, and no other request may see them or remove them under it.
+// The secrets are views of locked enclaves that are destroyed when call
+// returns, so nothing gosnmp keeps may still refer to them by then; scrub
+// sees to the connection, and gosnmp's own passphrase cache is disabled (see
+// init).
+//
+// Opening the credentials may wait for locked memory other requests hold;
+// ctx bounds that wait, and its end is returned as a CredentialError.
+func (c *Client) call(ctx context.Context, op func() error) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.withCredentials(ctx, op)
+}
+
+// withCredentials runs op with the device's credentials installed on conn
+// and scrubs them off again before returning. The caller holds c.mu.
+func (c *Client) withCredentials(ctx context.Context, op func() error) error {
+	c.credMu.Lock()
+	defer c.credMu.Unlock()
+
+	opened := false
+	err := c.creds.use(ctx, func(s openSecrets) error {
+		opened = true
+		if err := c.install(s); err != nil {
+			c.scrub()
+			return err
+		}
+		defer c.scrub()
+		return op()
+	})
+	// Whatever stopped the credentials from being opened -- an open that
+	// failed, a limit they can never fit, or ctx ending while they waited for
+	// locked memory -- is a credential failure, not the request's.
+	if err != nil && !opened {
+		return &CredentialError{Device: c.device.Name, Err: err}
+	}
+	return err
+}
+
+// install puts the opened secrets on the connection.
+func (c *Client) install(s openSecrets) error {
+	if c.conn.Version != gosnmp.Version3 {
+		c.conn.Community = s.community
+		return nil
+	}
+	usm, ok := c.conn.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if !ok {
+		return nil
+	}
+	usm.AuthenticationPassphrase = s.authPassword
+	usm.PrivacyPassphrase = s.privPassword
+	// Once the engine is known the localized keys can be derived now; before
+	// that, gosnmp derives them itself when discovery finds the engine.
+	if usm.AuthoritativeEngineID != "" {
+		return usm.InitSecurityKeys()
+	}
+	return nil
+}
+
+// scrub removes every secret, and every key derived from one, from the
+// connection. The derived keys are ordinary heap memory and are wiped; the
+// passphrases are views of enclaves and are dropped.
+func (c *Client) scrub() {
+	c.conn.Community = ""
+	usm, ok := c.conn.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if !ok || usm == nil {
+		return
+	}
+	usm.AuthenticationPassphrase = ""
+	usm.PrivacyPassphrase = ""
+	clear(usm.SecretKey)
+	clear(usm.PrivacyKey)
+	usm.SecretKey = nil
+	usm.PrivacyKey = nil
 }
 
 // Connect establishes connection to the SNMP device
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	if err := c.conn.Connect(); err != nil {
-		return fmt.Errorf("failed to connect to %s: %w", c.device.Address, err)
-	}
-
-	return nil
+	return c.withCredentials(context.Background(), func() error {
+		if err := c.conn.Connect(); err != nil {
+			return fmt.Errorf("failed to connect to %s: %w", c.device.Address, err)
+		}
+		return nil
+	})
 }
 
 // Close closes the SNMP connection.
@@ -119,11 +240,12 @@ func (c *Client) Close() error {
 
 // Get performs an SNMP GET for a single OID
 func (c *Client) Get(oid string) (*Result, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	result, err := c.conn.Get([]string{oid})
-	if err != nil {
+	var result *gosnmp.SnmpPacket
+	if err := c.call(context.Background(), func() error {
+		var err error
+		result, err = c.conn.Get([]string{oid})
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("SNMP GET failed for %s: %w", oid, err)
 	}
 
@@ -148,14 +270,23 @@ func (c *Client) Get(oid string) (*Result, error) {
 // in advance. Treating tooBig as success is how a device silently returns no
 // scalars at all while every poll still reports success.
 func (c *Client) GetMultiple(oids []string) ([]*Result, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	return c.GetMultipleContext(context.Background(), oids)
+}
 
+// GetMultipleContext is GetMultiple with ctx bounding the wait for the
+// device's credentials to be opened (see call).
+func (c *Client) GetMultipleContext(ctx context.Context, oids []string) ([]*Result, error) {
 	if len(oids) == 0 {
 		return nil, &NoOIDsError{}
 	}
 
-	return getWithSplit(c.conn.Get, oids)
+	var results []*Result
+	err := c.call(ctx, func() error {
+		var err error
+		results, err = getWithSplit(c.conn.Get, oids)
+		return err
+	})
+	return results, err
 }
 
 // snmpGetter issues a single SNMP GET. Keeping it as a function lets the
@@ -210,15 +341,16 @@ func getWithSplit(get snmpGetter, oids []string) ([]*Result, error) {
 
 // GetBulk performs an SNMP GETBULK operation
 func (c *Client) GetBulk(oids []string, maxRepetitions uint32) ([]*Result, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	if len(oids) == 0 {
 		return nil, fmt.Errorf("no OIDs provided")
 	}
 
-	result, err := c.conn.GetBulk(oids, 0, maxRepetitions)
-	if err != nil {
+	var result *gosnmp.SnmpPacket
+	if err := c.call(context.Background(), func() error {
+		var err error
+		result, err = c.conn.GetBulk(oids, 0, maxRepetitions)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("SNMP GETBULK failed: %w", err)
 	}
 
@@ -284,10 +416,9 @@ func (c *Client) collectWalk(walk walker, op, rootOID string) ([]*Result, error)
 
 // Walk performs an SNMP WALK starting from the given OID
 func (c *Client) Walk(rootOID string, walkFn func(*Result) error) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.streamWalk(c.conn.Walk, "WALK", rootOID, walkFn)
+	return c.call(context.Background(), func() error {
+		return c.streamWalk(c.conn.Walk, "WALK", rootOID, walkFn)
+	})
 }
 
 // bulkWalker reports the walk to use for a table and what to call it.
@@ -310,29 +441,40 @@ func (c *Client) bulkWalker() (walker, string) {
 // BulkWalk performs an SNMP BULKWALK (optimized walk using GETBULK), falling
 // back to a plain walk on SNMPv1, which has no GETBULK.
 func (c *Client) BulkWalk(rootOID string, walkFn func(*Result) error) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	walk, op := c.bulkWalker()
-	return c.streamWalk(walk, op, rootOID, walkFn)
+	return c.call(context.Background(), func() error {
+		walk, op := c.bulkWalker()
+		return c.streamWalk(walk, op, rootOID, walkFn)
+	})
 }
 
 // WalkAll performs an SNMP WALK and returns all results
 func (c *Client) WalkAll(rootOID string) ([]*Result, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.collectWalk(c.conn.Walk, "WALK", rootOID)
+	var results []*Result
+	err := c.call(context.Background(), func() error {
+		var err error
+		results, err = c.collectWalk(c.conn.Walk, "WALK", rootOID)
+		return err
+	})
+	return results, err
 }
 
 // BulkWalkAll performs an SNMP BULKWALK and returns all results, falling back
 // to a plain walk on SNMPv1.
 func (c *Client) BulkWalkAll(rootOID string) ([]*Result, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	return c.BulkWalkAllContext(context.Background(), rootOID)
+}
 
-	walk, op := c.bulkWalker()
-	return c.collectWalk(walk, op, rootOID)
+// BulkWalkAllContext is BulkWalkAll with ctx bounding the wait for the
+// device's credentials to be opened (see call).
+func (c *Client) BulkWalkAllContext(ctx context.Context, rootOID string) ([]*Result, error) {
+	var results []*Result
+	err := c.call(ctx, func() error {
+		var err error
+		walk, op := c.bulkWalker()
+		results, err = c.collectWalk(walk, op, rootOID)
+		return err
+	})
+	return results, err
 }
 
 // GetDeviceInfo returns basic device information

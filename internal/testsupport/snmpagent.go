@@ -62,6 +62,17 @@ type SNMPAgent struct {
 	// requests counts the datagrams the agent has accepted.
 	requests atomic.Int64
 
+	// community, when set, is the only community the agent answers; any
+	// other is dropped unanswered, as a real agent does.
+	community atomic.Pointer[string]
+
+	// usm, when set, makes this an SNMPv3 agent. It is fixed at
+	// construction (NewSNMPv3Agent).
+	usm *USMEngine
+
+	// rejected counts the requests dropped for bad credentials.
+	rejected atomic.Int64
+
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 }
@@ -69,6 +80,21 @@ type SNMPAgent struct {
 // NewSNMPAgent starts an agent serving objects on a loopback UDP socket. The
 // caller closes it, which is what stops the serving goroutine.
 func NewSNMPAgent(objects ...gosnmp.SnmpPDU) (*SNMPAgent, error) {
+	return startAgent(nil, objects)
+}
+
+// NewSNMPv3Agent starts an SNMPv3 agent serving objects to user, and to no
+// one else: a request that does not authenticate and decrypt under the user's
+// keys is dropped unanswered and counted by Rejected.
+func NewSNMPv3Agent(user SNMPv3User, objects ...gosnmp.SnmpPDU) (*SNMPAgent, error) {
+	engine, err := NewUSMEngine(user)
+	if err != nil {
+		return nil, err
+	}
+	return startAgent(engine, objects)
+}
+
+func startAgent(engine *USMEngine, objects []gosnmp.SnmpPDU) (*SNMPAgent, error) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		return nil, &SNMPAgentListenError{Err: err}
@@ -79,7 +105,7 @@ func NewSNMPAgent(objects ...gosnmp.SnmpPDU) (*SNMPAgent, error) {
 		return oidLess(served[i].Name, served[j].Name)
 	})
 
-	a := &SNMPAgent{conn: conn, mib: served}
+	a := &SNMPAgent{conn: conn, mib: served, usm: engine}
 	a.wg.Add(1)
 	go a.serve()
 
@@ -172,26 +198,50 @@ func (a *SNMPAgent) serve() {
 			continue
 		}
 
-		// Decoding uses gosnmp itself, so the agent reads exactly the bytes the
-		// client wrote rather than a test-only approximation of them.
-		decoder := &gosnmp.GoSNMP{Version: gosnmp.Version2c}
-		request, err := decoder.SnmpDecodePacket(buf[:n])
-		if err != nil {
-			continue // a malformed datagram gets no reply, as on a real agent
-		}
-
-		if a.silencedBy(request) {
-			continue
-		}
-
-		wire, err := a.respond(request).MarshalMsg()
-		if err != nil {
-			continue
+		var wire []byte
+		if a.usm != nil {
+			wire, err = a.usm.Answer(buf[:n], func(request *gosnmp.SnmpPacket) *gosnmp.SnmpPacket {
+				return a.respond(request)
+			})
+			if err != nil {
+				a.rejected.Add(1)
+				continue
+			}
+		} else {
+			// Decoding uses gosnmp itself, so the agent reads exactly the
+			// bytes the client wrote rather than a test-only approximation of
+			// them.
+			decoder := &gosnmp.GoSNMP{Version: gosnmp.Version2c}
+			request, err := decoder.SnmpDecodePacket(buf[:n])
+			if err != nil {
+				continue // a malformed datagram gets no reply, as on a real agent
+			}
+			if want := a.community.Load(); want != nil && request.Community != *want {
+				a.rejected.Add(1)
+				continue
+			}
+			if a.silencedBy(request) {
+				continue
+			}
+			if wire, err = a.respond(request).MarshalMsg(); err != nil {
+				continue
+			}
 		}
 		if _, err := a.conn.WriteToUDP(wire, from); err != nil {
 			return
 		}
 	}
+}
+
+// RequireCommunity makes the agent answer only requests carrying community,
+// dropping the rest unanswered and counting them in Rejected.
+func (a *SNMPAgent) RequireCommunity(community string) {
+	a.community.Store(&community)
+}
+
+// Rejected is the number of requests dropped for bad credentials.
+func (a *SNMPAgent) Rejected() int64 {
+	return a.rejected.Load()
 }
 
 // respond builds the reply to one decoded request.

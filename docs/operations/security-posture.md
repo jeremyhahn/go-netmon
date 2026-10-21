@@ -107,6 +107,57 @@ tests that fail if they stop holding.
 * **Dependency vulnerabilities.** `make security` runs `govulncheck` over the
   dependencies and the linked standard library, and it runs as a job in
 `.github/workflows/ci.yml`.
+* **SNMP credentials in the poller's memory.** Sealed in go-enclave protected
+  memory, opened only for the length of one request. See below.
+
+## Where SNMP credentials live
+
+This covers the v2c community and the v3 authentication and privacy passphrases.
+It describes the **poller process**. The web UI's copy is covered further down.
+
+* **Loaded config.** `poller.Start` builds a worker per device and seals that
+  device's secrets. It then blanks them in the loaded `Config`
+  (`Config.ScrubCredentials`). After that the config holds no credential.
+* **Device worker.** Each worker owns a `*snmp.Credentials`, which holds one
+  go-enclave `Sealed` per secret. The worker's own copy of the device has those
+  fields empty.
+* **Pooled client.** The client borrows the worker's credentials. For each
+  request it:
+  1. opens the secrets;
+  2. puts them on the gosnmp connection;
+  3. sends;
+  4. blanks the passphrases and wipes the derived v3 keys before it returns.
+
+  Between requests the connection holds nothing.
+* **gosnmp's passphrase cache.** It is process-wide and would keep derived keys
+  indefinitely, so it is disabled (`gosnmp.PasswordCaching(false)`). As a result,
+  v3 keys are re-derived on every request.
+* **Removing a device, stopping the poller.** `RemoveDevice` and `Stop` destroy
+  the device's sealed credentials. A request after that fails with a
+  `*snmp.CredentialError` wrapping `enclave.ErrEnclaveDestroyed`, and nothing is
+  sent.
+* **Choosing the provider.** The go-enclave provider is constructed in exactly
+  one place, `credential.Default()`. It is injected with `poller.WithSealer`, and
+  netmon code depends only on the `enclave.Sealer` interface.
+
+`internal/poller/credentials_test.go` checks these properties:
+
+* it polls v2c and v3 agents, which reject any wrong credential;
+* it reflects over the whole poller to confirm that no reachable string or byte
+  slice holds a secret;
+* it confirms that removing a device and stopping the poller destroy the sealed
+  credentials.
+
+### What is not covered
+
+* **Immutable Go strings.** Strings decoded from the YAML file or from API
+  request bodies cannot be wiped. They stay in the heap until the garbage
+  collector reclaims them.
+* **The web UI.** The web UI database, its API DTOs, the SNMP tester and the CLI
+  flags still carry credentials as plain strings. `GET /api/devices` still
+  returns them, as described above.
+* **On disk.** The storage format is unchanged, and credentials are not encrypted
+  at rest.
 
 ## Reporting
 

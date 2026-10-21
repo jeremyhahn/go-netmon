@@ -43,6 +43,14 @@ esac
 exit 0
 EOF
     chmod +x "$bin/docker"
+    # run-tests.sh vendors the modules for the image build before compose.
+    # The stub logs that call and vendors nothing: no build happens here.
+    cat >"$bin/go" <<EOF
+#!/usr/bin/env bash
+printf 'go %s\\n' "\$*" >>"$log"
+exit 0
+EOF
+    chmod +x "$bin/go"
 }
 
 # run_harness runs run-tests.sh with the stub on PATH and the given run id,
@@ -379,7 +387,7 @@ tagged_dirs() {
     root="$(cd "$SCRIPT_DIR/../.." && pwd)"
     while IFS= read -r file; do
         dirname "${file#"$root"/}"
-    done < <(find "$root" -name '*.go' -type f \
+    done < <(find "$root" \( -name .docker-vendor -o -name vendor \) -prune -o -name '*.go' -type f \
         -exec grep -l '^//go:build integration' {} +) | sort -u
 }
 

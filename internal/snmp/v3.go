@@ -36,6 +36,20 @@ type V3Credentials struct {
 
 // ConfigureV3 sets up user-based security on a connection.
 func ConfigureV3(conn *gosnmp.GoSNMP, creds V3Credentials) error {
+	if err := configureV3(conn, creds, creds.AuthPassword != "", creds.PrivPassword != ""); err != nil {
+		return err
+	}
+	usm := conn.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	usm.AuthenticationPassphrase = creds.AuthPassword
+	usm.PrivacyPassphrase = creds.PrivPassword
+	return nil
+}
+
+// configureV3 is ConfigureV3 without the passphrases: it validates the
+// security level against which passphrases exist and leaves the connection
+// holding none. A client whose passphrases are sealed installs them for the
+// length of each request; see Client.call.
+func configureV3(conn *gosnmp.GoSNMP, creds V3Credentials, hasAuth, hasPriv bool) error {
 	if creds.Username == "" {
 		return &V3ConfigError{Field: "username", Value: "", Reason: "required for SNMPv3"}
 	}
@@ -52,12 +66,12 @@ func ConfigureV3(conn *gosnmp.GoSNMP, creds V3Credentials) error {
 	// A protocol with no passphrase cannot authenticate or encrypt anything.
 	// Treating it as "off" would quietly downgrade the security level the
 	// operator asked for, so it is refused instead.
-	if auth != gosnmp.NoAuth && creds.AuthPassword == "" {
+	if auth != gosnmp.NoAuth && !hasAuth {
 		return &V3ConfigError{
 			Field: "auth_password", Value: "", Reason: "required with an authentication protocol",
 		}
 	}
-	if priv != gosnmp.NoPriv && creds.PrivPassword == "" {
+	if priv != gosnmp.NoPriv && !hasPriv {
 		return &V3ConfigError{
 			Field: "priv_password", Value: "", Reason: "required with a privacy protocol",
 		}
@@ -75,11 +89,9 @@ func ConfigureV3(conn *gosnmp.GoSNMP, creds V3Credentials) error {
 	conn.Version = gosnmp.Version3
 	conn.SecurityModel = gosnmp.UserSecurityModel
 	conn.SecurityParameters = &gosnmp.UsmSecurityParameters{
-		UserName:                 creds.Username,
-		AuthenticationProtocol:   auth,
-		AuthenticationPassphrase: creds.AuthPassword,
-		PrivacyProtocol:          priv,
-		PrivacyPassphrase:        creds.PrivPassword,
+		UserName:               creds.Username,
+		AuthenticationProtocol: auth,
+		PrivacyProtocol:        priv,
 	}
 	conn.MsgFlags = securityLevel(auth, priv)
 	return nil

@@ -51,6 +51,12 @@ services:
       context: ../..
       dockerfile: test/integration/Dockerfile.test
     container_name: integration-test
+    # The tests run the poller and the web UI in-process, sealing and opening
+    # SNMP credentials in locked memory; the same limit as docker-compose.yml.
+    ulimits:
+      memlock:
+        soft: 16777216
+        hard: 16777216
     depends_on:
       - prometheus
       - snmp-simulator

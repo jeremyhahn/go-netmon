@@ -72,6 +72,11 @@ RestartSec=5s
 # and restarted beats a system-wide OOM that also takes out the metrics store.
 MemoryMax=768M
 MemoryHigh=640M
+# Locked memory for the sealed SNMP credentials, sized as in
+# docker-compose.yml: one open locks at most 24 KiB, so 16 MiB holds a
+# 256-device fleet polling at once with better than 2x headroom. systemd
+# before 253 defaults to 64 KiB, which holds two. See docs/deployment/user.md.
+LimitMEMLOCK=16M
 
 # Hardening. The service needs to read /etc/go-netmon, write its own data
 # directory, and talk SNMP and HTTP. Nothing else.

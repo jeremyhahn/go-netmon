@@ -146,6 +146,12 @@ type importedMIB struct {
 	// since a module that stores fewer objects than it declares is otherwise
 	// indistinguishable from one that is simply small.
 	unresolved int
+
+	// missingImports names the modules this one IMPORTS from that could not
+	// be found, and untyped the objects kept without a type because of it.
+	// The module is stored either way; these say it is not whole (#62).
+	missingImports []string
+	untyped        []string
 }
 
 // handleImportMIB imports an uploaded MIB file.
@@ -204,9 +210,11 @@ func (s *Server) handleImportMIB(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Successfully %s MIB: %s (%d objects)", verb, outcome.record.Name, outcome.record.ObjectCount)
 
 	respondJSON(w, status, map[string]interface{}{
-		"mib":        outcome.record,
-		"replaced":   outcome.replaced,
-		"unresolved": outcome.unresolved,
+		"mib":                outcome.record,
+		"replaced":           outcome.replaced,
+		"unresolved":         outcome.unresolved,
+		"unresolved_imports": nonNilStrings(outcome.missingImports),
+		"untyped":            nonNilStrings(outcome.untyped),
 		"message": fmt.Sprintf("Successfully %s MIB %s with %d objects",
 			verb, outcome.record.Name, outcome.record.ObjectCount),
 	})
@@ -311,6 +319,9 @@ func (s *Server) importMIBSource(
 		log.Printf("MIB %s: %d of %d objects resolved to no OID and were discarded",
 			moduleInfo.Name, unresolved, unresolved+len(oids))
 	}
+	if degraded := report.Err(); degraded != nil {
+		log.Printf("Warning: %v", degraded)
+	}
 
 	stored, err := s.storeParsedMIB(ctx, moduleInfo.Name, storage.MIBContent{
 		FilePath:    upload.path,
@@ -321,13 +332,24 @@ func (s *Server) importMIBSource(
 		return nil, err
 	}
 	stored.unresolved = report.UnresolvedCount()
+	stored.missingImports = report.MissingImports
+	stored.untyped = report.Untyped
 	return stored, nil
+}
+
+// nonNilStrings keeps an empty list an empty JSON array rather than null, so
+// a client can read the field without a null check.
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 // saveUploadedMIB writes an upload into the server's MIB directory, keeping the
 // bytes it displaced so the write can be undone.
 func (s *Server) saveUploadedMIB(name string, content io.Reader) (*mibUpload, error) {
-	mibDir := filepath.Join(s.mibStoragePath, "uploaded")
+	mibDir := s.uploadedMIBDir()
 
 	// The MIB store is opened once and everything below is named relative to
 	// it, so no path built from an upload is ever handed to the os package.

@@ -27,7 +27,12 @@ Main methods:
 - `LoadModule(name)`: loads a module and returns its `ModuleInfo`.
 - `ParseModule(name)`: returns an `OIDMetadata` for every node in the module.
   `ParseModuleWithReport(name)` does the same and also returns a `ParseReport`
-  whose `Unresolved` lists the objects that came out without an OID.
+  whose `Unresolved` lists the objects that came out without an OID,
+  `MissingImports` the modules named in IMPORTS that could not be loaded, and
+  `Untyped` the scalars and columns kept without a resolved type. Its `Err()`
+  is nil for a module that resolved completely, otherwise an
+  `*UnresolvedImportsError` (matched by `errors.Is(err, ErrUnresolvedImports)`).
+  It is a warning, never a load failure: see §1.5.
 - `GetTableInfo(name)`: returns a `TableInfo` for every table node in the module.
 - `LoadModuleFromFile(path)`: adds the file's directory to the search path and
   loads the module named after the file (name without extension).
@@ -113,6 +118,23 @@ CLI, the web UI and the metrics exporter share it. See [cli.md](cli.md).
 
 Objects whose IMPORTS did not resolve come out with no OID. They are counted
 (`UnresolvedCount`), discarded on import, and reported by the web UI.
+
+When an imported module is absent but the OIDs still resolve (`ATM-MIB` without
+`ATM-TC-MIB`), the objects typed by the missing module keep their OID and lose
+everything read from the type: `Type`, `Units`, `DisplayHint` and `EnumValues`
+come out empty, and `atmVplOperStatus` polls as a bare integer. The module
+still loads, degraded, and says so (#62):
+
+- the `ParseReport` names the missing modules (`MissingImports`) and the
+  affected objects (`Untyped`), and `Err()` returns an `*UnresolvedImportsError`;
+- the loader logs a warning naming the module and its missing imports;
+- the web UI's MIB import response carries `unresolved_imports` and `untyped`
+  (empty arrays for a complete module);
+- `netmon mib validate` prints a `WARN` line for the module and counts it as
+  "ok with unresolved imports" without failing.
+
+The metric catalog counts these objects as `kind="unknown"`
+(`gonetmon_catalog_unknown_kind`).
 
 ## 2. Data model (`internal/mib/types.go`)
 

@@ -38,6 +38,12 @@ answers 404.
 
 The web page is **not** in the payload. It is inside the binary.
 
+`go-netmon.service` and `go-netmon-webui.service` set `LimitMEMLOCK=16M`: the
+locked memory the sealed SNMP credentials are opened into, sized for a
+256-device fleet polling at once. The Compose files set the same through
+`ulimits: memlock`. How it is sized, and what too small looks like:
+[docs/deployment/user.md](../docs/deployment/user.md#locked-memory).
+
 ## After a deploy
 
 The web UI takes about three minutes to bind, because it parses every imported

@@ -152,6 +152,9 @@ type importedMIBResponse struct {
 	MIB      webuistorage.MIB `json:"mib"`
 	Replaced bool             `json:"replaced"`
 	Message  string           `json:"message"`
+
+	UnresolvedImports []string `json:"unresolved_imports"`
+	Untyped           []string `json:"untyped"`
 }
 
 func decodeImportResponse(t *testing.T, w *httptest.ResponseRecorder) importedMIBResponse {
@@ -419,6 +422,61 @@ func TestReimportOfUnknownModuleImportsIt(t *testing.T) {
 	}
 	if got.MIB.RefreshedAt != nil {
 		t.Error("a first import must not claim to have refreshed anything")
+	}
+}
+
+// degradedMIB types one object from a module that is nowhere on disk.
+const degradedMIB = `TEST-DEGRADED-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    OBJECT-TYPE, enterprises FROM SNMPv2-SMI
+    TestStatus FROM TEST-ABSENT-TC-MIB;
+
+testDegraded OBJECT IDENTIFIER ::= { enterprises 99962 }
+
+testStatus OBJECT-TYPE
+    SYNTAX TestStatus
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION "Typed by a module that is not there."
+    ::= { testDegraded 1 }
+
+END
+`
+
+// A module with an absent import is stored, and the response names what it
+// could not import and which objects that left untyped (#62).
+func TestImportNamesUnresolvedImports(t *testing.T) {
+	f := newReimportFixture(t)
+
+	w := f.upload(t, "TEST-DEGRADED-MIB.my", []byte(degradedMIB), "")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d, want 201; body: %s", w.Code, w.Body.String())
+	}
+
+	got := decodeImportResponse(t, w)
+	if len(got.UnresolvedImports) != 1 || got.UnresolvedImports[0] != "TEST-ABSENT-TC-MIB" {
+		t.Errorf("unresolved_imports = %v, want [TEST-ABSENT-TC-MIB]", got.UnresolvedImports)
+	}
+	if len(got.Untyped) != 1 || got.Untyped[0] != "testStatus" {
+		t.Errorf("untyped = %v, want [testStatus]", got.Untyped)
+	}
+}
+
+// A clean module reports both lists empty, not null.
+func TestImportOfACleanModuleNamesNoUnresolvedImports(t *testing.T) {
+	f := newReimportFixture(t)
+
+	w := f.upload(t, sensorFile, []byte(sensorMIB), "")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d, want 201; body: %s", w.Code, w.Body.String())
+	}
+
+	got := decodeImportResponse(t, w)
+	if got.UnresolvedImports == nil || len(got.UnresolvedImports) != 0 {
+		t.Errorf("unresolved_imports = %#v, want []", got.UnresolvedImports)
+	}
+	if got.Untyped == nil || len(got.Untyped) != 0 {
+		t.Errorf("untyped = %#v, want []", got.Untyped)
 	}
 }
 

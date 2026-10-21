@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -1232,17 +1233,105 @@ func TestParseConfigUploadRejectsAnEmptyBody(t *testing.T) {
 	}
 }
 
-func TestSourceFileNameFallsBackToTheModuleName(t *testing.T) {
-	if got := sourceFileName("IF-MIB", "/data/mibs/uploaded/IF-MIB.txt"); got != "IF-MIB.txt" {
-		t.Errorf("sourceFileName() = %q, want the stored file's name", got)
+func TestReadMIBSourceResolvesTheModuleInTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "IF-MIB.txt"), []byte("IF-MIB DEFINITIONS"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
 	}
-	// A record with no path at all still has to name something the bundle can
-	// carry, or the archive would gain an entry called ".".
-	if got := sourceFileName("IF-MIB", ""); got != "IF-MIB" {
-		t.Errorf("sourceFileName() = %q, want the module name", got)
+
+	// The stored path names a container-era directory that is gone; only its
+	// base name, and then the module name, decide which file is read.
+	name, content, err := readMIBSource(dir, "IF-MIB", "/app/data/mibs/uploaded/IF-MIB.txt")
+	if err != nil {
+		t.Fatalf("readMIBSource: %v", err)
 	}
-	if got := sourceFileName("IF-MIB", "/"); got != "IF-MIB" {
-		t.Errorf("sourceFileName() = %q, want the module name", got)
+	if name != "IF-MIB.txt" || string(content) != "IF-MIB DEFINITIONS" {
+		t.Errorf("readMIBSource() = %q, %q, want the file in the directory", name, content)
+	}
+
+	// No stored path at all: the module name with a known suffix is found.
+	if name, _, err = readMIBSource(dir, "IF-MIB", ""); err != nil || name != "IF-MIB.txt" {
+		t.Errorf("readMIBSource() without a stored path = %q, %v, want IF-MIB.txt", name, err)
+	}
+}
+
+func TestReadMIBSourceReportsAnAbsentFile(t *testing.T) {
+	_, _, err := readMIBSource(t.TempDir(), "IF-MIB", "/app/data/mibs/uploaded/IF-MIB.txt")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("readMIBSource() error = %v, want os.ErrNotExist", err)
+	}
+	var uploadErr *MIBUploadError
+	if !errors.As(err, &uploadErr) {
+		t.Errorf("readMIBSource() error = %T, want *MIBUploadError", err)
+	}
+}
+
+func TestReadMIBSourceCannotLeaveTheDirectory(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "uploaded")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	outside := filepath.Join(parent, "SECRET-MIB.my")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	// A module name that climbs out of the directory is never a candidate.
+	if _, content, err := readMIBSource(dir, "../SECRET-MIB", ""); err == nil || content != nil {
+		t.Errorf("readMIBSource(../SECRET-MIB) read %q, want an error", content)
+	}
+	if _, content, err := readMIBSource(dir, "SECRET-MIB", "../SECRET-MIB.my"); err == nil || content != nil {
+		t.Errorf("readMIBSource() through the stored path read %q, want an error", content)
+	}
+
+	// A link planted in the directory is not followed out of it.
+	if err := os.Symlink(outside, filepath.Join(dir, "LINK-MIB.my")); err != nil {
+		t.Fatalf("plant link: %v", err)
+	}
+	if _, content, err := readMIBSource(dir, "LINK-MIB", ""); err == nil || content != nil {
+		t.Errorf("readMIBSource() through a link read %q, want an error", content)
+	}
+}
+
+func TestExportCarriesASourceWhoseStoredPathIsStale(t *testing.T) {
+	f := newConfigFixture(t)
+	f.seed(t)
+
+	// Production records hold paths from the container era. The file is
+	// still in the configured upload directory, so the export must carry it.
+	record, err := f.records.GetMIBByName(t.Context(), powerModule)
+	if err != nil {
+		t.Fatalf("GetMIBByName: %v", err)
+	}
+	fileName := filepath.Base(record.FilePath)
+	if _, err = f.records.ReplaceMIBContent(t.Context(), powerModule, webuistorage.MIBContent{
+		FilePath:    filepath.Join("/app/data/mibs/uploaded", fileName),
+		Description: record.Description,
+		ObjectCount: record.ObjectCount,
+	}); err != nil {
+		t.Fatalf("ReplaceMIBContent: %v", err)
+	}
+
+	rec := do(t, f.server, http.MethodGet, "/api/config/export", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("X-Netmon-Missing-MIB-Sources"); got != "" {
+		t.Errorf("X-Netmon-Missing-MIB-Sources = %q, want none", got)
+	}
+	bundle, err := readConfigBundle(rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("readConfigBundle: %v", err)
+	}
+	if _, ok := bundle.MIBFiles[bundleMIBDir+"/"+fileName]; !ok {
+		t.Errorf("bundle does not carry %s", fileName)
+	}
+
+	// The detail view shows the file export reads, not the stale record.
+	detail := do(t, f.server, http.MethodGet, fmt.Sprintf("/api/mibs/%d", record.ID), "")
+	if want := filepath.Join(f.server.uploadedMIBDir(), fileName); !strings.Contains(detail.Body.String(), want) {
+		t.Errorf("MIB detail = %s, want file_path %s", detail.Body.String(), want)
 	}
 }
 

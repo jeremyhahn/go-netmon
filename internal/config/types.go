@@ -361,6 +361,17 @@ var validAlarmSeverities = map[string]bool{
 
 // Validate validates a device configuration
 func (d *Device) Validate() error {
+	return d.validate(d.Community != "")
+}
+
+// ValidateSealed validates a device whose credentials have been sealed and
+// removed from it (see snmp.SealCredentials), so that its empty Community is
+// not mistaken for a missing one. hasCommunity reports whether one was sealed.
+func (d *Device) ValidateSealed(hasCommunity bool) error {
+	return d.validate(hasCommunity)
+}
+
+func (d *Device) validate(hasCommunity bool) error {
 	if d.Name == "" {
 		return &ValidationError{Field: "name", Message: "cannot be empty"}
 	}
@@ -376,7 +387,7 @@ func (d *Device) Validate() error {
 
 	// Validate version-specific fields. v1 and v2c both authenticate with a
 	// community string and neither has anything else to check.
-	if (d.SNMPVersion == "1" || d.SNMPVersion == "2c") && d.Community == "" {
+	if (d.SNMPVersion == "1" || d.SNMPVersion == "2c") && !hasCommunity {
 		return &ValidationError{
 			Field:   "community",
 			Message: "required for SNMPv1 and SNMPv2c",
