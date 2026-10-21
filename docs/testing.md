@@ -16,6 +16,13 @@ and `integration-testing.md`); this page is the local part.
 | `make ci-fast` | Everything that needs no Docker: `check-tracked`, `fmt-check`, `vet`, `vet-tags`, `lint`, the harness and guard tests, `test`, `build-all`, `validate-mibs` |
 | `make ci` | `ci-fast` plus `integration-test` |
 
+CI (`.github/workflows/ci.yml`) runs in two tiers. Every pull request runs the
+PR tier: lint, security, the unit suite under `-race` (`make test`),
+`build-all` and the shell suites. The full tier adds FIPS and
+`integration-test`; it runs
+on a push to `main`, on `workflow_dispatch`, and on a pull request labelled
+`ci:full`. The required check `CI Passed` gates whichever tier ran.
+
 Layout: unit tests sit beside the code as `*_test.go`; Go integration tests and
 their harness are in `test/integration/`; Playwright browser specs are in
 `tests/e2e/tests/` (`tests/e2e/playwright.config.ts`). A file behind

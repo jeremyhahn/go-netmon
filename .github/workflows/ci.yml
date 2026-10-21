@@ -5,7 +5,21 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled` so that adding `ci:full` to an open PR starts a full-tier run.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+
+# Two tiers (#196, handbook sdlc §5a). No `schedule:` trigger, by owner ruling:
+# the nightly full tier is a `workflow_dispatch`.
+#
+#   PR tier    every event         lint, security, test (-race), build, scripts
+#   full tier  push to main,       fips, integration
+#              a PR labelled
+#              `ci:full`, or
+#              workflow_dispatch
+#
+# A full-tier job carries its own `if:`; CI Passed evaluates the same condition
+# and, when it holds, requires those jobs to succeed as well.
 
 # Cancel superseded runs on the same branch; only the newest matters.
 concurrency:
@@ -93,7 +107,7 @@ jobs:
       - run: make security
 
   test:
-    name: Unit Tests (race)
+    name: Unit Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +117,7 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
+      # The unit suite under -race (handbook ci-standard §8).
       - name: Run unit tests
         run: make test
 
@@ -192,6 +207,8 @@ jobs:
   fips:
     name: FIPS
     runs-on: ubuntu-latest
+    # Full tier. The same condition is repeated in CI Passed.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # No `needs` (ci-template v1.14): every job starts at once, so a run takes
     # as long as its slowest job. CI Passed needs them all and fails closed.
     timeout-minutes: 30
@@ -246,6 +263,8 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    # Full tier. The same condition is repeated in CI Passed.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # No `needs` (ci-template v1.14): every job starts at once, so a run takes
     # as long as its slowest job. CI Passed needs them all and fails closed.
     steps:
@@ -265,6 +284,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, security, test, build, scripts, fips, integration]
     if: always()
+    env:
+      # 'true' on the full tier, 'false' on a PR without `ci:full`. The same
+      # condition as the full-tier jobs' `if:`, so the two cannot disagree.
+      FULL_TIER: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
     steps:
       # Each job is listed explicitly rather than using join(needs.*.result).
       # That object filter is a GitHub extension: on Gitea it evaluates to an
@@ -294,6 +317,17 @@ jobs:
           check test        '${{ needs.test.result }}'
           check build       '${{ needs.build.result }}'
           check scripts     '${{ needs.scripts.result }}'
+          # Full tier. Only the literal 'false' (a PR without `ci:full`) lets
+          # these through unchecked; anything else, an empty value included,
+          # requires them, so an unreadable tier fails closed. Even off the
+          # full tier a job that ran and did not succeed still fails the gate.
+          if [ "$FULL_TIER" = false ]; then
+            echo "PR tier: fips and integration are not required."
+            check() { case "$2" in
+              success|skipped) echo "--   $1 ($2, not required)";;
+              *)               echo "FAIL $1 (${2:-result unreadable})"; BAD=1;;
+            esac; }
+          fi
           check fips        '${{ needs.fips.result }}'
           check integration '${{ needs.integration.result }}'
           if [ "$BAD" -ne 0 ]; then

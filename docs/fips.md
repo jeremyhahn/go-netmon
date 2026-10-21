@@ -8,8 +8,11 @@ which cryptographic algorithms exist in the binary.
 | **Ordinary** | `go build ./...` | every feature, every protocol |
 | **FIPS** | `go build -tags fips ./...` | `GOFIPS140=latest`, `GODEBUG=fips140=only` |
 
-CI runs both. Every job except `FIPS` builds untagged, so nothing the tag
-removes stops being compiled, vetted, linted, scanned and unit-tested.
+CI runs both. The `FIPS` job is in CI's full tier (a push to `main`,
+`workflow_dispatch`, or a pull request labelled `ci:full`), beside
+`integration-test`; the PR tier runs the unit suite under `-race`. Every other job
+builds untagged, so nothing the tag removes stops being compiled, vetted,
+linted, scanned and unit-tested.
 
 ## Why `fips140=only`, not `fips140=on`
 
