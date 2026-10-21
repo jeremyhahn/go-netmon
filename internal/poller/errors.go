@@ -59,3 +59,20 @@ func (e *IntervalError) Error() string {
 	return "poller: device " + e.Device + " has a poll interval of " + e.Interval.String() +
 		"; it must be positive (set poll_interval on the device or default_poll_interval globally)"
 }
+
+// DeviceExistsError reports an attempt to add a device under a name the poller
+// already polls.
+//
+// It is a type rather than a formatted string because the answer depends
+// entirely on who asked. AddDevice is a create, and a create that finds the
+// name taken has failed. A registration push is a statement of what the poller
+// should be polling, and one that finds the device already registered has
+// nothing to do -- so RegisterDevice catches this and reports success. Neither
+// caller can tell the two apart from a message.
+type DeviceExistsError struct {
+	Device string
+}
+
+func (e *DeviceExistsError) Error() string {
+	return "poller: device " + e.Device + " is already registered"
+}

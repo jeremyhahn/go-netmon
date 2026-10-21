@@ -4,6 +4,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -110,7 +111,7 @@ func (h *PollerControlHandler) HandleRegisterDevice(w http.ResponseWriter, r *ht
 	ctx := r.Context()
 	if err := h.poller.AddDevice(ctx, device); err != nil {
 		log.Printf("Failed to register device %s: %v", req.Name, err)
-		h.respondError(w, http.StatusInternalServerError, "failed to register device", err.Error())
+		h.respondError(w, registerFailureStatus(err), "failed to register device", err.Error())
 		return
 	}
 
@@ -127,6 +128,26 @@ func (h *PollerControlHandler) HandleRegisterDevice(w http.ResponseWriter, r *ht
 	// Return the created device
 	resp := h.deviceToResponse(device, nil)
 	h.respondJSON(w, http.StatusCreated, resp)
+}
+
+// registerFailureStatus is the status a failed registration answers with.
+//
+// A name the poller already polls is a conflict with the state of this
+// resource, not the poller failing: 409 is what that means, and it is the whole
+// difference between "your request cannot apply to what is here" and "something
+// broke, try again". It was a 500, and the cost of that was not cosmetic --
+// the web UI's client declines to retry a 4xx and retries a 5xx three times, so
+// every device the web UI re-registered at start cost three server errors
+// instead of one honest refusal.
+//
+// The poller's answer is unchanged in substance: it still refuses, and it still
+// says why. Only the status code stops overstating it.
+func registerFailureStatus(err error) int {
+	var exists *poller.DeviceExistsError
+	if errors.As(err, &exists) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 // HandleUpdateDevice handles PUT /api/poller/devices/{name} - Update an existing device

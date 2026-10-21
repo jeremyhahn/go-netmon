@@ -904,7 +904,7 @@ func (p *Poller) AddDevice(ctx context.Context, device *config.Device) error {
 		}
 		if entry.live() {
 			p.mu.Unlock()
-			return fmt.Errorf("device %s already exists", device.Name)
+			return &DeviceExistsError{Device: device.Name}
 		}
 
 		retired := entry.retired

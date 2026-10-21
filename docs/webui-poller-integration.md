@@ -17,7 +17,11 @@ HTTP client for interacting with the main poller service API.
 - Graceful error handling
 
 **Methods:**
-- `RegisterDevice(ctx, device, mibNames, filters)` - Register a device with the poller
+- `RegisterDevice(ctx, device, mibNames, filters)` - Register a device with the poller.
+  A poller that answers 409 already has the device, which is the outcome the
+  call exists to reach, so that is reported as a success. Only 409 is; every
+  other failure, including a poller that does not answer, stays an error,
+  because "the poller did not say" is not "the poller has it".
 - `UpdateDevice(ctx, device, mibNames, filters)` - Update an existing device
 - `RemoveDevice(ctx, deviceName)` - Remove a device from the poller
 - `GetDeviceStatus(ctx, deviceName)` - Fetch device status

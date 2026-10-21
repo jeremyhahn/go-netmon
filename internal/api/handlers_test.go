@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,18 +210,55 @@ func TestHandleRegisterDeviceRejectsABodyThatIsNotJSON(t *testing.T) {
 
 // TestHandleRegisterDeviceRejectsADuplicate covers the poller refusing a device
 // it already runs: the failure belongs in the response, not only in the log.
+//
+// The refusal is unchanged -- the poller does not replace a live worker behind
+// the caller's back -- but it now answers 409 rather than 500. The device
+// existing is a conflict with the state of the resource, not the poller
+// breaking, and the difference is not cosmetic: the web UI's client declines to
+// retry a 4xx and retries a 5xx three times, so the 500 turned every re-
+// registration into three server errors instead of one honest refusal.
 func TestHandleRegisterDeviceRejectsADuplicate(t *testing.T) {
 	t.Parallel()
 
 	handler := newTestHandler(t)
 	body := registerBody(t, "bastion")
 
-	for _, want := range []int{http.StatusCreated, http.StatusInternalServerError} {
+	for _, want := range []int{http.StatusCreated, http.StatusConflict, http.StatusConflict} {
 		w := httptest.NewRecorder()
 		handler.HandleRegisterDevice(w, request(t, http.MethodPost, "/api/poller/devices", body))
 		if w.Code != want {
 			t.Fatalf("status = %d, want %d. Body: %s", w.Code, want, w.Body.String())
 		}
+	}
+}
+
+// TestRegisterFailureStatus keeps the 409 narrow. Only a name the poller
+// already holds is a conflict; anything else is the poller failing, and a
+// caller that reads a conflict as "already registered, carry on" must not be
+// handed one for a device that never got registered.
+func TestRegisterFailureStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"a name the poller already holds", &poller.DeviceExistsError{Device: "bastion"}, http.StatusConflict},
+		{"a wrapped duplicate", fmt.Errorf("register: %w",
+			&poller.DeviceExistsError{Device: "bastion"}), http.StatusConflict},
+		{"a poller that has stopped", errors.New("poller is stopped"), http.StatusInternalServerError},
+		{"an invalid device", errors.New("invalid device: address is required"), http.StatusInternalServerError},
+		{"a MIB module that would not load", errors.New("failed to list OIDs for module IF-MIB"),
+			http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := registerFailureStatus(tt.err); got != tt.want {
+				t.Errorf("registerFailureStatus(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 

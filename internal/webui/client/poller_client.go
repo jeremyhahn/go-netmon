@@ -142,7 +142,27 @@ func NewPollerClient(baseURL string, timeout time.Duration) *PollerClient {
 	}
 }
 
-// RegisterDevice registers a new device with the poller service
+// RegisterDevice registers a device with the poller service.
+//
+// A poller that answers 409 already has the device. That is not a failure: the
+// outcome this call exists to reach is a poller polling the device, and a
+// poller that already polls it has reached it. The web UI re-registers every
+// stored device each time it starts, so this is the ordinary case on any
+// instance whose poller has been up longer than its web UI -- and treating it
+// as a failure is what produced roughly 1,300 HTTP 500s a day on monitor-01, each one
+// a device the web UI then recorded as unregistered while it was polling
+// normally.
+//
+// The poller is not the thing that was wrong. "Already exists", for a device
+// that does exist, is the correct answer to the question asked; it stays an
+// error there, and the poller still refuses to overwrite a live worker behind
+// the caller's back. What changes is that the caller stops reading a truthful
+// answer as a fault.
+//
+// Deliberately narrow. Only 409 -- the poller stating that it holds this device
+// -- is a success. Every other failure, including a poller that did not answer
+// at all, stays an error, because "the poller did not say" is not the same as
+// "the poller has it" and only one of those means the device is being polled.
 func (c *PollerClient) RegisterDevice(
 	ctx context.Context, device *storage.Device,
 	mibNames []string, filters map[string]config.ModuleFilter,
@@ -155,8 +175,12 @@ func (c *PollerClient) RegisterDevice(
 	}
 
 	url := fmt.Sprintf("%s/api/poller/devices", c.baseURL)
-	_, err = c.doRequestWithRetry(ctx, http.MethodPost, url, body)
-	if err != nil {
+	if _, err = c.doRequestWithRetry(ctx, http.MethodPost, url, body); err != nil {
+		var status *httpError
+		if errors.As(err, &status) && status.statusCode == http.StatusConflict {
+			log.Printf("Device %s is already registered with the poller", device.Name)
+			return nil
+		}
 		return fmt.Errorf("failed to register device: %w", err)
 	}
 
