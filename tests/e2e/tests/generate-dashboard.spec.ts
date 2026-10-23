@@ -18,7 +18,7 @@ import * as path from 'path';
 // Everything is served locally — the API responses are intercepted, so this does
 // not depend on what the deployment currently holds and writes nothing.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
 
 test.use({

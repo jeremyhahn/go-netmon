@@ -37,15 +37,14 @@ Thumbs.db
 
 # Review tooling scratch.
 #
-# The Serena indexer that the local review tooling activates writes .serena/
-# into the repository it is reviewing and does not clean up after itself — a
-# review round was observed creating it and then being blocked by its own
-# sandbox from removing it, so it comes back every round. Its inner .gitignore
-# covers only /cache and /project.local.yml, leaving .serena/.gitignore and
-# .serena/project.yml exposed to any broad `git add`. Nothing from it has been
-# committed here only because commits stage explicit paths, which is a habit
-# and not a guard.
-.serena/
+# Serena. .serena/project.yml is tracked: it declares the project's languages
+# for every agent that indexes this repository (handbook convention,
+# claude-agents#46). Everything else under .serena/ is per-machine scratch —
+# the indexer's cache, project.local.yml, memories, and whatever the review
+# tooling writes there and does not clean up — so it is ignored, and a broad
+# `git add` cannot pick it up.
+.serena/*
+!.serena/project.yml
 
 # Local configuration.
 #

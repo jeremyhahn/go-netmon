@@ -125,7 +125,7 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
       - name: Shell test suites
-        run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard test-release
+        run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard test-e2e-guard test-release
       - name: Lint shell scripts
         run: make lint-scripts
 
@@ -150,7 +150,7 @@ jobs:
 
   integration:
     name: Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

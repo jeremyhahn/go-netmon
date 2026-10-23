@@ -16,7 +16,8 @@ import * as path from 'path';
 // not a blank screen, but a panel confidently showing nothing while the device
 // is answering normally.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { SEEDED_DEVICE } from '../stack';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
 
 test.use({
@@ -30,10 +31,10 @@ test.use({
 });
 
 // The device these run against. A dashboard is only worth measuring if it has
-// panels on it, and the first entry in the selector is whichever device sorts
-// first -- on this fleet a KVM with one. Named rather than indexed, so a thin
-// device cannot make either of these pass by measuring nothing.
-const DEVICE = process.env.NETMON_DEVICE || 'dist-01';
+// panels on it, so this is the seeded device (stack.ts) by name rather than
+// whichever entry sorts first in the selector: a thin device cannot make
+// either of these pass by measuring nothing.
+const DEVICE = SEEDED_DEVICE;
 
 async function selectDevice(page: Page) {
   const labels = await page.locator('#dashboardDeviceSelect option').allTextContents();

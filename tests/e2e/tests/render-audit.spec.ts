@@ -15,7 +15,8 @@ import * as path from 'path';
 // assertions at the end are deliberately about the fleet, not about one panel,
 // so it fails when rendering breaks rather than when a device changes.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { deviceByName, SEEDED_DEVICES } from '../stack';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
 
 // Route interception drops the metadata Chrome's Local Network Access check
@@ -147,22 +148,17 @@ async function auditDevice(page: Page, deviceId: number) {
   });
 }
 
-// One device per profile, plus every member of the Supermicro fleet: the BMCs
-// share a profile but not their firmware state, and a card that draws on one
-// board is not proof it draws on the next.
-const ALL_DEVICES: [number, string][] = [
-  [1, 'core-01'], [3, 'pdu-03'], [4, 'bastion'],
-  [5, 'dist-01'], [9, 'lab-node-1-bmc'], [14, 'lab-node-2-bmc'],
-  [15, 'lab-node-3-bmc'], [16, 'lab-node-4-bmc'], [17, 'lab-node-5-bmc'],
-];
-
+// Every device the stack seeded (stack.ts). The two simulated devices share
+// their MIBs but not their data, and a card that draws on one is not proof it
+// draws on the next.
+//
 // AUDIT_DEVICES narrows the run to named devices, which is how a device that
 // only fails late in a long session gets examined on its own.
-const DEVICES = process.env.AUDIT_DEVICES
-  ? ALL_DEVICES.filter(([, name]) => process.env.AUDIT_DEVICES!.split(',').includes(name))
-  : ALL_DEVICES;
+const DEVICES: string[] = process.env.AUDIT_DEVICES
+  ? process.env.AUDIT_DEVICES.split(',')
+  : [...SEEDED_DEVICES];
 
-test('every device dashboard draws its cards, with none left waiting', async ({ page }) => {
+test('every device dashboard draws its cards, with none left waiting', async ({ page, request }) => {
   test.setTimeout(1_200_000);
 
   const failures: string[] = [];
@@ -175,8 +171,8 @@ test('every device dashboard draws its cards, with none left waiting', async ({ 
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#fleetOverview')).toBeVisible({ timeout: 30000 });
 
-  for (const [id, name] of DEVICES) {
-    const cards = await auditDevice(page, id);
+  for (const name of DEVICES) {
+    const cards = await auditDevice(page, (await deviceByName(request, name)).id);
     const by = (s: string) => cards.filter(c => c.state === s).length;
 
     report.push(

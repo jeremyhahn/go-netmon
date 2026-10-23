@@ -48,7 +48,7 @@ test-index:
 # real receiver does with disorder inside one request and across two, and what
 # the exporter does when two overlapping polls of one device produce each.
 test-ordering:
-	@$(RUN_TESTS) 'TestDisorderInsideOneRequestIsDiscardedWithoutASound|TestOneReadingBehindTheHeadRefusesTheWholeRequest|TestOverlappingPollsAreRepairedAndNothingIsLost|TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever'
+	@$(RUN_TESTS) 'TestDisorderInsideOneRequestIsDiscardedWithoutASound|TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost|TestOverlappingPollsAreRepairedAndNothingIsLost|TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever'
 
 # Remove any test stack left behind. run-tests.sh cleans up on every exit path;
 # this target is for a run killed hard enough to skip the trap.

@@ -18,7 +18,7 @@ import * as path from 'path';
 // Everything is served locally: assets from the working tree, every API
 // response intercepted. Nothing depends on what this host holds.
 
-const BASE = process.env.NETMON_URL || 'http://localhost:8082';
+import { BASE } from '../target';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
 
 test.use({

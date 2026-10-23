@@ -2,7 +2,7 @@
 # Manual lifecycle for the integration stack: what "make integration-up",
 # "integration-down", "integration-logs" and "integration-shell" run.
 #
-# Usage: stack.sh up | down | logs | shell
+# Usage: stack.sh up | e2e-up | down | logs | shell
 #
 # WHY THIS EXISTS
 #
@@ -45,18 +45,27 @@ PROJECT_NAME="$(integration_manual_project)"
 
 SERVICES=(prometheus snmp-simulator)
 
+# The e2e profile (#111): the same two, plus a poller and a web UI polling the
+# simulator, for the browser specs. It is the same project, so one "down"
+# removes both.
+E2E_SERVICES=("${SERVICES[@]}" poller webui)
+
 die() {
     echo "stack.sh: $*" >&2
     exit 1
 }
 
 usage() {
-    echo "usage: stack.sh up | down | logs | shell" >&2
+    echo "usage: stack.sh up | e2e-up | down | logs | shell" >&2
     exit 2
 }
 
+# The e2e profile is active for every verb, not only e2e-up: a profile's
+# services are invisible to a compose command that does not name it, so
+# "down" without it would leave the poller and web UI running -- and their
+# volumes behind.
 compose() {
-    docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
+    docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" --profile e2e "$@"
 }
 
 [ $# -eq 1 ] || usage
@@ -86,6 +95,20 @@ case "$1" in
         # and returns nothing, which silently printed no SNMP line at all.
         compose port --protocol udp snmp-simulator 161 2>/dev/null | sed 's/^/  snmp-simulator: /' || true
         echo ""
+        echo "Tear down with: make integration-down"
+        ;;
+    e2e-up)
+        echo "Starting the e2e stack (project $PROJECT_NAME)..."
+        # The images build -mod=vendor from the go-vendor context and fetch
+        # nothing, as "make run" does through docker-vendor.
+        "$PROJECT_ROOT/scripts/docker-vendor.sh"
+        compose up -d --build --wait "${E2E_SERVICES[@]}"
+        # A one-shot, run rather than waited on: --wait treats a service that
+        # has exited as one that failed to come up.
+        compose run --rm --build e2e-seed
+        echo ""
+        echo "The e2e stack's web UI: http://localhost:${NETMON_E2E_PORT:-8083}"
+        echo "Run the specs with: make test-e2e"
         echo "Tear down with: make integration-down"
         ;;
     down)

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { SEEDED_DEVICE } from '../stack';
 
 // Captures the dashboard with a real device selected, so the populated state can
 // be reviewed rather than the empty shell. Not an assertion suite.
@@ -15,7 +16,7 @@ for (const theme of ['dark', 'light']) {
         await page.waitForTimeout(1000);
 
         const select = page.locator('select').first();
-        await select.selectOption({ label: 'core-01' }).catch(async () => {
+        await select.selectOption({ label: SEEDED_DEVICE }).catch(async () => {
             await select.selectOption({ index: 1 });
         });
 

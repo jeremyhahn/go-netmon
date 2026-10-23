@@ -11,7 +11,8 @@ import { test, expect, Page } from '@playwright/test';
 // serves, which is what the operator's browser runs -- an earlier check of the
 // working tree would have missed a stale image entirely.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { deviceByName } from '../stack';
 
 // openFleetDevice sets the device selector's value and fires its change event.
 // The selector is populated by a separate load from the one that reveals the
@@ -26,7 +27,7 @@ async function openDeviceById(page: Page, deviceId: number) {
   await page.evaluate(id => (window as any).app.openFleetDevice(id), deviceId);
 }
 
-test('an open dashboard is not redrawn while it sits there', async ({ page }) => {
+test('an open dashboard is not redrawn while it sits there', async ({ page, request }) => {
   test.setTimeout(300_000);
 
   const requests: string[] = [];
@@ -52,7 +53,7 @@ test('an open dashboard is not redrawn while it sits there', async ({ page }) =>
   // filtering is supposed to redraw, and stamping first would measure that
   // rather than the tick.
   const search = page.locator('#fleetDeviceList input').first();
-  await search.fill('core').catch(() => {});
+  await search.fill('snmpsim').catch(() => {});
   await page.waitForTimeout(2000);
 
   await page.evaluate(() => {
@@ -81,8 +82,8 @@ test('an open dashboard is not redrawn while it sits there', async ({ page }) =>
     'the fleet table was rebuilt on an idle refresh, which is the flash a reader sees')
     .toBe(fleet.stamped);
 
-  // core-01: the heaviest dashboard, so the most to lose to a redraw.
-  await openDeviceById(page, 1);
+  // The seeded device: every seeded module, so the most to lose to a redraw.
+  await openDeviceById(page, (await deviceByName(request)).id);
   await page.waitForTimeout(15000);
 
   // Count the rebuild paths and stamp the DOM, then leave it alone.

@@ -1,4 +1,4 @@
-.PHONY: integration-test-ordering deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-vendor docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags release-alpha release-candidate release release-verify release-notes release-publish test-release
+.PHONY: integration-test-ordering test-e2e-guard e2e-up deploy deploy-dry-run prometheus-bin migrate migrate-dry-run validate-mibs check-tracked ci ci-fast fmt-check security test-e2e build-backup test-api bench-api coverage-api test-logging bench-logging coverage-logging test-webui-websocket bench-webui-api bench-webui-websocket coverage-webui-api coverage-webui-websocket test-metrics bench-metrics coverage-metrics all build build-cli install-cli test-cli test-client test-mib bench-cli bench-client bench-mib coverage-cli coverage-client coverage-mib test-mib-search bench-mib-search coverage-mib-search test-mib-selector bench-mib-selector coverage-mib-selector test-mib-loader bench-mib-loader coverage-mib-loader build-all build-webui test test-unit test-integration coverage lint clean run run-webui stop stop-webui restart restart-webui redeploy-webui-fresh logs logs-webui import generate-dashboards docker-vendor docker-build docker-build-webui docker-up docker-down docker-test integration-up integration-down integration-logs integration-shell help status network-clean backup backup-verify restore restore-help stack-capture stack-verify test-scripts lint-scripts test-toolchain print-golangci-version test-teardown test-integration-harness test-integration-guard vet vet-tags release-alpha release-candidate release release-verify release-notes release-publish test-release
 
 # Variables
 BINARY_NAME=go-netmon
@@ -107,9 +107,15 @@ integration-test: test-integration ## Alias for test-integration (documented nam
 integration-test-ordering: ## Run the #69 ordering-disorder reproduction (#75)
 	@$(MAKE) -C test/integration test-ordering
 
-test-e2e: ## Run the Playwright browser suite against a running stack
+test-e2e: ## Run the Playwright browser suite against a running stack (default: make e2e-up's)
+	@./scripts/e2e-target-guard.sh
 	@echo "Running end-to-end browser tests..."
 	@cd tests/e2e && npm ci && npx playwright test
+
+# No spec may default to production, or to anything but the disposable e2e
+# stack (#111). Checked before every browser run above, and tested here.
+test-e2e-guard: ## Test the e2e default-target guard and run it on the suite (no browser)
+	@./scripts/tests/e2e-target-guard-tests.sh $(RUN)
 
 # The scanners security runs. Variables so the guard tests in
 # scripts/tests/toolchain-tests.sh can substitute fakes; nothing else sets them.
@@ -164,7 +170,7 @@ validate-mibs: build-cli ## Check that each bundled MIB tree parses and resolves
 	@echo "Validating the Dell tree..."
 	@$(BUILD_DIR)/$(CLI) mib validate --quiet mibs/r640 mibs/standard
 
-ci-fast: check-tracked fmt-check vet vet-tags lint test-toolchain test-teardown test-integration-harness test-integration-guard test-release test build-all validate-mibs ## Everything that does not need Docker
+ci-fast: check-tracked fmt-check vet vet-tags lint test-toolchain test-teardown test-integration-harness test-integration-guard test-e2e-guard test-release test build-all validate-mibs ## Everything that does not need Docker
 	@echo "ci-fast: passed"
 
 ci: ci-fast integration-test ## Everything a pull request must pass
@@ -527,12 +533,19 @@ SHELLCHECK_SCRIPTS = $(shell git ls-files 'scripts/*.sh' 'scripts/lib/*.sh' 'scr
 SHELLCHECK_INTEGRATION = $(shell git ls-files 'test/integration/*.sh')
 SHELLCHECK_OTHER = $(shell git ls-files '*.sh' | grep -vE '^(scripts/|test/integration/)')
 
-lint-scripts: ## Shellcheck every shell script in the repository
+# lint-early-exit-pipes.sh then refuses "producer | grep -q" and "| head" in
+# any of them that sets pipefail: the consumer's early exit SIGPIPEs the
+# producer and pipefail inverts the check once the input outgrows a pipe
+# buffer (#120). A site safe for a reason the lint cannot see carries an
+# inline "# pipefail-ok: <reason>"; the script's header has the rules.
+lint-scripts: ## Shellcheck every shell script and refuse early-exit pipes under pipefail
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not installed" && exit 1)
 	@shellcheck -x -P scripts $(SHELLCHECK_SCRIPTS) scripts/tests/fake-docker
 	@shellcheck -x $(SHELLCHECK_INTEGRATION)
 	@shellcheck -x $(SHELLCHECK_OTHER)
 	@echo "shellcheck: clean"
+	@./scripts/lint-early-exit-pipes.sh $(SHELLCHECK_SCRIPTS) scripts/tests/fake-docker $(SHELLCHECK_INTEGRATION) $(SHELLCHECK_OTHER)
+	@echo "early-exit pipes: clean"
 
 # --- Releases ---------------------------------------------------------------
 #
@@ -862,6 +875,8 @@ docker-test: test-integration ## Alias for test-integration (deprecated, use tes
 
 integration-up: ## Start integration test services (Prometheus + SNMP)
 	@./test/integration/stack.sh up
+e2e-up: docker-vendor ## Start the disposable e2e stack: poller + web UI on snmpsim, UI on localhost:8083
+	@./test/integration/stack.sh e2e-up
 integration-down: ## Stop integration test services
 	@./test/integration/stack.sh down
 

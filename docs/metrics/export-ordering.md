@@ -1,12 +1,13 @@
 # Export ordering: what the receiver actually does
 
-> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-21
 
 Two different faults are called "out of order", they behave nothing alike, and
 telling them apart is what [#69][69] took fifteen hours and a million samples an
 hour to learn. This is the measured behaviour, and how to reproduce it.
 
-Measured against Prometheus 2.45.0 (the integration stack) on 2026-09-06. The
+First measured against Prometheus 2.45.0 (the integration stack) on 2026-09-06.
+The stack now pins 3.14.0, the version production runs ([#138][138]). The
 receiver's behaviour is version-dependent, so the reproduction asserts it rather
 than assuming it, and names the version when it is surprised.
 
@@ -26,18 +27,29 @@ not fail.
 This is what `orderedSamples` prevents. It is not protecting against a 400; it
 is protecting against loss that nothing downstream can see.
 
-## A reading behind its head: the whole request is refused
+## A reading behind its head: refused, and what the refusal costs
 
 A reading offered **after a newer one for its series has been committed** cannot
-be staged at all. The check has something to compare it against, the receive
-path returns on the first failure, and the appender is rolled back — so the
-request is refused with `400: out of order sample` **and every other reading in
-it is lost**.
+be staged at all: the check has something to compare it against. The request is
+refused with `400: out of order sample`. What happens to the rest of it depends
+on the receiver's major version:
 
-This is #69's headline, with the trigger correctly attributed. It is also why a
-retried batch is lethal rather than merely late: once fresher samples for its
-series have landed, the batch can never be accepted, and each attempt costs
-everything travelling with it.
+- **Prometheus 2.45.0** returned on the first failure and rolled the appender
+  back, so **every other reading in the request was lost** with it. This is
+  #69's headline, with the trigger correctly attributed, and it is why a
+  retried batch was lethal rather than merely late: once fresher samples for its
+  series had landed, the batch could never be accepted, and each attempt cost
+  everything travelling with it.
+- **Prometheus 3.14.0** (production, and the stack since #138) does the same.
+  An earlier revision of this page said 3.x skips the offending reading and
+  commits the rest; the first CI run against the 3.14.0 pin (#201, 2026-10-21)
+  measured otherwise: `400: out of order sample`, and 200 of 200 good series in
+  the request lost with it. #69's cost arithmetic still applies.
+
+The reproduction keys this on the running version (`refusalCommitsTheRest` in
+`test/integration/ordering_test.go`): a pin that changes the behaviour, or one
+nobody has measured, fails the test rather than changing what a 400 costs
+unnoticed.
 
 Two things in the exporter follow from it:
 
@@ -61,7 +73,7 @@ in the integration stack. Nothing touches monitor-01 or any live device.
 | Test | Asks |
 |---|---|
 | `TestDisorderInsideOneRequestIsDiscardedWithoutASound` | what the receiver does with disorder inside one request |
-| `TestOneReadingBehindTheHeadRefusesTheWholeRequest` | what it does with a reading behind its head, and what the refusal costs |
+| `TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost` | what it does with a reading behind its head, and what the refusal costs |
 | `TestOverlappingPollsAreRepairedAndNothingIsLost` | whether the exporter delivers both of two overlapping polls |
 | `TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever` | whether a superseded poll is given up on rather than retried |
 
@@ -101,3 +113,4 @@ Every child publishes 0 from the first scrape, so absence means the build does
 not have the counter — not that nothing has happened.
 
 [69]: https://github.com/jeremyhahn/go-netmon/issues/69
+[138]: https://github.com/jeremyhahn/go-netmon/issues/138

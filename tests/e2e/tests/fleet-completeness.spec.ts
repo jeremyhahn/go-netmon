@@ -9,7 +9,7 @@ import { test, expect } from '@playwright/test';
 //
 // No route interception: the point is what the running container serves.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
 
 test('every configured device appears on the fleet overview and in the picker', async ({ page }) => {
   test.setTimeout(180_000);

@@ -17,7 +17,8 @@ import * as path from 'path';
 // This walks a few devices and checks that nothing belonging to a device the
 // reader has left is still subscribed.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { deviceByName, SEEDED_DEVICES } from '../stack';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
 
 test.use({
@@ -61,21 +62,24 @@ async function serveWorkingTree(page: Page) {
   });
 }
 
-// The BMCs share a profile, so each carries the same hyphenated MIB names --
-// exactly the case the teardown mishandled.
+// The seeded devices carry the same hyphenated MIB names (HOST-RESOURCES-MIB,
+// IF-MIB, SNMPv2-MIB) -- exactly the case the teardown mishandled.
 //
-// The walk STARTS on the router deliberately. It carries 321 queries across 11
-// tabs against a BMC's 185 across 5, so leaving it puts far more frames in
-// flight than leaving a BMC does -- and it is those in-flight frames, arriving
-// after the teardown, that the orphan check below is looking for. A walk over
-// BMCs alone passes with the guard removed.
-const WALK: [number, string][] = [
-  [1, 'core-01'],
-  [9, 'lab-node-1-bmc'], [14, 'lab-node-2-bmc'], [15, 'lab-node-3-bmc'], [17, 'lab-node-5-bmc'],
+// The walk STARTS on the simulated router deliberately, and returns to it: it
+// has more rows than the second device (three storage areas, two processors
+// against one of each), so leaving it puts more frames in flight -- and it is
+// those in-flight frames, arriving after the teardown, that the orphan check
+// below is looking for. Going back and forth makes every device both left and
+// revisited, so a leak shows as growth across the walk.
+const WALK: string[] = [
+  SEEDED_DEVICES[0], SEEDED_DEVICES[1], SEEDED_DEVICES[0], SEEDED_DEVICES[1], SEEDED_DEVICES[0],
 ];
 
-test('leaving a device releases its subscriptions', async ({ page }) => {
+test('leaving a device releases its subscriptions', async ({ page, request }) => {
   test.setTimeout(300_000);
+
+  const ids = new Map<string, number>();
+  for (const name of new Set(WALK)) ids.set(name, (await deviceByName(request, name)).id);
 
   await serveWorkingTree(page);
   await page.addInitScript(() => {
@@ -86,8 +90,8 @@ test('leaving a device releases its subscriptions', async ({ page }) => {
 
   const seen: { device: string; keys: string[] }[] = [];
 
-  for (const [id, name] of WALK) {
-    await openDeviceById(page, Number(id));
+  for (const name of WALK) {
+    await openDeviceById(page, ids.get(name) as number);
     await page.waitForTimeout(9000);
 
     const keys: string[] = await page.evaluate(() =>
@@ -130,7 +134,8 @@ test('leaving a device releases its subscriptions', async ({ page }) => {
 
   // Only the device still on screen may hold subscriptions. Any key belonging
   // to a device already left behind is a leak.
-  const departed = WALK.slice(0, -1).map(([id]) => String(id));
+  const current = WALK[WALK.length - 1];
+  const departed = WALK.filter(name => name !== current).map(name => String(ids.get(name)));
   const stale = last.keys.filter(key => departed.includes(key.split('-')[0]));
 
   expect(stale,
@@ -165,7 +170,7 @@ async function liveQuery(page: Page): Promise<string> {
   });
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#fleetOverview')).toBeVisible({ timeout: 30000 });
-  await openDeviceById(page, 9);
+  await openDeviceById(page, (await deviceByName(page.request)).id);
 
   return await page.waitForFunction(() => {
     const app = (window as any).app;
@@ -177,7 +182,7 @@ async function liveQuery(page: Page): Promise<string> {
   }, undefined, { timeout: 60000 }).then(handle => handle.jsonValue() as Promise<string>);
 }
 
-const SAMPLE = { metric: { __name__: 'snmp_test', device: 'lab-node-1-bmc' }, value: 1 };
+const SAMPLE = { metric: { __name__: 'snmp_test', device: SEEDED_DEVICES[1] }, value: 1 };
 
 test('a snapshot for a query nothing is watching is not recorded', async ({ page }) => {
   test.setTimeout(120_000);
@@ -258,7 +263,7 @@ test('leaving for the fleet cancels a dashboard load already in flight', async (
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#fleetOverview')).toBeVisible({ timeout: 30000 });
 
-  await openDeviceById(page, 9);
+  await openDeviceById(page, (await deviceByName(page.request)).id);
   await page.evaluate(() => (window as any).app.showFleetOverview());
   await page.waitForTimeout(12000);
 

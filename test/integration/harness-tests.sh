@@ -372,7 +372,9 @@ test_a_daemon_that_cannot_be_seeded_is_not_offered_to_the_tests() {
 # go_test_command prints the "go test" command line the runner handed to
 # compose run, which is the only place the suite's scope is decided.
 go_test_command() {
-    grep -oE 'go test .*' "$1" | head -1
+    # -m1, not "| head -1": a log with many matches would SIGPIPE grep and
+    # pipefail would fail the function on exactly the line it found (#120).
+    grep -m1 -oE 'go test .*' "$1"
 }
 
 # tagged_dirs prints every directory holding a file behind //go:build

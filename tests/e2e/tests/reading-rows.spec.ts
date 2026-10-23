@@ -17,9 +17,12 @@ import * as path from 'path';
 // page.route(), so these run against a deployment that has not shipped the
 // files yet and keep passing once it has.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { SEEDED_DEVICES } from '../stack';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
-const DEVICE = 'core-01';
+// The simulated router, whatever NETMON_DEVICE says: its sysDescr is the long
+// one the clip tests need (public.snmprec).
+const DEVICE = SEEDED_DEVICES[0];
 
 // Route interception drops the metadata Chrome's Local Network Access check
 // needs, and every /api call from an intercepted page is then blocked as
@@ -222,8 +225,8 @@ test.describe('a reading the card had to clip', () => {
       //
       // The comparison that remains is made on collapsed whitespace, because
       // the sheet REFLOWS what it is given. A real sysDescr arrives wrapped by
-      // the device -- core-01's is 255 characters across four CRLF-separated
-      // lines -- and that wrapping is the vendor's, meaningless in a
+      // the device -- the simulated router's is 247 characters across four
+      // CRLF-separated lines (public.snmprec) -- and that wrapping is the vendor's, meaningless in a
       // proportional column, so the sheet reflows it exactly as it reflows a
       // MIB DESCRIPTION. Asserting on the raw string would be asserting that
       // the reflow does not happen.

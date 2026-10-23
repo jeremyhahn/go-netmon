@@ -523,7 +523,7 @@ test_guard_refuses_when_the_ownership_query_fails() {
 # directory default, which is the deployment.
 test_every_verb_names_the_manual_project() {
     local verb
-    for verb in up down logs shell; do
+    for verb in up e2e-up down logs shell; do
         run_stack "$verb" || true
         local bare
         bare="$(grep -E '^compose ' "$ROOT/log" \
@@ -541,6 +541,80 @@ test_down_removes_volumes_and_orphans() {
     [ -n "$down" ] || fail "no compose down was issued" || return 1
     case "$down" in *" -v"*) ;; *) fail "down omits -v: $down"; return 1 ;; esac
     case "$down" in *"--remove-orphans"*) ;; *) fail "down omits --remove-orphans: $down"; return 1 ;; esac
+}
+
+# The e2e profile's poller and web UI are invisible to a compose command that
+# does not name the profile, so a "down" without it would leave them running
+# and their volumes behind (#111).
+test_down_reaches_the_e2e_profile() {
+    run_stack down || fail "down failed" || return 1
+
+    local down
+    down="$(grep -E -- "compose -p $MANUAL_PROJECT .* down" "$ROOT/log" || true)"
+    case "$down" in *"--profile e2e"*) ;; *) fail "down omits --profile e2e: $down"; return 1 ;; esac
+}
+
+test_e2e_up_starts_the_poller_and_seeds_only_through_the_config_import() {
+    run_stack e2e-up || fail "e2e-up failed: $OUT" || return 1
+
+    local up
+    up="$(grep -E -- "compose -p $MANUAL_PROJECT .* up " "$ROOT/log" || true)"
+    case "$up" in *" poller"*" webui"*) ;; *) fail "e2e-up does not start poller and webui: $up"; return 1 ;; esac
+    grep -qE -- "compose -p $MANUAL_PROJECT .* run --rm .*e2e-seed" "$ROOT/log" \
+        || fail "e2e-up does not run the seed" || return 1
+
+    # The seed's one write is the operator's restore path, the config import,
+    # against the disposable stack (#111). It reads the device list to wait for
+    # the web UI and calls no other endpoint: no device or MIB write (#70).
+    local seed="$REPO_ROOT/test/integration/e2e-seed.sh"
+    local doc="$REPO_ROOT/test/integration/snmp-data/e2e-config.json"
+    local writes
+    writes="$(grep -cE -- '-X (POST|PUT|PATCH|DELETE)' "$seed" || true)"
+    [ "$writes" = 1 ] || fail "e2e-seed.sh makes $writes writes, want the one import" || return 1
+    grep -qE -- '/api/config/import\?apply=true' "$seed" \
+        || fail "e2e-seed.sh does not write through /api/config/import?apply=true" || return 1
+    local path
+    while read -r path; do
+        case "$path" in
+            /api/config/import | /api/devices) ;;
+            *) fail "e2e-seed.sh calls $path" || return 1 ;;
+        esac
+    done < <(grep -oE "/api/[A-Za-z0-9_/.{}\$-]*" "$seed")
+    local device_calls
+    device_calls="$(grep -E -- '/api/devices' "$seed" || true)"
+    case "$device_calls" in
+        *"-X "* | *"-d "* | *"--data"*) fail "e2e-seed.sh writes to /api/devices" || return 1 ;;
+    esac
+
+    # The document restores the disposable stack's devices and nothing else:
+    # every device is the simulator, and every MIB source is mibs/standard's,
+    # byte for byte, so the import cannot refuse it as altered.
+    local address
+    while read -r address; do
+        [ "$address" = '"snmp-simulator"' ] \
+            || fail "e2e-config.json names a device at $address" || return 1
+    done < <(grep -oE '"address": *"[^"]*"' "$doc" | grep -oE '"[^"]*"$')
+    local field value file=""
+    while IFS=: read -r field value; do
+        value="${value//[\" ]/}"
+        case "$field" in
+            *file*) file="${value#mibs/}" ;;
+            *sha256*)
+                [ -f "$REPO_ROOT/mibs/standard/$file" ] \
+                    || fail "e2e-config.json names $file, not in mibs/standard" || return 1
+                [ "$(sha256sum "$REPO_ROOT/mibs/standard/$file" | cut -d' ' -f1)" = "$value" ] \
+                    || fail "e2e-config.json's sha256 for $file is not mibs/standard's" || return 1
+                ;;
+        esac
+    done < <(grep -oE '"(file|sha256)": *"[^"]*"' "$doc")
+
+    # No spec writes to a MIB endpoint. mib-controls and mib-object-picker are
+    # the suites of the assignment controls themselves, and stay as they are.
+    local writer
+    writer="$(grep -lE "request\.(post|put|patch|delete)\([^)]*/mibs" \
+        "$REPO_ROOT"/tests/e2e/*.ts "$REPO_ROOT"/tests/e2e/tests/*.ts 2>/dev/null \
+        | grep -vE '/(mib-controls|mib-object-picker)\.spec\.ts$' || true)"
+    [ -z "$writer" ] || fail "specs write to a MIB endpoint: $writer" || return 1
 }
 
 # The guard runs before every verb, not only the destructive one: "up" against
@@ -1044,7 +1118,7 @@ test_run_tests_can_never_address_the_project_clean_protects() {
             # comparison, written against "the first project", would pass over
             # precisely the case it exists to catch. The teardown drifting from
             # the setup is a realistic way to get there.
-            if printf '%s\n' "$addressed" | grep -qxF -- "$protected"; then
+            if printf '%s\n' "$addressed" | grep -qxF -- "$protected"; then # pipefail-ok: one printf of a few project names, written before grep can exit (#120)
                 fail "[$env_desc] run-tests.sh addressed the project clean.sh protects: $protected" || failed=1
                 printf '      %s\n' "$(grep -E -- "-p $protected .* down" "$ROOT/log" || true)" >&2
             fi
@@ -1310,6 +1384,42 @@ test_guard_reports_each_foreign_container_on_one_line() {
         *"fgn1 (/opt/my stacks/docker-compose.yml)"*) ;;
         *) fail "the foreign container's compose path was split across lines: $OUT"; return 1 ;;
     esac
+}
+
+# The stack's Prometheus is the deployed one (#138): its version is pinned once,
+# as PROMETHEUS_VERSION in Dockerfile.prometheus, and no other file of the stack
+# may name a different one. What a remote-write receiver does with a request it
+# refuses is a property of its version, so a second, stale version anywhere in
+# the stack is a test or a document describing a receiver the suite does not run.
+test_integration_stack_names_one_prometheus_version() {
+    local dockerfile="$SCRIPT_DIR/Dockerfile.prometheus"
+    local pin
+    pin="$(grep -m1 -E '^ARG PROMETHEUS_VERSION=' "$dockerfile" | cut -d= -f2)"
+    if [ -z "$pin" ]; then
+        fail "Dockerfile.prometheus pins no PROMETHEUS_VERSION" || return 1
+    fi
+    if ! grep -qE '^FROM prom/prometheus:\$\{PROMETHEUS_VERSION\}$' "$dockerfile"; then
+        fail "Dockerfile.prometheus does not build FROM the pinned PROMETHEUS_VERSION" || return 1
+    fi
+
+    # Every image reference or version assignment in the stack's files. A
+    # reference through the variable is the pin itself and is not a second one.
+    # This file is left out: its patterns would match themselves.
+    local named rc
+    named="$(grep -rnoE --exclude=guard-tests.sh \
+        'prom/prometheus:[^[:space:]"'"'"'`]+|PROMETHEUS_VERSION=[^[:space:]"'"'"'`]+' \
+        "$COMPOSE_FILE" "$SCRIPT_DIR")"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        fail "found no Prometheus version in the stack at all (grep exit $rc)" || return 1
+    fi
+
+    local offenders
+    offenders="$(printf '%s\n' "$named" \
+        | grep -vE ':(prom/prometheus:\$\{PROMETHEUS_VERSION\}|prom/prometheus:'"$pin"'|PROMETHEUS_VERSION='"$pin"')$' || true)"
+    if [ -n "$offenders" ]; then
+        fail "the stack pins Prometheus $pin, but these name another version: $offenders" || return 1
+    fi
 }
 
 # --- runner ---------------------------------------------------------------

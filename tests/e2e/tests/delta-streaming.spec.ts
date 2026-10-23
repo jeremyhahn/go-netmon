@@ -17,7 +17,8 @@ import * as path from 'path';
 //
 // This measures the frames themselves, against the deployed container.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { deviceByName } from '../stack';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
 
 test.use({
@@ -117,7 +118,7 @@ test('an idle fleet overview streams nothing', async ({ page }) => {
     .toHaveLength(0);
 });
 
-test('a steady chart keeps advancing while its value holds', async ({ page }) => {
+test('a steady chart keeps advancing while its value holds', async ({ page, request }) => {
   // The point of a tick-based live view is that you can see a value over time,
   // which includes seeing that it has not moved. Sending only changes made a
   // steady line stop at its last change and read as data having stopped, so a
@@ -132,7 +133,7 @@ test('a steady chart keeps advancing while its value holds', async ({ page }) =>
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#fleetOverview')).toBeVisible({ timeout: 30000 });
 
-  await openDeviceById(page, 9);
+  await openDeviceById(page, (await deviceByName(request)).id);
   await page.waitForTimeout(20000);
 
   // Count the points on every chart that has drawn, then leave it alone.
@@ -162,14 +163,14 @@ test('a steady chart keeps advancing while its value holds', async ({ page }) =>
   }
 
   expect(watched.length, 'no chart had drawn, so there is nothing to watch').toBeGreaterThan(0);
-  // These are 60s-polled readings, so almost none of them changed during the
-  // window. Every one of them must still have moved forward.
+  // The simulator answers the same recorded values on every poll, so none of
+  // them changed during the window. Every one of them must still have moved forward.
   expect(advanced.length,
     `only ${advanced.length} of ${watched.length} charts advanced; a steady line that stops reads as data having stopped`)
     .toBe(watched.length);
 });
 
-test('an open dashboard streams only what changed', async ({ page }) => {
+test('an open dashboard streams only what changed', async ({ page, request }) => {
   test.setTimeout(300_000);
 
   const frames: Frame[] = [];
@@ -182,16 +183,16 @@ test('an open dashboard streams only what changed', async ({ page }) => {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#fleetOverview')).toBeVisible({ timeout: 30000 });
 
-  // lab-node-1-bmc is polled every 60s, so most five-second rounds have nothing
-  // new to say about it.
-  await openDeviceById(page, 9);
+  // The seeded device is polled every 15s and the simulator answers the same
+  // recorded values each time, so most five-second rounds have nothing new to
+  // say about it.
+  await openDeviceById(page, (await deviceByName(request)).id);
   await page.waitForTimeout(20000);
 
   const settled = frames.length;
   const settledBytes = frames.reduce((sum, f) => sum + f.bytes, 0);
 
-  // Now watch a full minute: at one 60s poll, only one round per subscription
-  // can carry anything new.
+  // Now watch a full minute: four polls, none of which moves a recorded value.
   await page.waitForTimeout(60000);
 
   const steady = frames.slice(settled);
@@ -204,7 +205,7 @@ test('an open dashboard streams only what changed', async ({ page }) => {
     return n;
   });
 
-  console.log('\n=== one dashboard on a 60s-polled device ===');
+  console.log('\n=== one dashboard on a simulated device ===');
   console.log(`  subscribed queries    : ${queries}`);
   console.log(`  opening (~4 rounds)   : ${settled} frames, ${settledBytes} B`);
   console.log(`  next 60s (12 rounds)  : ${steady.length} frames, ${steadyBytes} B`);
@@ -213,10 +214,9 @@ test('an open dashboard streams only what changed', async ({ page }) => {
   expect(queries, 'nothing was subscribed, so there is nothing to measure').toBeGreaterThan(0);
   expect(settled, 'opening the dashboard delivered no data at all').toBeGreaterThan(0);
 
-  // Twelve rounds over a 60s poll interval: without change detection every
-  // subscription would send twelve times. One poll can only justify about one
-  // frame per subscription, and most subscriptions are steady readings that do
-  // not move at all.
+  // Twelve rounds over four 15s polls: without change detection every
+  // subscription would send twelve times. A poll can only justify one frame per
+  // subscription that moved, and the simulator's readings do not move at all.
   expect(steady.length,
     `${steady.length} frames over 12 rounds for ${queries} subscriptions; unchanged results are still being sent`)
     .toBeLessThan(queries * 3);

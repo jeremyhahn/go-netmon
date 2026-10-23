@@ -132,8 +132,14 @@ Tests use these environment variables (automatically set by docker-compose):
 
 ### prometheus
 
-- Image: `prom/prometheus:v2.45.0`
-- Port: `9090:9090`
+- Image: `prom/prometheus:v3.14.0`, built by `Dockerfile.prometheus` with the
+  configuration baked in. This is the version production (monitor-01) runs (#138):
+  what the receiver does with a request it refuses differs between majors, so
+  the stack tracks the deployed one. The version is named once, as
+  `PROMETHEUS_VERSION` in `Dockerfile.prometheus`; `guard-tests.sh` fails when
+  any other file of the stack names a different one. Raise it there when
+  production is upgraded.
+- Port: `9090` on an ephemeral host port
 - Remote write receiver enabled
 - Health check: `/-/healthy` endpoint
 
@@ -150,6 +156,17 @@ Tests use these environment variables (automatically set by docker-compose):
 - Built from: `Dockerfile.test`
 - Depends on: prometheus, snmp-simulator
 - Runs: `go test -v -tags=integration ./test/integration/...`
+
+### poller, webui, e2e-seed (profile `e2e`, #111)
+
+- Started by `make e2e-up`; removed by `make integration-down`
+- `poller` polls `snmp-simulator` (devices `snmpsim-01` on community `public` and `snmpsim-02` on `second`; SNMPv2-MIB, IF-MIB and HOST-RESOURCES-MIB)
+  into the `prometheus` above; its config is inline in the compose file
+- `webui` serves on `localhost:${NETMON_E2E_PORT:-8083}`, the default target of
+  every browser spec (`tests/e2e/target.ts`)
+- `e2e-seed` (`e2e-seed.sh`) restores `snmp-data/e2e-config.json` (both devices,
+  the three standard MIB sources from `mibs/standard`, their assignments) through
+  `POST /api/config/import?apply=true`; that import is its only write
 
 ## Troubleshooting
 
@@ -245,7 +262,9 @@ name: Integration Tests
 on: [push, pull_request]
 jobs:
   integration:
-    runs-on: ubuntu-latest
+    # This repository's own jobs run on the forge's bigdisk runners
+    # (image builds need the disk), and on ubuntu-latest on GitHub.
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     steps:
       - uses: actions/checkout@v3
       - uses: docker/setup-buildx-action@v2

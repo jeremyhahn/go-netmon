@@ -10,3 +10,5 @@
 FROM tandrup/snmpsim:latest
 
 COPY test/integration/snmp-data/public.snmprec /usr/local/snmpsim/data/public.snmprec
+# The e2e stack's second device, served under community "second" (#111).
+COPY test/integration/snmp-data/second.snmprec /usr/local/snmpsim/data/second.snmprec

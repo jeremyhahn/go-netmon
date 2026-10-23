@@ -29,7 +29,9 @@ package integration
 //   - disorder INSIDE one request is not refused at all. The request is
 //     accepted, HTTP 200, and the older reading is discarded in silence;
 //   - a reading offered after a newer one for its series has been COMMITTED is
-//     refused, 400, and takes every other reading in its request with it.
+//     refused, 400. Prometheus 2.45.0 took every other reading in its request
+//     with it; 3.x, which production runs and this stack pins (#138), skips
+//     that one reading and commits the rest.
 //
 // So the intra-request sort is not what prevents a 400 -- it is what prevents
 // SILENT loss, which is worse, because nothing downstream reports it. The 400s
@@ -37,7 +39,7 @@ package integration
 // after fresher samples for its series had landed.
 //
 // Both fail without their fix, which is what #75 asked for. Measured on this
-// stack (Prometheus 2.45.0): with the per-series sort removed, the overlapping
+// stack when it pinned Prometheus 2.45.0, before #138 raised it: with the per-series sort removed, the overlapping
 // polls test stores 10 of 20 readings for every one of its 64 series -- 640
 // readings gone with every flush reporting success. With the admission check
 // removed, the superseded-poll test turns one late poll into a 400 and 64
@@ -236,26 +238,28 @@ func TestDisorderInsideOneRequestIsDiscardedWithoutASound(t *testing.T) {
 	}
 }
 
-// TestOneReadingBehindTheHeadRefusesTheWholeRequest is the other half of the
-// instrument, and it is the mechanism #69 actually measured.
+// TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost is the other half of
+// the instrument, and it is the mechanism #69 actually measured.
 //
 // A reading offered after a newer one for its series has been COMMITTED cannot
-// be staged at all: the check has something to compare it against, and the
-// receive path returns on the first failure and rolls the whole appender back.
-// So the request is refused AND every other reading in it is lost -- which is
-// #69's headline, "one out-of-order sample rejects a whole remote-write batch",
-// with the trigger correctly attributed.
+// be staged at all: the check has something to compare it against. What the
+// receiver does next is a property of its version (#138), recorded per version
+// in refusalCommitsTheRest. Prometheus 2.45.0 returned on the first failure and
+// rolled the whole appender back, so one such reading cost every other reading
+// in its request -- #69's headline, "one out-of-order sample rejects a whole
+// remote-write batch". Prometheus 3.14.0, which production runs and this stack
+// pins, does the same: measured on #201's CI, 200 of 200 good series in the
+// refused request were lost with it.
 //
-// This is what makes a retried batch lethal rather than merely late. Once
-// fresher samples for its series have landed, the batch can never be accepted,
-// and each attempt costs everything traveling with it.
+// So against the deployed receiver a refusal still costs the whole request,
+// and #69's cost arithmetic holds. That is why the exporter holds back a
+// reading the endpoint has moved past (partition, reason="superseded") rather
+// than offering it in a request it would sink.
 //
 // The collateral count is asserted rather than assumed, because it is a
-// property of the RECEIVER's version. A receiver that skipped the offending
-// reading and committed the rest would refuse the request just the same while
-// costing nothing, and every conclusion drawn from the loss would be wrong. The
-// failure message names the version so an image bump announces itself here.
-func TestOneReadingBehindTheHeadRefusesTheWholeRequest(t *testing.T) {
+// property of the RECEIVER: the assertion is keyed on the running version, and
+// an image bump that changes it, or a version nobody has measured, fails here.
+func TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost(t *testing.T) {
 	prometheusURL := prometheusTarget()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -312,16 +316,57 @@ func TestOneReadingBehindTheHeadRefusesTheWholeRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("counting what survived the refused request: %v", err)
 	}
-	delete(stored, "head")
-	if len(stored) != 0 {
-		t.Errorf("%d of %d good series survived a request refused for ONE reading behind its head "+
-			"(endpoint %s). #69's arithmetic assumes the whole request is discarded; if that has "+
-			"changed, the cost of a rejection has changed with it",
-			len(stored), good, prometheusVersion(ctx, prometheusURL))
-	} else {
-		t.Logf("all %d good series in the refused request were discarded with it: "+
-			"one reading behind its head costs every reading sharing its request", good)
+	if got := stored["head"]; got != 1 {
+		t.Errorf("the head series holds %v samples, want 1: the reading behind its head was "+
+			"committed, or the head itself was lost (endpoint %s)", got, prometheusVersion(ctx, prometheusURL))
 	}
+	delete(stored, "head")
+	var lost []string
+	for i := 0; i < good; i++ {
+		if stored[strconv.Itoa(i)] != 1 {
+			lost = append(lost, strconv.Itoa(i))
+		}
+	}
+	version := prometheusVersion(ctx, prometheusURL)
+	commitsTheRest, measured := refusalCommitsTheRest[version]
+	switch {
+	case !measured:
+		t.Errorf("the endpoint is Prometheus %s, whose cost for a request refused for one reading "+
+			"behind its head has not been recorded: it lost %d of %d good series here. Record that "+
+			"in refusalCommitsTheRest and docs/metrics/export-ordering.md", version, len(lost), good)
+	case commitsTheRest && len(lost) != 0:
+		t.Errorf("%d of %d good series were lost with a request refused for ONE reading behind its "+
+			"head (endpoint %s, recorded as committing the rest): the receiver now rolls the request "+
+			"back, and #69's cost arithmetic applies again. Lost: %v", len(lost), good, version, lost)
+	case !commitsTheRest && len(lost) != good:
+		t.Errorf("%d of %d good series survived a request refused for ONE reading behind its head "+
+			"(endpoint %s, recorded as rolling the request back): the receiver's behaviour has "+
+			"changed; re-measure it and update refusalCommitsTheRest and "+
+			"docs/metrics/export-ordering.md", good-len(lost), good, version)
+	case commitsTheRest:
+		t.Logf("all %d good series in the refused request were committed (endpoint %s): "+
+			"one reading behind its head costs that reading alone", good, version)
+	default:
+		t.Logf("all %d good series in the refused request were lost with it (endpoint %s): "+
+			"one reading behind its head costs the whole request, #69's arithmetic", good, version)
+	}
+}
+
+// refusalCommitsTheRest records, per receiver version, whether a remote-write
+// request refused for one reading behind its series' committed head commits
+// its other readings (true) or is rolled back whole (false).
+//
+// It is a measurement, keyed on the version, so that a pin change which moves
+// the behaviour fails TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost
+// instead of silently changing what a 400 costs. A version absent from the map
+// fails too: its cost has not been measured.
+var refusalCommitsTheRest = map[string]bool{
+	// #69, measured on the integration stack 2026-09-06.
+	"2.45.0": false,
+	// The pin since #138 (test/integration/Dockerfile.prometheus). Measured by
+	// CI on #201, 2026-10-21: refused with 400 "out of order sample", and 200
+	// of 200 good series in the request lost with it.
+	"3.14.0": false,
 }
 
 // TestOverlappingPollsAreRepairedAndNothingIsLost is the reproduction #75 asks

@@ -14,9 +14,11 @@ import * as path from 'path';
 // subscribed on open, a fresh subscribe on first activation of another, and
 // NOTHING on return to a tab already open.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { deviceByName } from '../stack';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
-const DEVICE = 5; // dist-01: a switch with a full catalog and many module tabs.
+// The seeded device (stack.ts): three standard module tabs, so one is open on
+// load and two are left to exercise.
 
 test.use({
   launchOptions: {
@@ -85,10 +87,11 @@ const activeSubCount = (page: Page) =>
 const tabCount = (page: Page) =>
   page.locator('#mibTabList .tab-button').count();
 
-test('opening a device subscribes only the active tab, not every module', async ({ page }) => {
+test('opening a device subscribes only the active tab, not every module', async ({ page, request }) => {
   test.setTimeout(120_000);
 
   const sent: SentFrame[] = [];
+  const DEVICE = (await deviceByName(request)).id;
   await setup(page, sent);
 
   await openDeviceById(page, DEVICE);
@@ -111,10 +114,11 @@ test('opening a device subscribes only the active tab, not every module', async 
   expect(subscribedTabs, 'the active tab was never subscribed').toBeGreaterThan(0);
 });
 
-test('a tab subscribes on first activation and stays subscribed on return', async ({ page }) => {
+test('a tab subscribes on first activation and stays subscribed on return', async ({ page, request }) => {
   test.setTimeout(120_000);
 
   const sent: SentFrame[] = [];
+  const DEVICE = (await deviceByName(request)).id;
   await setup(page, sent);
 
   await openDeviceById(page, DEVICE);

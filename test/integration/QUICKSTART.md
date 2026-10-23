@@ -196,7 +196,7 @@ on: [push, pull_request]
 
 jobs:
   integration-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     steps:
       - uses: actions/checkout@v3
 

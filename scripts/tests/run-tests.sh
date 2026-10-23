@@ -16,6 +16,7 @@ SCRIPTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 BACKUP="$SCRIPTS_DIR/backup.sh"
 RESTORE="$SCRIPTS_DIR/restore.sh"
+LINT_PIPES="$SCRIPTS_DIR/lint-early-exit-pipes.sh"
 FAKE_DOCKER="$SCRIPT_DIR/fake-docker"
 
 PASS=0
@@ -82,6 +83,29 @@ assert_file() {
 
 assert_no_file() {
     [ ! -e "$2" ] || fail "$1: expected path NOT to exist: $2"
+}
+
+# The archive assertions capture tar's output before they look in it. Written
+# "tar ... | grep -q x" under this file's pipefail, the check FAILS on an archive
+# that holds x as soon as tar writes more than a pipe buffer: grep exits at the
+# match, tar takes SIGPIPE, and pipefail reports tar's 141 (#120). A fixture of
+# one file passes; a realistic tree of a few hundred modules inverts it.
+
+# assert_archive_has_member LABEL ARCHIVE MEMBER: the listing names MEMBER.
+assert_archive_has_member() {
+    local listing
+    listing="$(tar -tzf "$2")" || fail "$1: cannot list $2" || return 1
+    case "$listing" in
+    *"$3"*) : ;;
+    *) fail "$1: $2 has no member $3" ;;
+    esac
+}
+
+# assert_archive_member_holds LABEL ARCHIVE MEMBER TEXT: MEMBER contains TEXT.
+assert_archive_member_holds() {
+    local content
+    content="$(tar -xzOf "$2" "$3")" || fail "$1: cannot extract $3 from $2" || return 1
+    assert_contains "$1" "$content" "$4"
 }
 
 # --- the "stack was never stopped" property --------------------------------
@@ -777,14 +801,14 @@ test_restore_takes_a_safety_backup_first() {
         >/dev/null 2>&1 || fail "restore failed" || return 1
 
     local safety
-    safety="$(find "$NETMON_REPO_ROOT/backups" -maxdepth 1 -name 'pre-restore-*' | head -1)"
+    safety="$(find "$NETMON_REPO_ROOT/backups" -maxdepth 1 -name 'pre-restore-*' -print -quit)"
     [ -n "$safety" ] || fail "no safety backup was created" || return 1
     assert_file "safety manifest" "$safety/manifest.json" || return 1
 
     # The pre-restore state must be recoverable from the safety backup, which
     # is the entire point of taking it.
-    tar -xzOf "$safety/volumes/webui.tar.gz" ./webui.db |
-        grep -q 'STATE TO PRESERVE' || fail "safety backup does not hold the pre-restore state" || return 1
+    assert_archive_member_holds "safety backup holds the pre-restore state" \
+        "$safety/volumes/webui.tar.gz" ./webui.db 'STATE TO PRESERVE' || return 1
 }
 
 test_restore_warns_when_webui_and_poller_are_split() {
@@ -968,8 +992,8 @@ test_backup_honours_an_explicit_mib_tree_path() {
     assert_eq "records the overridden path" \
         "$(jq -r '.trees[0].source_path' "$dir/manifest.json")" "$TEST_TMP/elsewhere" || return 1
     assert_eq "files from the override" "$(jq -r '.trees[0].files' "$dir/manifest.json")" "1" || return 1
-    tar -tzf "$dir/trees/mibs.tar.gz" | grep -q 'ELSEWHERE-MIB.txt' ||
-        fail "member does not hold the overridden tree" || return 1
+    assert_archive_has_member "member holds the overridden tree" \
+        "$dir/trees/mibs.tar.gz" 'ELSEWHERE-MIB.txt' || return 1
 }
 
 test_backup_rejects_an_unsafe_mib_tree_path() {
@@ -1165,15 +1189,14 @@ test_restore_safety_backup_captures_the_mib_tree() {
         >/dev/null 2>&1 || fail "restore failed" || return 1
 
     local safety
-    safety="$(find "$NETMON_REPO_ROOT/backups" -maxdepth 1 -name 'pre-restore-*' | head -1)"
+    safety="$(find "$NETMON_REPO_ROOT/backups" -maxdepth 1 -name 'pre-restore-*' -print -quit)"
     [ -n "$safety" ] || fail "no safety backup was created" || return 1
     assert_file "safety tree member" "$safety/trees/mibs.tar.gz" || return 1
 
     # The whole point of the gate is that the mistake is recoverable: a module
     # added since the backup must be inside the safety copy.
-    tar -xzOf "$safety/trees/mibs.tar.gz" ./standard/UNSAVED-MIB.txt |
-        grep -q 'MIB TO PRESERVE' ||
-        fail "safety backup does not hold the pre-restore MIB tree" || return 1
+    assert_archive_member_holds "safety backup holds the pre-restore MIB tree" \
+        "$safety/trees/mibs.tar.gz" ./standard/UNSAVED-MIB.txt 'MIB TO PRESERVE' || return 1
     assert_no_file "and was genuinely replaced" "$MIB_TREE/standard/UNSAVED-MIB.txt"
 }
 
@@ -1602,6 +1625,68 @@ test_assert_contains_refuses_an_empty_needle() {
     # Positive control: the same helper still accepts a real needle, so the
     # refusal above is the guard firing and not the helper being broken.
     assert_contains "a real needle still matches" "any haystack at all" "haystack" || return 1
+}
+
+# A real MIB tree is hundreds of modules, so its listing is far past a pipe
+# buffer. The member sought is archived FIRST, which is the case that inverted
+# "tar -tzf | grep -q": the match comes while tar still has most of the listing
+# to write (#120).
+test_archive_assertions_hold_on_a_large_archive() {
+    local src="$TEST_TMP/large" archive="$TEST_TMP/large.tar.gz" i
+    mkdir -p "$src/fill"
+    printf 'FIRST MODULE\n' >"$src/FIRST-MIB.txt"
+    for ((i = 1; i <= 1500; i++)); do
+        : >"$src/fill/FILLER-$i-MIB.txt"
+    done
+    tar -C "$src" -czf "$archive" ./FIRST-MIB.txt ./fill || fail "could not build the fixture" || return 1
+
+    assert_archive_has_member "first of 1500 members" "$archive" 'FIRST-MIB.txt' || return 1
+    assert_archive_has_member "last of 1500 members" "$archive" 'FILLER-1500-MIB.txt' || return 1
+    assert_archive_member_holds "first member's content" "$archive" ./FIRST-MIB.txt 'FIRST MODULE' || return 1
+    # Negative control: an absent member is still refused, so the passes above
+    # are the member being found and not the helper accepting everything.
+    if assert_archive_has_member "absent" "$archive" 'ABSENT-MIB.txt' 2>/dev/null; then
+        fail "assert_archive_has_member accepted an absent member" || return 1
+    fi
+}
+
+# lint-early-exit-pipes.sh is what keeps "producer | grep -q" out of pipefail
+# scripts (make lint-scripts). It must name a planted site by file and line.
+test_lint_early_exit_pipes_catches_a_planted_site() {
+    # The pipe is spliced in from $p so this file does not plant the sites in
+    # itself: make lint-scripts scans it too.
+    local f="$TEST_TMP/planted.sh" p='|' out
+    printf '%s\n' '#!/bin/bash' 'set -euo pipefail' 'x=1' \
+        "if strings -a bin $p grep -q marker; then :; fi" \
+        "tar -tzf a.tgz $p" '    grep -Eqx member' \
+        "v=\"\$(find . -name x $p head -1)\"" >"$f"
+    if out="$("$LINT_PIPES" "$f" 2>&1)"; then
+        fail "the lint passed a file with three planted sites" || return 1
+    fi
+    assert_contains "names the one-line grep -q" "$out" "$f:4:" || return 1
+    assert_contains "names the split pipe's consumer" "$out" "$f:6:" || return 1
+    assert_contains "names the head" "$out" "$f:7:" || return 1
+}
+
+test_lint_early_exit_pipes_passes_a_clean_file() {
+    local f="$TEST_TMP/clean.sh" plain="$TEST_TMP/plain.sh" p='|' out
+    # shellcheck disable=SC2016 # the lines are script text, written unexpanded
+    printf '%s\n' '#!/bin/bash' 'set -uo pipefail' \
+        "# a comment may say: strings bin $p grep -q marker" \
+        'grep -q marker bin' \
+        'out="$(tar -tzf a.tgz)"; grep -q member <<<"$out"' \
+        "[ \"\$(strings bin $p grep -c marker)\" -gt 0 ]" \
+        'a || grep -q x file' \
+        "printf one $p grep -qx one # pipefail-ok: one short write" >"$f"
+    out="$("$LINT_PIPES" "$f" 2>&1)" || fail "the lint refused a clean file: $out" || return 1
+    # Without pipefail the pipeline's status is grep's, so the shape is safe.
+    printf '%s\n' '#!/bin/bash' 'set -e' "strings bin $p grep -q marker" >"$plain"
+    out="$("$LINT_PIPES" "$plain" 2>&1)" || fail "the lint refused a file without pipefail: $out" || return 1
+    # A marker with no reason is not an allowance.
+    printf '%s\n' 'set -o pipefail' "printf x $p grep -q x # pipefail-ok:" >"$plain"
+    if "$LINT_PIPES" "$plain" >/dev/null 2>&1; then
+        fail "the lint accepted a marker that gives no reason" || return 1
+    fi
 }
 
 # --- runner ---------------------------------------------------------------

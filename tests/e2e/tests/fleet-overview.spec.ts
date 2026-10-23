@@ -12,7 +12,8 @@ import * as path from 'path';
 // it has. Nothing here mutates server state: every case is either read-only
 // against the real fleet or a synthesised payload confined to one page.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { SEEDED_DEVICE } from '../stack';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
 const STATUS_URL = `${BASE}/api/devices/status`;
 
@@ -236,7 +237,7 @@ test.describe('fleet overview', () => {
     const errors = consoleErrors(page);
     await openOverview(page);
 
-    await rowFor(page, 'core-01').locator('.fleet-open').click();
+    await rowFor(page, SEEDED_DEVICE).locator('.fleet-open').click();
 
     await expect(page.locator('#dashboardDeviceSelect')).toHaveValue(/\d+/);
     await expect(page.locator('#mibTabsContainer')).toBeVisible({ timeout: 45000 });
@@ -586,7 +587,7 @@ test.describe('fleet overview', () => {
     // With a device open the overview is not on screen, and the tick spends its
     // request on the device instead.
     const before = statusRequests;
-    await rowFor(page, 'core-01').locator('.fleet-open').click();
+    await rowFor(page, SEEDED_DEVICE).locator('.fleet-open').click();
     await expect(page.locator('#mibTabsContainer')).toBeVisible({ timeout: 45000 });
     await page.waitForTimeout(5000);
     expect(statusRequests, 'a hidden overview costs the poller nothing').toBe(before);

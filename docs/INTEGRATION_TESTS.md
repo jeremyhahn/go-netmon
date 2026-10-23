@@ -1,6 +1,6 @@
 # Integration Tests
 
-> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-21
 
 How the Docker-based integration suite is laid out and run. Everything here was
 checked against `docker-compose.test.yml`, `test/integration/*.sh`, the
@@ -13,10 +13,11 @@ were not executed for this verification.
 
 | Service            | Purpose |
 | ------------------ | ------- |
-| `prometheus`       | Receives metrics on the remote-write receiver (built from `test/integration/Dockerfile.prometheus`) |
+| `prometheus`       | Receives metrics on the remote-write receiver (built from `test/integration/Dockerfile.prometheus`; Prometheus 3.14.0, the version production runs, pinned once as `PROMETHEUS_VERSION` there and checked by `guard-tests.sh`, #138) |
 | `snmp-simulator`   | Mock SNMP agent serving `public.snmprec` (built from `test/integration/Dockerfile.snmpsim`) |
 | `dind`             | A privileged `docker:27-dind` sibling daemon, behind the `dind` profile, for the backup tests |
 | `integration-test` | The test runner (built from `test/integration/Dockerfile.test`); waits for the first two to be healthy |
+| `poller`, `webui`, `e2e-seed` | The `e2e` profile (#111): a poller polling the simulator into the same `prometheus`, a web UI on `localhost:${NETMON_E2E_PORT:-8083}`, and a one-shot that restores `test/integration/snmp-data/e2e-config.json` into the web UI through the config import: the devices `snmpsim-01` and `snmpsim-02` (one simulator, communities `public` and `second`), the SNMPv2-MIB, IF-MIB and HOST-RESOURCES-MIB sources, and their assignments. The browser specs' default target |
 
 Prometheus and the simulator publish **ephemeral** host ports, so two stacks do
 not collide. The tests reach them by service name on `test-network`
@@ -86,6 +87,21 @@ same stack across separate invocations. Two people on one host share it.
 go test -v -tags=integration $(test/integration/tagged-packages.sh)
 ```
 
+## E2E stack
+
+```bash
+make e2e-up      # prometheus + snmp-simulator + poller + webui, then the seed
+make test-e2e    # Playwright, against http://localhost:8083 unless NETMON_URL is set
+make integration-down
+```
+
+`e2e-up` is `stack.sh e2e-up`, on the same manual project, so `integration-down`
+removes it too. Every spec takes its default target from `tests/e2e/target.ts`,
+and `scripts/e2e-target-guard.sh` (run first by `make test-e2e`; tested by
+`make test-e2e-guard`) fails when any spec names production or any address
+other than that one. Set `NETMON_E2E_PORT` to publish elsewhere, and
+`NETMON_URL` to match.
+
 ## Tests
 
 `test/integration/integration_test.go`:
@@ -100,7 +116,7 @@ go test -v -tags=integration $(test/integration/tagged-packages.sh)
 
 `test/integration/ordering_test.go` (the #69 reproduction):
 `TestDisorderInsideOneRequestIsDiscardedWithoutASound`,
-`TestOneReadingBehindTheHeadRefusesTheWholeRequest`,
+`TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost`,
 `TestOverlappingPollsAreRepairedAndNothingIsLost`,
 `TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever`.
 

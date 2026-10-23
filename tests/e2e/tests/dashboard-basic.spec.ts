@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { SEEDED_DEVICE } from '../stack';
 
 test.describe('go-netmon WebUI - Basic Dashboard Tests', () => {
   test('should load main dashboard and verify basic UI', async ({ page }) => {
@@ -39,18 +40,18 @@ test.describe('go-netmon WebUI - Basic Dashboard Tests', () => {
     }
   });
 
-  test('should select core-01 and show MIB tabs', async ({ page }) => {
+  test(`should select ${SEEDED_DEVICE} and show MIB tabs`, async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
 
     const deviceSelect = page.locator('#dashboardDeviceSelect');
     const options = await deviceSelect.locator('option').all();
 
-    // Find core-01
+    // Find the seeded device
     let foundDevice = false;
     for (const option of options) {
       const text = await option.textContent();
-      if (text && text.includes('core-01')) {
+      if (text && text.includes(SEEDED_DEVICE)) {
         await deviceSelect.selectOption({ label: text });
         foundDevice = true;
         console.log(`Selected device: ${text}`);
@@ -58,10 +59,10 @@ test.describe('go-netmon WebUI - Basic Dashboard Tests', () => {
       }
     }
 
-    // core-01 is a permanent fixture on this stack. Its absence is a
-    // regression the suite must report, not step around.
+    // The e2e seed restores this device on every stack (stack.ts). Its
+    // absence is a regression the suite must report, not step around.
     expect(foundDevice,
-      'fixture device core-01 was not present in the dashboard device selector').toBe(true);
+      `seeded device ${SEEDED_DEVICE} was not present in the dashboard device selector`).toBe(true);
 
     // Wait for MIB tabs to load
     await page.waitForTimeout(3000);
@@ -75,7 +76,7 @@ test.describe('go-netmon WebUI - Basic Dashboard Tests', () => {
     const mibTabs = page.locator('.tab-button');
     const tabCount = await mibTabs.count();
     console.log(`Found ${tabCount} MIB tabs`);
-    expect(tabCount, 'no MIB tabs rendered for core-01').toBeGreaterThan(0);
+    expect(tabCount, `no MIB tabs rendered for ${SEEDED_DEVICE}`).toBeGreaterThan(0);
 
     for (let i = 0; i < tabCount; i++) {
       const tabText = await mibTabs.nth(i).textContent();

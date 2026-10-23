@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { BASE } from './target';
 
 export default defineConfig({
   testDir: './tests',
@@ -18,7 +19,7 @@ export default defineConfig({
     // The web UI is run externally (docker compose), and the published port
     // moved to 8082 because 8081 was already taken on this host. Override with
     // NETMON_URL to point at a different deployment.
-    baseURL: process.env.NETMON_URL || 'http://localhost:8082',
+    baseURL: BASE,
     trace: 'on-first-retry',
     screenshot: 'on',
     video: 'retain-on-failure',

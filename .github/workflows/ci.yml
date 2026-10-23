@@ -180,7 +180,7 @@ jobs:
       # re-run lint, the unit tests and every binary build that the lint,
       # test and build jobs already run.
       - name: Shell test suites
-        run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard test-release
+        run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard test-e2e-guard test-release
 
       # The linter, which this job left behind when it was created.
       #
@@ -262,7 +262,7 @@ jobs:
 
   integration:
     name: Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     # Full tier. The same condition is repeated in CI Passed.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # No `needs` (ci-template v1.14): every job starts at once, so a run takes

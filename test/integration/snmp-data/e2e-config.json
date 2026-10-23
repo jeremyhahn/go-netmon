@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "exported_at": "2026-10-21T00:00:00Z",
+  "mibs": [
+    {
+      "name": "HOST-RESOURCES-MIB",
+      "file": "mibs/HOST-RESOURCES-MIB.my",
+      "sha256": "0406b893dcfacc370a1ae04ccfe6ffdecb15f93e3377a1a5ded2bbde5d944165"
+    },
+    {
+      "name": "IF-MIB",
+      "file": "mibs/IF-MIB.txt",
+      "sha256": "a41d2d0414bd6e1b3249257d0d035ea11554624c525b830f6910195b72b0c297"
+    },
+    {
+      "name": "SNMPv2-MIB",
+      "file": "mibs/SNMPv2-MIB.txt",
+      "sha256": "b4f8ef130f580b86d2b6bc890564e46100785f589431df76954e878a7b166e11"
+    }
+  ],
+  "profiles": [],
+  "devices": [
+    {
+      "name": "snmpsim-01",
+      "address": "snmp-simulator",
+      "port": 161,
+      "snmp_version": "v2c",
+      "community": "public",
+      "mibs": [
+        {"module": "SNMPv2-MIB", "enabled": true},
+        {"module": "IF-MIB", "enabled": true},
+        {"module": "HOST-RESOURCES-MIB", "enabled": true}
+      ]
+    },
+    {
+      "name": "snmpsim-02",
+      "address": "snmp-simulator",
+      "port": 161,
+      "snmp_version": "v2c",
+      "community": "second",
+      "mibs": [
+        {"module": "SNMPv2-MIB", "enabled": true},
+        {"module": "IF-MIB", "enabled": true},
+        {"module": "HOST-RESOURCES-MIB", "enabled": true}
+      ]
+    }
+  ]
+}

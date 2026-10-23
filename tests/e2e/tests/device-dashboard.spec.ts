@@ -5,7 +5,8 @@ import { test, expect, Page } from '@playwright/test';
 // page against a real server so a regression there fails here rather than in
 // front of a user.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { SEEDED_DEVICE, SEEDED_DEVICES } from '../stack';
 
 // consoleErrors attaches a collector so a silently swallowed failure in the
 // page still shows up in the test output.
@@ -19,12 +20,12 @@ function consoleErrors(page: Page): string[] {
 }
 
 test.describe('device dashboard', () => {
-  test('device list loads and shows the configured routers', async ({ page }) => {
+  test('device list loads and shows the seeded devices', async ({ page }) => {
     const errors = consoleErrors(page);
 
     await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('body')).toContainText('core-01', { timeout: 20000 });
-    await expect(page.locator('body')).toContainText('core-02');
+    await expect(page.locator('body')).toContainText(SEEDED_DEVICES[0], { timeout: 20000 });
+    await expect(page.locator('body')).toContainText(SEEDED_DEVICES[1]);
 
     expect(errors, `console errors: ${errors.join(' | ')}`).toHaveLength(0);
   });
@@ -39,10 +40,10 @@ test.describe('device dashboard', () => {
     // was timing out.
     const selector = page.locator('#dashboardDeviceSelect');
     await expect(selector).toBeVisible({ timeout: 20000 });
-    await expect(selector.locator('option', { hasText: 'core-01' }))
+    await expect(selector.locator('option', { hasText: SEEDED_DEVICE }))
       .toHaveCount(1, { timeout: 20000 });
 
-    await selector.selectOption({ label: 'core-01' });
+    await selector.selectOption({ label: SEEDED_DEVICE });
 
     // The failure mode was an empty state showing for a device that does have
     // MIBs assigned, so assert it is not VISIBLE. The element stays in the DOM
@@ -66,17 +67,18 @@ test.describe('device dashboard', () => {
 
     const selector = page.locator('#dashboardDeviceSelect');
     await expect(selector).toBeVisible({ timeout: 20000 });
-    await expect(selector.locator('option', { hasText: 'core-01' }))
+    await expect(selector.locator('option', { hasText: SEEDED_DEVICE }))
       .toHaveCount(1, { timeout: 20000 });
-    await selector.selectOption({ label: 'core-01' });
+    await selector.selectOption({ label: SEEDED_DEVICE });
 
     const tabs = page.locator('#mibTabList .tab-button');
     await expect(tabs.first()).toBeVisible({ timeout: 45000 });
 
     // The tabs should be named after real modules the device polls, not
-    // placeholders.
+    // placeholders: the standard modules the seed assigns.
     const names = await tabs.allTextContents();
-    expect(names.join(' '), `tabs were: ${names.join(', ')}`).toMatch(/IF-MIB|SNMPv2-MIB|CISCO-/);
+    expect(names.join(' '), `tabs were: ${names.join(', ')}`)
+      .toMatch(/IF-MIB|SNMPv2-MIB|HOST-RESOURCES-MIB/);
 
     // And the active tab should end up with rendered content rather than an
     // empty pane.

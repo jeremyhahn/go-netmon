@@ -1,5 +1,11 @@
 # FIPS 140-3
 
+> **Status: DEFERRED** · Scope: go-netmon · Last verified: 2026-10-21
+>
+> The FIPS profile is deferred (owner, 2026-10-14; #7). The build and CI job
+> below exist, but SNMPv3 `authPriv` does not work in FIPS mode — see
+> [SNMPv3](#snmpv3-md5-sha-1-and-des).
+
 go-netmon builds in two configurations. Both are supported; they differ only in
 which cryptographic algorithms exist in the binary.
 
@@ -49,9 +55,15 @@ builds.
 
 ### SNMPv3: MD5, SHA-1 and DES
 
-**SNMPv3 itself is not affected.** A FIPS build authenticates with SHA224,
-SHA256, SHA384 and SHA512 and encrypts with AES, AES192 and AES256, exactly as
-an ordinary build does. Three protocol names are missing:
+**SNMPv3 encryption does not work in FIPS mode.** Every SNMPv3 privacy protocol
+the FIPS build keeps — AES, AES192 and AES256 — is AES in CFB mode (RFC 3826),
+and under `fips140=only` Go refuses CFB. A device configured for `authPriv`
+therefore fails at runtime in a FIPS build; only `noAuthNoPriv` and
+`authNoPriv` work. Authentication is unaffected: SHA224, SHA256, SHA384 and
+SHA512 work exactly as in an ordinary build. How to fix `authPriv` is the
+decision #7 holds, and the owner deferred it on 2026-10-14.
+
+Beyond that, three protocol names are missing:
 
 | Setting | Value | Why |
 |---|---|---|

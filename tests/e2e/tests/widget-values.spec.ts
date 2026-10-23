@@ -9,7 +9,8 @@ import * as path from 'path';
 // number is shown without the unit its MIB declares, or an enumeration is shown
 // as the integer on the wire rather than the name the MIB gives it.
 
-const BASE = process.env.NETMON_URL || 'http://198.51.100.91:8082';
+import { BASE } from '../target';
+import { deviceByName, SEEDED_DEVICES } from '../stack';
 
 // openFleetDevice sets the device selector's value and fires its change event.
 // The selector is populated by a separate load from the one that reveals the
@@ -90,11 +91,12 @@ async function openDevice(page: Page, deviceId: number, mib: string) {
   for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 1200); await page.waitForTimeout(400); }
 }
 
-test('a text reading is shown as text, not plotted as a number', async ({ page }) => {
-  // The ATEN KVM states its condition in sentences: "PSU2 is abnormal, please
-  // check the device". There is nothing to plot, and a line chart of a constant
-  // 1 would hide the only thing the object says.
-  await openDevice(page, 4, 'KNGeneric-MIB');
+test('a text reading is shown as text, not plotted as a number', async ({ page, request }) => {
+  // ifAlias is the operator's description of a port: "uplink to core" on the
+  // simulated router (public.snmprec). There is nothing to plot, and a line
+  // chart of a constant 1 would hide the only thing the object says.
+  const device = await deviceByName(request, SEEDED_DEVICES[0]);
+  await openDevice(page, device.id, 'IF-MIB');
 
   // The tab that was opened, not the whole document. Every module's pane is
   // built up front but filled in turn, so scanning all of them measures
@@ -105,14 +107,14 @@ test('a text reading is shown as text, not plotted as a number', async ({ page }
       .map(el => (el.textContent || '').trim())
       .filter(Boolean));
 
-  const psu = shown.find(s => /PSU\d is|abnormal/i.test(s));
-  expect(psu, `no PSU reading among the status tiles: ${shown.slice(0, 12).join(' | ')}`).toBeTruthy();
+  const alias = shown.find(s => /uplink to core/.test(s));
+  expect(alias, `no ifAlias reading among the status tiles: ${shown.slice(0, 12).join(' | ')}`).toBeTruthy();
   // The device's own words, not a number.
-  expect(psu).toMatch(/[A-Za-z]{3,}/);
+  expect(alias).toMatch(/[A-Za-z]{3,}/);
 });
 
-test('a counter is charted as a rate, with per-second units', async ({ page }) => {
-  await openDevice(page, 1, 'IF-MIB');
+test('a counter is charted as a rate, with per-second units', async ({ page, request }) => {
+  await openDevice(page, (await deviceByName(request)).id, 'IF-MIB');
 
   const charted = await page.evaluate(() => {
     const app = (window as any).app;
@@ -133,8 +135,8 @@ test('a counter is charted as a rate, with per-second units', async ({ page }) =
     `counters charted without a per-second unit: ${JSON.stringify(charted)}`).toBeGreaterThan(0);
 });
 
-test('an enumerated value is shown by name, not by its number', async ({ page }) => {
-  await openDevice(page, 1, 'IF-MIB');
+test('an enumerated value is shown by name, not by its number', async ({ page, request }) => {
+  await openDevice(page, (await deviceByName(request)).id, 'IF-MIB');
 
   // The readings themselves, not the tile's textContent.
   //
@@ -162,10 +164,11 @@ test('an enumerated value is shown by name, not by its number', async ({ page })
     `every status tile is numeric or blank: ${statuses.slice(0, 12).join(' | ')}`).toBeGreaterThan(0);
 });
 
-test('a value with a declared unit carries it into the axis', async ({ page }) => {
-  // CISCO-PROCESS-MIB declares kilo-bytes on its memory columns and percent on
-  // the CPU ones. A number with no unit is not a reading, it is a number.
-  await openDevice(page, 1, 'CISCO-PROCESS-MIB');
+test('a value with a declared unit carries it into the axis', async ({ page, request }) => {
+  // HOST-RESOURCES-MIB declares KBytes on hrMemorySize and Bytes on
+  // hrStorageAllocationUnits, and the simulator answers both. A number with no
+  // unit is not a reading, it is a number.
+  await openDevice(page, (await deviceByName(request)).id, 'HOST-RESOURCES-MIB');
 
   const units = await page.evaluate(() => {
     const app = (window as any).app;

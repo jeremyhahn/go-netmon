@@ -14,6 +14,14 @@
 #
 # Copying the file into the image removes the host path from the equation, so
 # the stack comes up identically on a workstation and in CI.
-FROM prom/prometheus:v2.45.0
+#
+# The version is the one production (monitor-01) runs, measured 2026-09-06 (#138).
+# The stack represents what is deployed: what a remote-write receiver does with
+# a request it refuses differs between Prometheus majors, so a test passing
+# against another version says nothing reliable about the appliance. This ARG is
+# the one place the version is named; guard-tests.sh fails when any other file
+# of the stack names a different one.
+ARG PROMETHEUS_VERSION=v3.14.0
+FROM prom/prometheus:${PROMETHEUS_VERSION}
 
 COPY test/integration/prometheus.yml /etc/prometheus/prometheus.yml
