@@ -4,8 +4,10 @@ package parser
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,10 +63,10 @@ func (p *Parser) Init() error {
 func (p *Parser) initLocked() {
 	gosmi.Init()
 
-	// Set MIB paths
-	for _, path := range p.paths {
-		gosmi.AppendPath(path)
-	}
+	// Init seeds the path from every existing directory in SMIPATH. Replace
+	// it, so the parser searches exactly the directories it was given and a
+	// module resolves the same way whatever environment the process inherited.
+	gosmi.SetPath(strings.Join(p.paths, string(os.PathListSeparator)))
 }
 
 // Close cleans up the gosmi library
@@ -907,9 +909,17 @@ func (p *Parser) LoadModuleFromFile(path string) (*mib.ModuleInfo, error) {
 	gosmiLibrary.Lock()
 	defer gosmiLibrary.Unlock()
 
-	// Add the directory to the search path
+	// The file's directory is searched for this load only, so it and any
+	// module it IMPORTS from beside it resolve. Leaving it on the path would
+	// grow the path by one directory per upload for the life of a long-lived
+	// parser. Taking it off again loses nothing already loaded: gosmi finds an
+	// import among the loaded modules before it searches the path.
 	dir := filepath.Dir(path)
-	gosmi.AppendPath(dir)
+	saved := gosmi.GetPath()
+	if !slices.Contains(filepath.SplitList(saved), dir) {
+		gosmi.AppendPath(dir)
+		defer gosmi.SetPath(saved)
+	}
 
 	// Extract module name from filename
 	filename := filepath.Base(path)

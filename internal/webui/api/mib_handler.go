@@ -58,6 +58,12 @@ func (s *Server) handleListStoredMIBs(w http.ResponseWriter, r *http.Request) {
 		respondQueryError(w, err)
 		return
 	}
+	// The same path the detail view shows: the file the module is read from
+	// now, or none, never the path recorded when it was imported. Resolved
+	// for the page only, since each one is a stat.
+	for i := range selected {
+		selected[i].FilePath = s.mibSourcePath(selected[i].Name, selected[i].FilePath)
+	}
 
 	body := map[string]interface{}{"mibs": selected}
 	if query.narrowed {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
 // The validator's whole value is the distinction between "parsed" and "would
@@ -50,13 +52,84 @@ END
 func TestValidateReportsAModuleThatResolves(t *testing.T) {
 	dir := t.TempDir()
 	writeMIB(t, dir, "TEST-MIB.mib", minimalMIB)
+	copyStandardMIB(t, dir, "SNMPv2-SMI.txt")
 
 	var out bytes.Buffer
 	if err := runMIBValidate(&out, []string{dir}, false); err != nil {
 		t.Fatalf("validate: %v\n%s", err, out.String())
 	}
-	if text := out.String(); !strings.Contains(text, "ok") || !strings.Contains(text, "TEST-MIB") {
+	text := out.String()
+	if !strings.Contains(text, "ok") || !strings.Contains(text, "TEST-MIB") {
 		t.Errorf("report does not show the module as ok:\n%s", text)
+	}
+	if strings.Contains(text, "WARN") {
+		t.Errorf("a module whose imports all resolve is reported as degraded:\n%s", text)
+	}
+}
+
+// copyStandardMIB puts one of the repository's standard MIBs in dir. gosmi
+// searches only the directories validate is given, so a module that imports
+// SNMPv2-SMI resolves only when SNMPv2-SMI is in one of them.
+func copyStandardMIB(t *testing.T, dir, name string) {
+	t.Helper()
+
+	content, err := os.ReadFile(filepath.Join(testsupport.MIBDir("standard"), name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	writeMIB(t, dir, name, string(content))
+}
+
+// TestValidateStartsFromAnEmptyLibrary checks that one run's modules and search
+// path do not reach the next. gosmi is a process-wide library; each run
+// initializes it and closes it, which discards both. If that ever stopped, a
+// complete run would make a later incomplete one look complete, and an
+// incomplete run would leave a later complete one degraded.
+func TestValidateStartsFromAnEmptyLibrary(t *testing.T) {
+	complete := t.TempDir()
+	writeMIB(t, complete, "TEST-MIB.mib", minimalMIB)
+	copyStandardMIB(t, complete, "SNMPv2-SMI.txt")
+
+	incomplete := t.TempDir()
+	writeMIB(t, incomplete, "TEST-MIB.mib", minimalMIB)
+
+	for i, run := range []struct {
+		dir      string
+		degraded bool
+	}{
+		{complete, false},
+		{incomplete, true},
+		{complete, false},
+	} {
+		var out bytes.Buffer
+		if err := runMIBValidate(&out, []string{run.dir}, false); err != nil {
+			t.Fatalf("run %d: validate: %v\n%s", i, err, out.String())
+		}
+		text := out.String()
+		if got := strings.Contains(text, "WARN"); got != run.degraded {
+			t.Errorf("run %d: degraded = %v, want %v:\n%s", i, got, run.degraded, text)
+		}
+		if run.degraded && !strings.Contains(text, "SNMPv2-SMI") {
+			t.Errorf("run %d: the warning does not name SNMPv2-SMI:\n%s", i, text)
+		}
+	}
+}
+
+// TestValidateIgnoresSMIPATH checks that validate searches exactly the
+// directories it is given. A host whose SMIPATH holds SNMPv2-SMI must not make
+// a directory without it look complete.
+func TestValidateIgnoresSMIPATH(t *testing.T) {
+	t.Setenv("SMIPATH", testsupport.MIBDir("standard"))
+
+	dir := t.TempDir()
+	writeMIB(t, dir, "TEST-MIB.mib", minimalMIB)
+
+	var out bytes.Buffer
+	if err := runMIBValidate(&out, []string{dir}, false); err != nil {
+		t.Fatalf("validate: %v\n%s", err, out.String())
+	}
+	if text := out.String(); !strings.Contains(text, "WARN") || !strings.Contains(text, "SNMPv2-SMI") {
+		t.Errorf("SNMPv2-SMI resolved from SMIPATH, which validate was not given:\n%s", text)
 	}
 }
 
@@ -67,9 +140,9 @@ func TestValidateFailsWhenAnImportIsMissing(t *testing.T) {
 	dir := t.TempDir()
 
 	// The objects hang off an identifier defined in a vendor module that is not
-	// present. gosmi knows the SMI base types itself, so importing only those
-	// resolves even from an empty directory - it is the vendor root that has to
-	// be missing to reproduce the real failure, which is what
+	// present. Without SNMPv2-SMI gosmi still loads a module that imports only
+	// the SMI base types, with those types unresolved (a WARN) - it is the
+	// vendor root that has to be missing to reproduce the real failure, which is what
 	// CISCO-PRODUCTS-MIB does without CISCO-SMI: it loads with zero nodes.
 	writeMIB(t, dir, "ORPHAN-MIB.mib", `ORPHAN-MIB DEFINITIONS ::= BEGIN
 IMPORTS

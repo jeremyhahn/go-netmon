@@ -1335,6 +1335,57 @@ func TestExportCarriesASourceWhoseStoredPathIsStale(t *testing.T) {
 	}
 }
 
+func TestMIBListShowsTheResolvedSourcePath(t *testing.T) {
+	f := newConfigFixture(t)
+	f.seed(t)
+
+	// One record with a container-era path whose file is still in the upload
+	// directory, and one whose file is nowhere.
+	record, err := f.records.GetMIBByName(t.Context(), powerModule)
+	if err != nil {
+		t.Fatalf("GetMIBByName: %v", err)
+	}
+	fileName := filepath.Base(record.FilePath)
+	if _, err = f.records.ReplaceMIBContent(t.Context(), powerModule, webuistorage.MIBContent{
+		FilePath:    filepath.Join("/app/data/mibs/uploaded", fileName),
+		Description: record.Description,
+		ObjectCount: record.ObjectCount,
+	}); err != nil {
+		t.Fatalf("ReplaceMIBContent: %v", err)
+	}
+	const goneModule = "TEST-GONE-MIB"
+	if err = f.records.CreateMIB(t.Context(), &webuistorage.MIB{
+		Name:     goneModule,
+		FilePath: "/app/data/mibs/uploaded/TEST-GONE-MIB.my",
+	}); err != nil {
+		t.Fatalf("CreateMIB: %v", err)
+	}
+
+	rec := do(t, f.server, http.MethodGet, "/api/mibs", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		MIBs []struct {
+			Name     string `json:"name"`
+			FilePath string `json:"file_path"`
+		} `json:"mibs"`
+	}
+	if err = json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := make(map[string]string, len(body.MIBs))
+	for _, m := range body.MIBs {
+		got[m.Name] = m.FilePath
+	}
+	if want := filepath.Join(f.server.uploadedMIBDir(), fileName); got[powerModule] != want {
+		t.Errorf("file_path of %s = %q, want %q", powerModule, got[powerModule], want)
+	}
+	if path, ok := got[goneModule]; !ok || path != "" {
+		t.Errorf("file_path of %s = %q (listed %v), want listed with no path", goneModule, path, ok)
+	}
+}
+
 func TestPlanModulesDemandsAModuleTheDocumentAssignsButDoesNotList(t *testing.T) {
 	doc := &webuistorage.Config{
 		SchemaVersion: webuistorage.ConfigSchemaVersion,
