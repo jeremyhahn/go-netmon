@@ -22,10 +22,10 @@ on:
 # and, when it holds, requires those jobs to succeed as well.
 
 # One group per ref: a newer PR push cancels the older PR run. On main, one group per
-# event: a push cancels the older push run (the newest validates every merge under it),
-# and a dispatch or schedule run never cancels a push run (handbook devops.md, ci-template v1.25).
+# event and sha: every main commit gets its own full run and a merge never cancels one
+# (ci-template v1.26.2, CA m1167, ruling 145).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}
   cancel-in-progress: true
 
 env:
