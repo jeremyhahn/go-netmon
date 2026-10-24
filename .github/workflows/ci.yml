@@ -21,11 +21,12 @@ on:
 # A full-tier job carries its own `if:`; CI Passed evaluates the same condition
 # and, when it holds, requires those jobs to succeed as well.
 
-# Cancel superseded runs on the same branch; only the newest matters.
+# One group per ref: a newer PR push cancels the older PR run. On main, one group per
+# event: a push cancels the older push run (the newest validates every merge under it),
+# and a dispatch or schedule run never cancels a push run (handbook devops.md, ci-template v1.25).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # main runs are never cancelled, so every main commit gets a full result; PR runs still supersede each other.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}
+  cancel-in-progress: true
 
 env:
   # The go.mod directive pins the toolchain, so CI follows whatever the project

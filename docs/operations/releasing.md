@@ -57,7 +57,7 @@ commands that undo the local commit and tag.
 | `VERSION` | none (alpha: next patch) | The version to cut |
 | `DRY_RUN` | unset | `1`: check and print, write nothing |
 | `RELEASE_REMOTE` | `dev` | The remote to push to. Never `github` |
-| `RELEASE_GIT` | `git` | The command that commits, tags and pushes; on a host, `agent-git.sh go-netmon` from the company repo, which signs as the project agent |
+| `RELEASE_GIT` | `git` | The command that commits, tags and pushes; on a host, `../claude-agents/scripts/agent-git.sh go-netmon`, which signs as the project agent |
 
 ## After the tag
 

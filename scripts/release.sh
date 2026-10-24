@@ -20,7 +20,7 @@
 #   RELEASE_REMOTE   the remote to release to (default dev, the Gitea plane;
 #                    agents never push to github, version-control.md)
 #   RELEASE_GIT      the command that writes: commits, tags and pushes
-#                    (default git; on a host, "<company>/software/scripts/
+#                    (default git; on a host, "../claude-agents/scripts/
 #                    agent-git.sh go-netmon", which signs as the agent)
 #
 # Every check runs before anything is written: the version's form and kind,
