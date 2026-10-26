@@ -1011,6 +1011,14 @@ func (p *Poller) RemoveDevice(deviceName string) error {
 	// Done here rather than by the worker, which does not own the name.
 	w.health.forget()
 
+	// And so does what the exporter remembers of it between polls -- the
+	// friendly names its status columns reported -- or every device ever
+	// removed would stay in that cache (#54). After awaitCommit for the same
+	// reason as the series: no later commit can put them back.
+	if forgetter, ok := p.exporter.(metrics.DeviceForgetter); ok {
+		forgetter.ForgetDevice(deviceName)
+	}
+
 	// The credentials go with the device, whether or not its connection
 	// closes cleanly. A poll still in flight fails rather than reopening them.
 	defer func() { _ = w.creds.Destroy() }()

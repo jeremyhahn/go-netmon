@@ -18,7 +18,7 @@ func (c *TableIndexCache) publishIndex(sweep *mibSweep) {
 // describes tables, with columns mapping each table's entry OID to the column
 // OIDs that belong to it.
 func newTestCache(tables []*TableIndexInfo, columns map[string][]string) *TableIndexCache {
-	cache := &TableIndexCache{friendlyNameCache: make(map[string]string)}
+	cache := &TableIndexCache{}
 
 	set := newTableSet()
 	for _, tableInfo := range tables {

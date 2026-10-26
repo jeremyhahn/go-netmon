@@ -44,18 +44,32 @@ use this cache.
 
 ## The cache
 
-`TableIndexCache.friendlyNameCache` is a `map[string]string` guarded by an
-`RWMutex` (`friendlyMu`). It is the only mutable state left on the cache; the
-MIB-derived half is an immutable index swapped atomically.
+The cache holds current inventory, not history (#54). `TableIndexCache.friendly`
+is per device: a `sync.Map` from device name to that device's names, which are
+one immutable map (table entry OID → row index and label name → value)
+published by atomic pointer, next to a per-device writer mutex
+(`internal/metrics/friendly_names.go`). It is the only mutable state left on
+the cache; the MIB-derived half is an immutable index swapped atomically.
 
-Key format: `{device}:{entryOID}:{indexValue}:{labelName}`, for example
-`router1:.1.3.6.1.2.1.2.2.1:1:ifdescr` → `GigabitEthernet0/0`.
+For example, device `router1`, table `.1.3.6.1.2.1.2.2.1`, row `1`, label
+`ifdescr` → `GigabitEthernet0/0`.
 
-Entries are overwritten on every poll and never evicted, so the cache lives as
-long as the process and holds one entry per device × row × status column.
-Because lookups are keyed by the row, a name cached from an earlier poll is
-used if a later poll does not return that column. (Entity sensors deliberately
-do the opposite; see [metrics/entity-sensors.md](metrics/entity-sensors.md).)
+Retention:
+
+- **A poll replaces its device's names for every table it walked.** A row
+  that disappeared from the table loses its name with the next poll, and an
+  index reused by a different row carries only the name the new row reported,
+  never the old one. A table the poll did not return at all keeps its names.
+- **A device the poller retires loses its names.** `Poller.RemoveDevice`
+  calls the exporter's optional `metrics.DeviceForgetter` capability after the
+  device's last commit, so no later poll can put them back. It is the only way
+  a device leaves the poller: the web UI's device deletion and configuration
+  apply reach it through the poller API.
+
+Readers never block: a sample is labeled from the device's names as last
+published. Writers contend only with polls of the same device. (Entity
+sensors keep nothing between polls at all; see
+[metrics/entity-sensors.md](metrics/entity-sensors.md).)
 
 ## Example
 
@@ -86,3 +100,6 @@ labels keep matching.
 `internal/metrics/table_index_cache_test.go`: `TestCacheFriendlyNames`,
 `TestExtractIndexLabelsWithFriendlyNames`, `TestConvertSNMPResultsWithFriendlyNames`,
 `TestExtractColumnID` and `TestCacheFriendlyNamesWithInvalidResults`.
+Retention: `internal/metrics/friendly_names_test.go` (removed row, reused
+index, unwalked table, forgotten device, concurrent devices under `-race`) and
+`internal/poller/forget_test.go` (`RemoveDevice` evicts the device).

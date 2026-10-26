@@ -43,11 +43,12 @@ type TableIndexCache struct {
 	sweep   *mibSweep
 	learned *tableSet
 
-	// friendlyNameCache maps device:entryOID:indexValue:columnName to the
-	// value last seen for that status column, e.g.
-	// "router1:.1.3.6.1.2.1.2.2.1:1:ifName" -> "GigabitEthernet0/0".
-	friendlyNameCache map[string]string
-	friendlyMu        sync.RWMutex
+	// friendly holds each device's status-column names as its last poll
+	// reported them, keyed by device name, each value a *deviceFriendlyNames
+	// (friendly_names.go). It holds current inventory only: a poll replaces
+	// its device's names for the tables it walked, and ForgetDevice drops a
+	// retired device.
+	friendly sync.Map
 }
 
 // statusColumnInfo contains information about status columns that can be used as friendly names
@@ -114,8 +115,7 @@ type TableIndexInfo struct {
 // store holds now. Modules loaded afterwards are picked up by Refresh.
 func NewTableIndexCache(store *storage.Storage) *TableIndexCache {
 	cache := &TableIndexCache{
-		storage:           store,
-		friendlyNameCache: make(map[string]string),
+		storage: store,
 	}
 
 	if err := cache.Refresh(); err != nil {
@@ -411,12 +411,17 @@ func extractColumnID(columnOID, entryOID string) string {
 	return ""
 }
 
-// CacheFriendlyNames processes SNMP results and caches friendly name values from status columns
+// CacheFriendlyNames caches the status-column names of one poll of a device.
+// They replace the device's names for every table the poll walked; tables it
+// did not walk keep theirs (friendly_names.go).
 func (c *TableIndexCache) CacheFriendlyNames(deviceName string, results []*snmp.Result) {
 	index := c.index()
 
-	c.friendlyMu.Lock()
-	defer c.friendlyMu.Unlock()
+	// Every table with status columns that this poll walked is collected,
+	// even one whose names did not render: the poll's view of a table
+	// replaces the cached one whole, so a row the poll did not name has no
+	// name rather than whatever an earlier row at its index was called.
+	polled := make(friendlyNames)
 
 	for _, result := range results {
 		// Find which table this OID belongs to
@@ -446,6 +451,12 @@ func (c *TableIndexCache) CacheFriendlyNames(deviceName string, results []*snmp.
 			continue
 		}
 
+		rows, walked := polled[tableInfo.EntryOID]
+		if !walked {
+			rows = make(map[friendlyRow]string)
+			polled[tableInfo.EntryOID] = rows
+		}
+
 		columnID := parts[0]
 		indexParts := parts[1:]
 
@@ -460,17 +471,13 @@ func (c *TableIndexCache) CacheFriendlyNames(deviceName string, results []*snmp.
 				break
 			}
 
-			// Build the index value string
-			indexValue := strings.Join(indexParts, ".")
-
-			// Create cache key: device:entryOID:indexValue:columnName
-			cacheKey := fmt.Sprintf("%s:%s:%s:%s", deviceName, tableInfo.EntryOID, indexValue, statusCol.LabelName)
-
-			// Cache the friendly name
-			c.friendlyNameCache[cacheKey] = friendlyValue
+			row := friendlyRow{index: strings.Join(indexParts, "."), label: statusCol.LabelName}
+			rows[row] = friendlyValue
 			break
 		}
 	}
+
+	c.publishFriendlyNames(deviceName, polled)
 }
 
 // ExtractIndexLabels extracts index values from an OID and returns them as Prometheus labels
@@ -531,17 +538,12 @@ func (c *TableIndexCache) extractIndexLabels(index *mibIndex, deviceName, oid st
 
 		// Check if we have status columns for this table
 		if statusCols := index.statusColumnsFor(tableInfo); len(statusCols) > 0 {
-			c.friendlyMu.RLock()
+			rows := c.currentFriendlyNames(deviceName)[tableInfo.EntryOID]
 			for _, statusCol := range statusCols {
-				// Build cache key
-				cacheKey := fmt.Sprintf("%s:%s:%s:%s", deviceName, tableInfo.EntryOID, indexValue, statusCol.LabelName)
-
-				// Look up friendly name
-				if friendlyName, found := c.friendlyNameCache[cacheKey]; found {
+				if friendlyName, found := rows[friendlyRow{index: indexValue, label: statusCol.LabelName}]; found {
 					labels[statusCol.LabelName] = friendlyName
 				}
 			}
-			c.friendlyMu.RUnlock()
 		}
 	}
 

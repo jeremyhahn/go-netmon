@@ -92,7 +92,7 @@ func coverageResults() []*snmp.Result {
 func TestCatalogDescribesEveryPublishedFamily(t *testing.T) {
 	objects := coverageMIB()
 
-	cache := &TableIndexCache{friendlyNameCache: make(map[string]string)}
+	cache := &TableIndexCache{}
 	tables := newTableSet()
 	tables.add(&TableIndexInfo{
 		TableOID: ".1.3.6.1.2.1.2.2", EntryOID: ".1.3.6.1.2.1.2.2.1",
@@ -274,7 +274,7 @@ func TestCatalogAfterReloadWritesOnlyTheCurrentRow(t *testing.T) {
 		Description: "The total number of octets received on the interface.",
 	}}
 
-	cache := &TableIndexCache{friendlyNameCache: make(map[string]string)}
+	cache := &TableIndexCache{}
 	publish := func(objects []*mib.OIDMetadata) {
 		cache.publishIndex(&mibSweep{
 			names:         newObjectNameIndex(objects),
@@ -349,7 +349,7 @@ func TestCatalogAfterReloadWritesOnlyTheCurrentRow(t *testing.T) {
 func TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches(t *testing.T) {
 	objects := coverageMIB()
 
-	cache := &TableIndexCache{friendlyNameCache: make(map[string]string)}
+	cache := &TableIndexCache{}
 	tables := newTableSet()
 	tables.add(&TableIndexInfo{
 		TableOID: ".1.3.6.1.2.1.2.2", EntryOID: ".1.3.6.1.2.1.2.2.1",

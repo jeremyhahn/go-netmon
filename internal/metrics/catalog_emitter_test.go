@@ -54,7 +54,7 @@ func (c *captureExporter) samples() []*Sample {
 func catalogTestCache(t *testing.T, objects []*mib.OIDMetadata) *TableIndexCache {
 	t.Helper()
 
-	cache := &TableIndexCache{friendlyNameCache: make(map[string]string)}
+	cache := &TableIndexCache{}
 	cache.publishIndex(&mibSweep{
 		names:         newObjectNameIndex(objects),
 		tables:        newTableSet(),
@@ -891,7 +891,7 @@ func BenchmarkCatalogRender(b *testing.B) {
 		})
 	}
 
-	cache := &TableIndexCache{friendlyNameCache: make(map[string]string)}
+	cache := &TableIndexCache{}
 	cache.publishIndex(&mibSweep{
 		names:         newObjectNameIndex(objects),
 		tables:        newTableSet(),

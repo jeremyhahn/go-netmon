@@ -1142,6 +1142,15 @@ func (e *PrometheusExporter) TableIndexCache() *TableIndexCache {
 	return e.tableIndexCache
 }
 
+// ForgetDevice drops the per-device state the exporter keeps for naming a
+// device's samples: its friendly-name cache entries (#54). It implements
+// DeviceForgetter.
+func (e *PrometheusExporter) ForgetDevice(deviceName string) {
+	if e.tableIndexCache != nil {
+		e.tableIndexCache.ForgetDevice(deviceName)
+	}
+}
+
 // SendCatalog delivers the metric catalog without touching the sample buffer.
 //
 // The catalog does not share a batch with device telemetry, and that is the

@@ -121,17 +121,12 @@ func TestCacheFriendlyNames(t *testing.T) {
 	cache.CacheFriendlyNames("test-device", results)
 
 	// Verify cache contents
-	key1 := "test-device:.1.3.6.1.2.1.2.2.1:1:ifdescr"
-	key2 := "test-device:.1.3.6.1.2.1.2.2.1:2:ifdescr"
-
-	cache.friendlyMu.RLock()
-	if cache.friendlyNameCache[key1] != "GigabitEthernet0/0" {
-		t.Errorf("Expected cached value 'GigabitEthernet0/0', got %q", cache.friendlyNameCache[key1])
+	if got, _ := cache.friendlyName("test-device", ".1.3.6.1.2.1.2.2.1", "1", "ifdescr"); got != "GigabitEthernet0/0" {
+		t.Errorf("Expected cached value 'GigabitEthernet0/0', got %q", got)
 	}
-	if cache.friendlyNameCache[key2] != "GigabitEthernet0/1" {
-		t.Errorf("Expected cached value 'GigabitEthernet0/1', got %q", cache.friendlyNameCache[key2])
+	if got, _ := cache.friendlyName("test-device", ".1.3.6.1.2.1.2.2.1", "2", "ifdescr"); got != "GigabitEthernet0/1" {
+		t.Errorf("Expected cached value 'GigabitEthernet0/1', got %q", got)
 	}
-	cache.friendlyMu.RUnlock()
 }
 
 // TestExtractIndexLabelsWithFriendlyNames tests that friendly name labels are added to index labels
@@ -205,9 +200,9 @@ func TestExtractIndexLabelsWithFriendlyNames(t *testing.T) {
 	cache := NewTableIndexCache(store)
 
 	// Manually add friendly name to cache
-	cache.friendlyMu.Lock()
-	cache.friendlyNameCache["test-device:.1.3.6.1.2.1.2.2.1:1:ifdescr"] = "GigabitEthernet0/0"
-	cache.friendlyMu.Unlock()
+	cache.publishFriendlyNames("test-device", friendlyNames{
+		".1.3.6.1.2.1.2.2.1": {{index: "1", label: "ifdescr"}: "GigabitEthernet0/0"},
+	})
 
 	// Extract labels from a metric OID
 	labels := cache.ExtractIndexLabels("test-device", "1.3.6.1.2.1.2.2.1.10.1")
@@ -429,9 +424,10 @@ func TestCacheFriendlyNamesWithInvalidResults(t *testing.T) {
 	// Should not crash and should not cache anything
 	cache.CacheFriendlyNames("test-device", results)
 
-	cache.friendlyMu.RLock()
-	cacheSize := len(cache.friendlyNameCache)
-	cache.friendlyMu.RUnlock()
+	cacheSize := 0
+	for _, rows := range cache.currentFriendlyNames("test-device") {
+		cacheSize += len(rows)
+	}
 
 	if cacheSize != 0 {
 		t.Errorf("Expected empty cache, got %d entries", cacheSize)

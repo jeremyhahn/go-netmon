@@ -68,6 +68,17 @@ type MIBMetadataRefresher interface {
 	RefreshMIBMetadata() error
 }
 
+// DeviceForgetter is implemented by exporters that keep per-device state
+// between polls -- the friendly names a device's status columns reported, say
+// -- and must drop it when the device is no longer polled, or it would be held
+// for every device ever seen. Like MIBMetadataRefresher it is an optional
+// capability: the poller type-asserts for it when it retires a device.
+type DeviceForgetter interface {
+	// ForgetDevice drops everything the exporter holds for the device. It is
+	// called once nothing more can be exported for it.
+	ForgetDevice(deviceName string)
+}
+
 // systemInfoOIDs maps well-known system OIDs to their label names for info metrics
 var systemInfoOIDs = map[string]string{
 	".1.3.6.1.2.1.1.1.0": "sys_descr",     // sysDescr

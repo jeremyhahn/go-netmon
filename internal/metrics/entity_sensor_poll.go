@@ -45,7 +45,7 @@ import (
 // What is left is a pure function of one poll's results, so there is no shared
 // state, no lock, no copy-on-write and nothing to bound.
 
-// Column OIDs of the two sensor tables and of the entity table their rows are// Column OIDs of the two sensor tables and of the entity table their rows are
+// Column OIDs of the two sensor tables and of the entity table their rows are
 // named from. Both sensor tables are INDEX { entPhysicalIndex }, so a row of
 // either joins to entPhysicalTable on a single sub-identifier.
 //
