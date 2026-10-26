@@ -44,6 +44,11 @@ const (
 	// with the configuration, and an operator has to act on it.
 	StateNotRegistered DeviceState = "not_registered"
 
+	// StateDisabled is a device an operator switched off. It is deliberately
+	// left off the poller, so its absence there is neither a device fault nor
+	// a configuration fault, and it is counted apart from both.
+	StateDisabled DeviceState = "disabled"
+
 	// StateUnknown is a device whose status could not be obtained — the poller
 	// was unreachable, too slow, or not configured. The row's error says which.
 	StateUnknown DeviceState = "unknown"
@@ -62,6 +67,9 @@ type FleetDeviceStatus struct {
 	Address string `json:"address"`
 
 	State DeviceState `json:"state"`
+
+	// Enabled is the device record's flag, stated on every row.
+	Enabled bool `json:"enabled"`
 
 	// PollInterval is the device's own interval in seconds, absent when it
 	// inherits the global default, and EffectivePollInterval is the interval it
@@ -300,9 +308,18 @@ func newFleetDeviceStatus(
 		Name:                  device.Name,
 		Address:               device.Address,
 		State:                 deviceState(status, err),
+		Enabled:               storage.EnabledOf(&device),
 		PollInterval:          device.PollInterval,
 		EffectivePollInterval: polling.Effective(device.PollInterval),
 		Status:                status,
+	}
+
+	// A disabled device the poller has nothing for is exactly as intended,
+	// and that needs no answer from the poller to know. One the poller still
+	// reports on is still being polled, and its real state says so.
+	if !entry.Enabled && status == nil {
+		entry.State = StateDisabled
+		return entry
 	}
 
 	// A reason is only worth carrying when the state does not already give one.

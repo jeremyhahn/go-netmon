@@ -232,6 +232,7 @@ func deviceFieldChanges(before, after ConfigDevice) []ConfigFieldChange {
 		{"snmp_version", before.SNMPVersion, after.SNMPVersion},
 		{"community", before.Community, after.Community},
 		{"poll_interval", pollIntervalText(before.PollInterval), pollIntervalText(after.PollInterval)},
+		{"enabled", enabledText(before.Enabled), enabledText(after.Enabled)},
 		{"profiles", listText(before.Profiles), listText(after.Profiles)},
 	})
 	return append(changes, assignmentChanges(before.MIBs, after.MIBs)...)
@@ -357,4 +358,11 @@ func pollIntervalText(interval *int) string {
 		return "inherit"
 	}
 	return strconv.Itoa(*interval) + "s"
+}
+
+// enabledText reads an absent flag as what it means, so a device exported
+// before the field existed does not show as changed against one that says
+// enabled.
+func enabledText(flag *bool) string {
+	return strconv.FormatBool(EnabledOf(&Device{Enabled: flag}))
 }

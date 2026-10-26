@@ -111,6 +111,20 @@ test('an edit sends the device id as a number, not a string', async ({ page }) =
   expect(body.port).toBe(161);
 });
 
+test('a device that never said is shown polled, and switching it off sends enabled=false', async ({ page }) => {
+  const sent = await captureSave(page);
+  await openEditForm(page);
+
+  // DEVICE carries no enabled field, as every device stored before it existed.
+  const enabled = page.locator('#deviceEnabled');
+  await expect(enabled).toBeChecked();
+  await enabled.uncheck();
+  await page.locator('#deviceForm button[type="submit"]').click();
+  await expect.poll(() => sent() !== null, { timeout: 10000 }).toBe(true);
+
+  expect(sent().enabled).toBe(false);
+});
+
 test('changing the SNMP version to v1 sends v1 and a community string', async ({ page }) => {
   const sent = await captureSave(page);
   await openEditForm(page);

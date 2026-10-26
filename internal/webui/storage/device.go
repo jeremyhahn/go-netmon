@@ -32,6 +32,16 @@ type Device struct {
 	// not a schedule anyway — see ValidatePollInterval.
 	PollInterval *int `json:"poll_interval,omitempty"`
 
+	// Enabled reports whether this device is polled at all. It is absent on
+	// every device created before the field existed, and absent means
+	// enabled: a store written by an earlier version must not wake up with its
+	// whole fleet switched off. Read it through EnabledOf.
+	//
+	// A pointer for the same reason as PollInterval: a plain bool's zero value
+	// is false, so a record that never mentioned the field would decode as a
+	// device an operator had disabled.
+	Enabled *bool `json:"enabled,omitempty"`
+
 	// SNMPv3 credentials. Empty on a v1 or v2c device, which authenticates
 	// with Community instead.
 	//

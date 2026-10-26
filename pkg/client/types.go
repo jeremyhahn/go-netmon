@@ -42,6 +42,13 @@ type Device struct {
 	// interval to today's default.
 	PollInterval *int `json:"poll_interval,omitempty"`
 
+	// Enabled is whether the device is polled. The server states it on every
+	// read; it is nil only on a device built locally that never said, and use
+	// EnabledOf rather than dereferencing it. Nil on a create means enabled,
+	// and nil on an update keeps the stored value, so a read-modify-write that
+	// carries the field through never switches polling back on.
+	Enabled *bool `json:"enabled,omitempty"`
+
 	// EffectivePollInterval is the interval in seconds the device is actually
 	// polled at: PollInterval when it has one, the server's global default when
 	// it does not. It is computed by the server on every read and ignored on a
@@ -73,6 +80,16 @@ func SetPollInterval(d *Device, seconds int) {
 // the server's global default again, including later changes to it.
 func InheritPollInterval(d *Device) {
 	d.PollInterval = nil
+}
+
+// EnabledOf reports whether d is polled. A device that never said is.
+func EnabledOf(d Device) bool {
+	return d.Enabled == nil || *d.Enabled
+}
+
+// SetEnabled records whether d is polled.
+func SetEnabled(d *Device, enabled bool) {
+	d.Enabled = &enabled
 }
 
 // Profile is a named bundle of MIBs that can be assigned to many devices.

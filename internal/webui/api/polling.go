@@ -143,6 +143,11 @@ type DeviceView struct {
 	// "default (60s)" without knowing the server's configuration.
 	EffectivePollInterval int `json:"effective_poll_interval"`
 
+	// Enabled is whether the device is polled, always stated. It shadows the
+	// stored field, which is absent on a device that never said and so could
+	// not be rendered without a client knowing what absent means.
+	Enabled bool `json:"enabled"`
+
 	// Warnings are configurations the server accepted but an operator should
 	// know about. It is absent when there are none.
 	Warnings []string `json:"warnings,omitempty"`
@@ -153,6 +158,7 @@ func newDeviceView(device storage.Device, polling PollingConfig) DeviceView {
 	view := DeviceView{
 		Device:                device,
 		EffectivePollInterval: polling.Effective(device.PollInterval),
+		Enabled:               storage.EnabledOf(&device),
 	}
 	if warning := polling.Warning(device.PollInterval); warning != "" {
 		view.Warnings = []string{warning}

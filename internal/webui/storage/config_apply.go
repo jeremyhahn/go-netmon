@@ -303,6 +303,7 @@ func (w *configWriter) writeDevices() error {
 			Port:         d.Port,
 			CreatedAt:    w.now,
 			PollInterval: copyInterval(d.PollInterval),
+			Enabled:      copyFlag(d.Enabled),
 		}
 		if existing, kept := w.devices[d.Name]; kept {
 			record.ID, record.CreatedAt = existing.ID, existing.CreatedAt
@@ -446,6 +447,7 @@ func (c *Config) normalized() *Config {
 		d.Profiles = sortedCopy(d.Profiles)
 		d.MIBs = normalizeAssignments(d.MIBs)
 		d.PollInterval = copyInterval(d.PollInterval)
+		d.Enabled = copyFlag(d.Enabled)
 		normalized.Devices = append(normalized.Devices, d)
 	}
 

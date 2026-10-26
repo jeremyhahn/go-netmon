@@ -128,6 +128,16 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An update that omits enabled keeps the stored value, unlike the rest of
+	// the record: a caller that does not know the field must not switch a
+	// disabled device back on. A missing device is left to UpdateDevice to
+	// report.
+	if device.Enabled == nil {
+		if stored, err := s.storage.GetDevice(r.Context(), id); err == nil {
+			device.Enabled = stored.Enabled
+		}
+	}
+
 	// Update device in storage
 	if err := s.storage.UpdateDevice(r.Context(), &device); err != nil {
 		writeDeviceWriteError(w, err)

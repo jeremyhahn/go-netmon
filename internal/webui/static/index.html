@@ -509,6 +509,15 @@ make restore FROM=backups/netmon-20260811T173450Z YES=1</code></pre>
                     <span>Port</span>
                     <input name="port" type="number" value="161">
                 </label>
+                <!-- A disabled device stays configured but is not polled. -->
+                <label>
+                    <span>Polled</span>
+                    <span class="switch">
+                        <input type="checkbox" class="switch-input" name="enabled" id="deviceEnabled" checked
+                            aria-label="Poll this device">
+                        <span class="switch-track" aria-hidden="true"></span>
+                    </span>
+                </label>
                 <div class="modal-actions">
                     <button type="button" class="cancel-btn secondary-btn">Cancel</button>
                     <button type="submit" class="primary-btn">Save</button>

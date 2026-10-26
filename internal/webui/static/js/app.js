@@ -132,17 +132,18 @@ const FLEET_STATES = {
     unreachable:    { label: 'Unreachable',    tone: 'down',    blurb: 'Repeated polls went unanswered.' },
     never_polled:   { label: 'Never polled',   tone: 'pending', blurb: 'The poller has this device but has not completed a cycle for it yet.' },
     not_registered: { label: 'Not registered', tone: 'config',  blurb: 'The poller has no record of this device. That is a configuration fault, not a device fault.' },
+    disabled:       { label: 'Disabled',       tone: 'unknown', blurb: 'Polling is switched off for this device. That is intended, not a fault.' },
     unknown:        { label: 'Unknown',        tone: 'unknown', blurb: 'The state could not be determined.' },
 };
 
 // The order the chips are laid out in. It is presentation only: the device list
 // itself keeps the order the server sent, which is already deterministic.
-const FLEET_STATE_ORDER = ['ok', 'failing', 'unreachable', 'never_polled', 'not_registered', 'unknown'];
+const FLEET_STATE_ORDER = ['ok', 'failing', 'unreachable', 'never_polled', 'not_registered', 'unknown', 'disabled'];
 
 // Severity, worst first. This is what the State column sorts by: triage order,
 // not the alphabet. It is deliberately separate from FLEET_STATE_ORDER above,
 // which lays out the chips and reads best healthy-first.
-const FLEET_SEVERITY = ['unreachable', 'failing', 'not_registered', 'never_polled', 'unknown', 'ok'];
+const FLEET_SEVERITY = ['unreachable', 'failing', 'not_registered', 'never_polled', 'unknown', 'ok', 'disabled'];
 
 // last_poll_time and next_poll_time are Go time.Time values whose omitempty
 // never fires, so a device that has never been polled sends the zero time
@@ -2330,12 +2331,15 @@ class MonitoringApp {
             matches: (device, term) =>
                 `${device.name || ''} ${device.address || ''}`.toLowerCase().includes(term),
             wrap: rows => `<table><thead><tr><th>Name</th><th>Address</th><th>Port</th>`
-                + `<th>SNMP Version</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`,
+                + `<th>SNMP Version</th><th>Polling</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`,
             renderRows: items => items.map(device => `<tr>
                 <td><strong>${this.escapeHtml(device.name)}</strong></td>
                 <td>${this.escapeHtml(device.address)}</td>
                 <td>${device.port || 161}</td>
                 <td><span class="badge success">${device.snmp_version || 'v2c'}</span></td>
+                <td>${device.enabled === false
+                    ? '<span class="badge disabled">Disabled</span>'
+                    : '<span class="badge enabled">Enabled</span>'}</td>
                 <td class="actions">
                     <button class="secondary-btn" onclick="app.showDeviceDetails('${device.id}')">View</button>
                     <button class="secondary-btn" onclick="app.showEditDeviceModal('${device.id}')">Edit</button>
@@ -2623,6 +2627,8 @@ class MonitoringApp {
             form.querySelector('select[name="snmp_version"]').value = device.snmp_version || 'v2c';
             form.querySelector('input[name="community"]').value = device.community || 'public';
             form.querySelector('input[name="port"]').value = device.port || 161;
+            // Absent is enabled: a device stored before the field existed is polled.
+            form.querySelector('input[name="enabled"]').checked = device.enabled !== false;
 
             form.querySelector('input[name="username"]').value = device.username || '';
             form.querySelector('select[name="auth_protocol"]').value = device.auth_protocol || 'SHA';
@@ -2685,6 +2691,10 @@ class MonitoringApp {
             address: formData.get('address'),
             snmp_version: version,
             port: parseInt(formData.get('port')),
+            // An unchecked checkbox is absent from FormData, so absent here
+            // is "off", and the field is always sent: on an update an omitted
+            // enabled means enabled.
+            enabled: formData.get('enabled') !== null,
         };
 
         // Only the credentials the chosen version uses are sent. Sending a

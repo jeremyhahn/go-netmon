@@ -386,6 +386,38 @@ document both read as "use `global.default_poll_interval`". The web UI does not
 resolve the default at push time; doing so would freeze today's default into
 every device and make a later change to it silently ineffective.
 
+### Enabled devices
+
+A device can be kept configured but not polled. The `enabled` field says which:
+
+```
+POST /api/devices          {"name":"pdu-01", ..., "enabled":false}
+PUT  /api/devices/:id      the same body; omit enabled to keep it as stored
+GET  /api/devices/:id      {"...":"...", "enabled":false}
+```
+
+**Absent means enabled on a create, unchanged on an update.** A create that
+omits `enabled` makes an enabled device. An update replaces the rest of the
+record, but one that omits `enabled` keeps the stored value, so a client that
+does not know the field cannot switch a disabled device back on. The store
+keeps the field only on a device that has it, so every device stored before
+the field existed is enabled. Every device response (`GET`, list, create and
+update) states `enabled` as `true` or `false`. The Go client (`pkg/client`)
+carries it through a read-modify-write, so `netmon device update` on a
+disabled device leaves it disabled.
+
+**In the UI** the device list has a *Polling* column showing *Enabled* or
+*Disabled*, and the device form has a *Polled* switch.
+
+**What reaches the poller.** A disabled device is not registered with the
+poller, and an update that disables a device removes it from the poller. The
+poller's control API starts a worker for every device it is given, whatever its
+`enabled` field says, so leaving a disabled device out is the only way it goes
+unpolled. Enabling it again is an update, and the poller adds a device it does
+not hold. `GET /api/poller/config` carries each device's `enabled`, and the
+poller's configuration sync skips a device that is `false`. The configuration
+export and import keep the field too.
+
 ### Fleet status
 
 `GET /api/devices/status` returns live status for **every** configured device in
@@ -488,6 +520,9 @@ that are easy to conflate.
 | `never_polled` | The poller has the device but has produced no poll result yet — `last_poll_time` is the zero time. Distinct from `failing`: a failed poll is still a poll and stamps the time. |
 | `not_registered` | The device is in the web UI's records but the poller's listing does not include it. A configuration problem, not a device problem. |
 | `unknown` | The status could not be obtained. `error` says why; there is no `status`. |
+| `disabled` | The device is switched off (`enabled` is `false`) and the poller does not hold it, as intended. Not a fault, and counted apart from `not_registered`. A disabled device the poller still reports on gets its real state instead. |
+
+Every row also states the device record's `enabled`.
 
 **Narrowing.** The endpoint accepts `search` (case-insensitive, matches name,
 address or state), `state` (keep one state), `limit` and `offset`. Without
@@ -501,8 +536,8 @@ end is an empty page.
 Guarantees:
 
 - **Every configured device gets a row**, including one the poller has never
-  picked up. A device the poller does not list becomes a `not_registered` row,
-  never a 404 on the whole request.
+  picked up. A device the poller does not list becomes a `not_registered` row
+  (`disabled` if it is switched off), never a 404 on the whole request.
 - **Deterministic order.** Rows come back sorted by device name on every call,
   from the same ordering the device list uses.
 - **One call to the poller.** The poller's device listing already carries every

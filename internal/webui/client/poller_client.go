@@ -163,10 +163,20 @@ func NewPollerClient(baseURL string, timeout time.Duration) *PollerClient {
 // -- is a success. Every other failure, including a poller that did not answer
 // at all, stays an error, because "the poller did not say" is not the same as
 // "the poller has it" and only one of those means the device is being polled.
+//
+// A disabled device is not sent at all. The poller's control API starts a
+// worker for every device it is given, whatever the request's enabled field
+// says, so registering a disabled device would poll it. Leaving it out is the
+// only way this call can respect the flag.
 func (c *PollerClient) RegisterDevice(
 	ctx context.Context, device *storage.Device,
 	mibNames []string, filters map[string]config.ModuleFilter,
 ) error {
+	if !storage.EnabledOf(device) {
+		log.Printf("Device %s is disabled; not registering it with the poller", device.Name)
+		return nil
+	}
+
 	req := c.deviceToRequest(device, mibNames, filters)
 
 	body, err := json.Marshal(req)
@@ -188,11 +198,19 @@ func (c *PollerClient) RegisterDevice(
 	return nil
 }
 
-// UpdateDevice updates an existing device in the poller service
+// UpdateDevice updates an existing device in the poller service.
+//
+// The poller replaces the device it holds, or adds it if it holds none, so an
+// update is also how a device that was disabled starts polling again. Updating
+// a disabled device removes it instead, for the reason RegisterDevice gives.
 func (c *PollerClient) UpdateDevice(
 	ctx context.Context, device *storage.Device,
 	mibNames []string, filters map[string]config.ModuleFilter,
 ) error {
+	if !storage.EnabledOf(device) {
+		return c.RemoveDevice(ctx, device.Name)
+	}
+
 	req := c.deviceToRequest(device, mibNames, filters)
 
 	body, err := json.Marshal(req)
@@ -313,7 +331,7 @@ func (c *PollerClient) deviceToRequest(
 		PrivPassword: device.PrivPassword,
 
 		PollInterval:  storage.PollIntervalOf(device),
-		Enabled:       true,
+		Enabled:       storage.EnabledOf(device),
 		Profile:       "default",
 		Modules:       mibNames,
 		ModuleFilters: filters,

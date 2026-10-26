@@ -77,6 +77,10 @@ type ConfigDevice struct {
 	// number the default happens to be today.
 	PollInterval *int `json:"poll_interval,omitempty"`
 
+	// Enabled is absent on a device that is polled, as on Device: only a
+	// device an operator switched off says so.
+	Enabled *bool `json:"enabled,omitempty"`
+
 	// Profiles names the profiles this device inherits, and MIBs are the
 	// modules assigned to the device itself.
 	Profiles []string           `json:"profiles,omitempty"`
@@ -292,6 +296,7 @@ func (st *configState) configDevices() []ConfigDevice {
 			SNMPVersion:  d.SNMPVersion,
 			Community:    d.Community,
 			PollInterval: copyInterval(d.PollInterval),
+			Enabled:      copyFlag(d.Enabled),
 			Profiles:     st.profileNames(st.deviceProfiles[d.ID]),
 			MIBs:         st.assignments(st.deviceMIBs[d.ID]),
 		})
@@ -438,5 +443,13 @@ func copyInterval(interval *int) *int {
 		return nil
 	}
 	value := *interval
+	return &value
+}
+
+func copyFlag(flag *bool) *bool {
+	if flag == nil {
+		return nil
+	}
+	value := *flag
 	return &value
 }

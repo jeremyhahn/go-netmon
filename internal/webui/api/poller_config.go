@@ -209,7 +209,7 @@ func (s *Server) buildPollerDeviceConfig(ctx context.Context, device *storage.De
 		PrivPassword: device.PrivPassword,
 
 		PollInterval:  storage.PollIntervalOf(device),
-		Enabled:       true,
+		Enabled:       storage.EnabledOf(device),
 		Profile:       profileName,
 		Modules:       selection.Modules,
 		ModuleFilters: selection.Filters,
