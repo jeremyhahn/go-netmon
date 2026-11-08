@@ -9,7 +9,6 @@ self-hosted-runner:
     - claude
     - code-review
     - codex
-    - qwen
 
 # Declared repository configuration variables; any other `vars.*` reference is
 # a typo. AUTOMERGE_APPROVERS_ONLY is read by .github/workflows/automerge.yml
