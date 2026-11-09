@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gosnmp/gosnmp"
 
+	"github.com/jeremyhahn/go-netmon/internal/fipsprofile"
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
@@ -233,6 +234,12 @@ func (p snmpProbe) connection(ctx context.Context) (*gosnmp.GoSNMP, error) {
 		Timeout:   SNMPProbeTimeout,
 		Retries:   SNMPProbeRetries,
 		Context:   ctx,
+	}
+
+	// The FIPS profile refuses v1/v2c here too: the tester must not send a
+	// community string the poller would refuse to use.
+	if err := fipsprofile.CheckVersion(p.SNMPVersion); err != nil {
+		return nil, err
 	}
 
 	switch strings.ToLower(p.SNMPVersion) {
