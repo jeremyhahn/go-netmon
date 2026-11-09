@@ -45,28 +45,74 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      # No "go install" step here. golangci-lint v2.14.0 and actionlint v1.7.12
-      # come from the runner image (ci-runner:latest, which "ubuntu-latest" maps
-      # to), at pins asserted when that image is built -- the build fails closed
-      # if a tool's self-report disagrees with its pin, and /etc/ci-runner-tools.txt
-      # inside the image records what shipped.
+      # This job runs on GitHub-hosted ubuntu-latest, which never pulls the
+      # ci-runner image, so golangci-lint and actionlint are absent there and
+      # "make lint" would fail closed on the missing binary. Each tool is used
+      # if the runner already has it (ci-runner bakes both) and otherwise
+      # installed here with "go install" at its pin, retried because the module
+      # proxy flakes. Full sumdb verification stays on.
       #
-      # Installing them here was not merely redundant, it was a flake source.
-      # Every host in the fleet resolves AAAA for sum.golang.org and none has a
-      # default IPv6 route; job containers use network: "host" and inherit that
-      # exactly. Go usually falls back v6 -> v4, so this surfaced intermittently,
-      # as "network is unreachable" from the module proxy on a loaded runner.
+      # The golangci-lint pin lives in the Makefile (GOLANGCI_LINT_VERSION) and
+      # "make lint" refuses a binary whose version does not match it EXACTLY,
+      # so this step checks the same equality and fails here, naming the
+      # mismatch, rather than linting with the wrong version. v2.14.0 is
+      # required because v2.12.2 cannot lint Go 1.27 (its buildir SSA pass
+      # panics on stdlib "poll") and v2.13.0's nilness pass panics; either
+      # reports a red gate with zero findings.
       #
-      # The golangci-lint pin is NOT weakened by dropping the line. It lives in
-      # the Makefile (GOLANGCI_LINT_VERSION), and "make lint" refuses to run a
-      # binary whose version does not match it -- so if the image ever bakes a
-      # different version this job fails with that mismatch named, rather than
-      # linting with the wrong one. That guard is why v2.14.0 is required at all:
-      # v2.12.2 cannot lint Go 1.27, its buildir SSA pass panics on stdlib
-      # "poll" and reports a red gate with zero findings.
-      #
-      # A version bump is a rebuild of the runner image plus the Makefile pin,
-      # reviewed together -- not a "go install" added back here.
+      # A version bump changes the Makefile pin, this floor and the ci-runner
+      # Dockerfile together.
+      - name: Provide golangci-lint
+        env:
+          GOLANGCI_LINT_MIN: "2.14.0"    # keep in step with the Makefile and ci-runner/Dockerfile
+        run: |
+          set -eu
+          gobin="$(go env GOPATH)/bin"
+          export PATH="$gobin:$PATH"
+          echo "$gobin" >> "$GITHUB_PATH"
+          if command -v golangci-lint > /dev/null 2>&1; then
+            echo "using the runner's golangci-lint: $(command -v golangci-lint)"
+          else
+            echo "golangci-lint absent (expected on GitHub-hosted runners, NOT on ci-runner)"
+            ok=0
+            for i in 1 2 3; do
+              if go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${GOLANGCI_LINT_MIN}"; then ok=1; break; fi
+              echo "install attempt $i failed; retrying"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "golangci-lint install failed after 3 attempts"; exit 1; }
+          fi
+          out=$(golangci-lint version 2>&1)
+          echo "golangci-lint reports: $out"
+          have=$(printf '%s\n' "$out" | sed -n 's/.* version v\{0,1\}\([0-9.]*\).*/\1/p')
+          if [ "$have" != "$GOLANGCI_LINT_MIN" ]; then
+            echo "golangci-lint is '${have}', but make lint accepts exactly ${GOLANGCI_LINT_MIN}"; exit 1
+          fi
+
+      - name: Provide actionlint
+        env:
+          ACTIONLINT_MIN: "1.7.12"    # keep in step with ci-runner/Dockerfile
+        run: |
+          set -eu
+          gobin="$(go env GOPATH)/bin"
+          export PATH="$gobin:$PATH"
+          if command -v actionlint > /dev/null 2>&1; then
+            echo "using the runner's actionlint: $(command -v actionlint)"
+          else
+            echo "actionlint absent (expected on GitHub-hosted runners, NOT on ci-runner)"
+            ok=0
+            for i in 1 2 3; do
+              if go install "github.com/rhysd/actionlint/cmd/actionlint@v${ACTIONLINT_MIN}"; then ok=1; break; fi
+              echo "install attempt $i failed; retrying"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "actionlint install failed after 3 attempts"; exit 1; }
+          fi
+          out=$(actionlint -version 2>&1)
+          echo "actionlint reports: $out"
+          have=$(printf '%s\n' "$out" | sed -n '1s/^v\{0,1\}\([0-9.]*\).*/\1/p')
+          lowest=$(printf '%s\n%s\n' "$ACTIONLINT_MIN" "$have" | sort -V | sed -n 1p)
+          if [ -z "$have" ] || [ "$lowest" != "$ACTIONLINT_MIN" ]; then
+            echo "actionlint is '${have}', below the floor ${ACTIONLINT_MIN}"; exit 1
+          fi
 
       # Separate targets so a formatting failure is distinguishable from a lint
       # finding in the job log.
@@ -97,11 +143,78 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      # govulncheck v1.8.0 and trivy come from the runner image, for the reason spelled
-      # out in the lint job above. It was installed here at "@latest", which
-      # made the scanner version -- and therefore the finding set -- whatever
-      # the proxy served that morning; the baked copy is pinned and recorded.
-      #
+      # GitHub-hosted ubuntu-latest has neither govulncheck nor trivy (the
+      # ci-runner image is never pulled there), so each is used if the runner
+      # has it and otherwise installed here at a pin, for the reason spelled
+      # out in the lint job above. Both are pinned rather than "@latest": an
+      # unpinned scanner makes the finding set whatever was published that
+      # morning.
+      - name: Provide govulncheck
+        env:
+          GOVULNCHECK_MIN: "1.8.0"    # keep in step with ci-runner/Dockerfile
+        run: |
+          set -eu
+          gobin="$(go env GOPATH)/bin"
+          export PATH="$gobin:$PATH"
+          echo "$gobin" >> "$GITHUB_PATH"
+          if command -v govulncheck > /dev/null 2>&1; then
+            echo "using the runner's govulncheck: $(command -v govulncheck)"
+          else
+            echo "govulncheck absent (expected on GitHub-hosted runners, NOT on ci-runner)"
+            ok=0
+            for i in 1 2 3; do
+              if go install "golang.org/x/vuln/cmd/govulncheck@v${GOVULNCHECK_MIN}"; then ok=1; break; fi
+              echo "install attempt $i failed; retrying"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "govulncheck install failed after 3 attempts"; exit 1; }
+          fi
+          out=$(govulncheck -version 2>&1)
+          echo "govulncheck reports: $out"
+          have=$(printf '%s\n' "$out" | sed -n 's/.*govulncheck@v\([0-9.]*\).*/\1/p')
+          lowest=$(printf '%s\n%s\n' "$GOVULNCHECK_MIN" "$have" | sort -V | sed -n 1p)
+          if [ -z "$have" ] || [ "$lowest" != "$GOVULNCHECK_MIN" ]; then
+            echo "govulncheck is '${have}', below the floor ${GOVULNCHECK_MIN}"; exit 1
+          fi
+
+      # trivy is a release tarball, not a Go module, so there is no sumdb to
+      # verify it: the tarball is checked against a sha256 pinned here instead.
+      # TRIVY_SHA256 is the trivy_0.75.0_Linux-64bit.tar.gz line of
+      # https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_checksums.txt
+      # A version bump changes TRIVY_MIN and TRIVY_SHA256 together, the hash
+      # read again from the new release's checksums file.
+      - name: Provide trivy
+        env:
+          TRIVY_MIN: "0.75.0"    # keep in step with ci-runner/Dockerfile
+          TRIVY_SHA256: "c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f"
+        run: |
+          set -eu
+          if command -v trivy > /dev/null 2>&1; then
+            echo "using the runner's trivy: $(command -v trivy)"
+          else
+            echo "trivy absent (expected on GitHub-hosted runners, NOT on ci-runner)"
+            dir="$RUNNER_TEMP/trivy"
+            mkdir -p "$dir"
+            tarball="trivy_${TRIVY_MIN}_Linux-64bit.tar.gz"
+            url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_MIN}/${tarball}"
+            ok=0
+            for i in 1 2 3; do
+              if curl -fsSL -o "$dir/$tarball" "$url"; then ok=1; break; fi
+              echo "download attempt $i failed; retrying"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "trivy download failed after 3 attempts"; exit 1; }
+            (cd "$dir" && echo "${TRIVY_SHA256}  ${tarball}" | sha256sum -c -)
+            tar -xzf "$dir/$tarball" -C "$dir" trivy
+            echo "$dir" >> "$GITHUB_PATH"
+            export PATH="$dir:$PATH"
+          fi
+          out=$(trivy --version 2>&1)
+          echo "trivy reports: $out"
+          have=$(printf '%s\n' "$out" | sed -n 's/^Version: v\{0,1\}\([0-9.]*\).*/\1/p')
+          lowest=$(printf '%s\n%s\n' "$TRIVY_MIN" "$have" | sort -V | sed -n 1p)
+          if [ -z "$have" ] || [ "$lowest" != "$TRIVY_MIN" ]; then
+            echo "trivy is '${have}', below the floor ${TRIVY_MIN}"; exit 1
+          fi
+
       # Covers the dependencies and the standard library this project links
       # against, so a regression in the go.mod toolchain pin fails here; trivy fs
       # adds dependency CVEs and leaked secrets across the tree. A missing
