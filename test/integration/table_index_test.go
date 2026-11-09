@@ -512,7 +512,7 @@ var pipelineIndexedTables = []indexedTable{
 			"cbgproutesafi":          "1",
 			"cbgproutepeertype":      "1",
 			"cbgproutepeer":          peerAddrValue,
-			"cbgprouteaddrprefix":    "c0:a8:01:00",
+			"cbgprouteaddrprefix":    "cb:00:71:00",
 			"cbgprouteaddrprefixlen": "24",
 		},
 	},
@@ -836,7 +836,7 @@ func TestEndToEndPipeline(t *testing.T) {
 	t.Run("CompositeIndexDecodesEachIndexColumn", func(t *testing.T) {
 		peers := map[string]string{
 			"203.0.113.218": bgpAcceptedColOID + bgpRowSuffix("203.0.113.218", 1, 1),
-			"203.0.113.202":  bgpAcceptedColOID + bgpRowSuffix("203.0.113.202", 1, 1),
+			"203.0.113.202": bgpAcceptedColOID + bgpRowSuffix("203.0.113.202", 1, 1),
 		}
 
 		for peer, oid := range peers {

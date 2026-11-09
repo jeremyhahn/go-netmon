@@ -392,13 +392,13 @@ func TestLongestPrefixMatch(t *testing.T) {
 		name string
 		want string
 	}{
-		{".1.3.6.1.2.1.1.3.0", "1.3.6.1.2.1.1.3"},                     // scalar plus its .0 instance
-		{".1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.1.0"},                   // scalar stored with .0 already
-		{".1.3.6.1.2.1.2.2.1.10.24", "1.3.6.1.2.1.2.2.1.10"},          // single-part row index
+		{".1.3.6.1.2.1.1.3.0", "1.3.6.1.2.1.1.3"},                       // scalar plus its .0 instance
+		{".1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.1.0"},                     // scalar stored with .0 already
+		{".1.3.6.1.2.1.2.2.1.10.24", "1.3.6.1.2.1.2.2.1.10"},            // single-part row index
 		{".1.3.6.1.2.1.2.2.1.10.203.0.113.218", "1.3.6.1.2.1.2.2.1.10"}, // multi-part row index
-		{".1.3.6.1.4.1.9.9.109.1.1.1.1.8.1", ""},                      // another MIB
-		{"1.3.6.1.2.1.1.3.0", "1.3.6.1.2.1.1.3"},                      // OID written without a leading dot
-		{"", ""},                                                      // no instance at all
+		{".1.3.6.1.4.1.9.9.109.1.1.1.1.8.1", ""},                        // another MIB
+		{"1.3.6.1.2.1.1.3.0", "1.3.6.1.2.1.1.3"},                        // OID written without a leading dot
+		{"", ""},                                                        // no instance at all
 	}
 
 	for _, tt := range tests {

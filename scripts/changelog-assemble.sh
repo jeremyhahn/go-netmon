@@ -34,7 +34,9 @@ if [ "${1:-}" = --check ]; then
     check_only=1
     shift
 fi
-[ $# -ge 1 ] && [ $# -le 2 ] || die "usage: $0 [--check] <vX.Y.Z[-alpha|-rc.N]> [date]"
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    die "usage: $0 [--check] <vX.Y.Z[-alpha|-rc.N]> [date]"
+fi
 version="$1"
 date="${2:-$(date -u +%Y-%m-%d)}"
 [[ "$version" =~ $RELEASE_TAG_RE ]] || die "'$version' is not vX.Y.Z, vX.Y.Z-alpha or vX.Y.Z-rc.N"
