@@ -180,10 +180,10 @@ func TestFleetStatusClassifiesEveryConfiguredDevice(t *testing.T) {
 	}
 
 	wantStates := map[string]DeviceState{
-		"core-01":      StateOK,
-		"core-02":      StateFailing,
-		"bastion":            StateUnreachable,
-		"pdu-03":      StateNeverPolled,
+		"core-01":         StateOK,
+		"core-02":         StateFailing,
+		"bastion":         StateUnreachable,
+		"pdu-03":          StateNeverPolled,
 		"unregistered-99": StateNotRegistered,
 		"switch-07":       StateUnknown,
 	}

@@ -836,7 +836,7 @@ func TestEndToEndPipeline(t *testing.T) {
 	t.Run("CompositeIndexDecodesEachIndexColumn", func(t *testing.T) {
 		peers := map[string]string{
 			"203.0.113.218": bgpAcceptedColOID + bgpRowSuffix("203.0.113.218", 1, 1),
-			"203.0.113.202":  bgpAcceptedColOID + bgpRowSuffix("203.0.113.202", 1, 1),
+			"203.0.113.202": bgpAcceptedColOID + bgpRowSuffix("203.0.113.202", 1, 1),
 		}
 
 		for peer, oid := range peers {
