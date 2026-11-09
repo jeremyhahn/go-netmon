@@ -103,7 +103,7 @@ for f in "${files[@]}"; do
     path="$E2E/$f"
     while IFS= read -r hit; do
         [ -n "$hit" ] && offences+=("tests/e2e/$f:$hit names production")
-    done < <(grep -nE '198\.51\.100\.150|://monitor-01([:/.]|$|[^A-Za-z0-9-])' "$path" | cut -d: -f1)
+    done < <(grep -nE '(^|[^0-9.])198\.51\.100\.50($|[^0-9])|://monitor-01([:/.]|$|[^A-Za-z0-9-])' "$path" | cut -d: -f1)
 
     while IFS= read -r hit; do
         [ -n "$hit" ] || continue
