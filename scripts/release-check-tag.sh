@@ -23,7 +23,9 @@ set -euo pipefail
 # shellcheck source=lib/release.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/release.sh"
 
-[ $# -ge 1 ] && [ $# -le 2 ] || die "usage: $0 <tag> [main-ref]"
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    die "usage: $0 <tag> [main-ref]"
+fi
 tag="$1"
 main_ref="${2:-}"
 

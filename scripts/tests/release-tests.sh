@@ -76,9 +76,8 @@ expect_equal() {
 # new_repo makes a released-at-v0.1.3 repository on main in $REPO, with one
 # pending fragment and a "dev" remote ($BARE) holding main and the tag.
 new_repo() {
-    local name="${1:-repo}"
-    REPO="$TMPDIR_TEST/$name"
-    BARE="$TMPDIR_TEST/$name.git"
+    REPO="$TMPDIR_TEST/repo"
+    BARE="$TMPDIR_TEST/repo.git"
     rm -rf "$REPO" "$BARE"
     git init -q --bare "$BARE"
     git init -q "$REPO"
