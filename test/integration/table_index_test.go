@@ -512,7 +512,7 @@ var pipelineIndexedTables = []indexedTable{
 			"cbgproutesafi":          "1",
 			"cbgproutepeertype":      "1",
 			"cbgproutepeer":          peerAddrValue,
-			"cbgprouteaddrprefix":    "c0:a8:01:00",
+			"cbgprouteaddrprefix":    "cb:00:71:00",
 			"cbgprouteaddrprefixlen": "24",
 		},
 	},
