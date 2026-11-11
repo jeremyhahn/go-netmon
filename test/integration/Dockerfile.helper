@@ -21,7 +21,7 @@
 # dind, which is the dependency #37 is about.
 #
 # Pinned to the digest, and it must stay equal to Dockerfile.test's FROM line.
-ARG HELPER_BASE=golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd
+ARG HELPER_BASE=golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf
 
 FROM ${HELPER_BASE} AS src
 
