@@ -333,7 +333,7 @@ func (l *Loader) parseModule(moduleName string) (*parsedModule, error) {
 
 	// A module whose IMPORTS did not all resolve still loads, but its objects
 	// typed by a missing module have no type, units, hint or enum. That is
-	// worth knowing and not worth refusing the module over (#62).
+	// worth knowing and not worth refusing the module over.
 	if degraded := report.Err(); degraded != nil {
 		log.Printf("Warning: %v", degraded)
 	}

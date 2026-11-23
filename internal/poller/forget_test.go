@@ -27,7 +27,7 @@ func (e *forgettingExporter) forgottenDevices() []string {
 	return slices.Clone(e.forgotten)
 }
 
-// TestRemoveDeviceForgetsTheExportersDeviceState is the #54 eviction hook: a
+// TestRemoveDeviceForgetsTheExportersDeviceState is the eviction hook: a
 // device the poller no longer polls must not keep its friendly names in the
 // exporter, or that cache holds every device ever polled.
 func TestRemoveDeviceForgetsTheExportersDeviceState(t *testing.T) {

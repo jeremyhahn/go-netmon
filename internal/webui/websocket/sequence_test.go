@@ -633,8 +633,8 @@ func steadyHeld(s *steadyQueryRounds) (rounds, last int) {
 // genuinely-sole subscriber inherited a backoff with nobody else on the query.
 //
 // The shape is the one this repository keeps meeting: two structures that must
-// agree about what is live, and only one of them swept. See go-netmon#71 for
-// the same pair in the poller.
+// agree about what is live, and only one of them swept. The poller's worker
+// replacement had the same pair.
 func TestTheSteadyTrackerIsSweptWhenTheLastReaderLeavesMidRound(t *testing.T) {
 	h := NewHub(staticQuery([]MetricValue{sample("1", 42, 1700000000)}), nil)
 

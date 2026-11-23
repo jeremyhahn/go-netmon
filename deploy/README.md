@@ -32,7 +32,7 @@ locked memory the sealed SNMP credentials are opened into, sized for a
 The web UI takes about three minutes to bind, because it parses every imported
 MIB module at startup (measured with 179 imported modules). For those three minutes a restart
 is indistinguishable from a crash, and `systemctl is-active` says `activating`
-rather than `failed`. That is issue #58.
+rather than `failed`.
 
 While it is down the poller keeps running but the web UI owns the device
 registry, so repeated restarts thin the poller's data: a `rate()` window that

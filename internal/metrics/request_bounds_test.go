@@ -6,7 +6,7 @@ package metrics
 // went into a request, so Flush took the whole buffer and sent it as one
 // protobuf -- and the retry backlog floor alone is 100,000 samples. A request
 // too large to be accepted is refused at the same size on every attempt, so it
-// can never drain and everything queues behind it (#63).
+// can never drain and everything queues behind it.
 
 import (
 	"context"
@@ -229,8 +229,8 @@ func TestARequestIsBoundedByBytesAndNotOnlyByCount(t *testing.T) {
 // Requests reach the endpoint in order and each advances the endpoint's head
 // for the series it carries. A boundary that puts a series' NEWER reading in
 // the earlier request and its older one in the later gets the later request
-// refused -- with every other reading in it. That is #69's failure, reached
-// through #63's fix rather than through a poller.
+// refused -- with every other reading in it. That is the out-of-order failure,
+// reached through the request size bound rather than through a poller.
 func TestSplittingKeepsEachSeriesAscendingAcrossRequests(t *testing.T) {
 	endpoint := &recorder{}
 	server := httptest.NewServer(endpoint.handler(t))

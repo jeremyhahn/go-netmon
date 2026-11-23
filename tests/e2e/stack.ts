@@ -1,4 +1,4 @@
-// What the e2e suite's target stack holds, found from the stack itself (#111).
+// What the e2e suite's target stack holds, found from the stack itself.
 //
 // The disposable stack (target.ts) polls two simulated devices, restored into
 // the web UI with their standard MIB assignments by test/integration/e2e-seed.sh

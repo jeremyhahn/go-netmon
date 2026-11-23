@@ -269,7 +269,7 @@ func TestReachabilityBacksOffAndRecovers(t *testing.T) {
 }
 
 // TestReachabilityPublishesTheOutcomeAndItsRetryTogether is the invariant
-// behind #33: a device reported unreachable always says when it will be tried
+// behind the status endpoint: a device reported unreachable always says when it will be tried
 // again.
 //
 // The two facts used to be written at two points in the worker's cycle --

@@ -49,7 +49,7 @@ function rowNames(html) {
     return [...html.matchAll(/<span class="panel-row-name">([^<]*)<\/span>/g)].map(m => m[1]);
 }
 
-test('multi-reading info metric on an indexed panel keeps the row identity in its names (#109)', () => {
+test('multi-reading info metric on an indexed panel keeps the row identity in its names', () => {
     const element = tileElement();
     const app = loadWithElement(element);
     const panel = {
@@ -82,7 +82,7 @@ test('multi-reading info metric on an unindexed panel keeps the bare label', () 
     assert.deepStrictEqual(rowNames(element.innerHTML), ['sys_descr', 'sys_name']);
 });
 
-// #110: a render that throws part way through subscribeToPanels must not
+// A render that throws part way through subscribeToPanels must not
 // leave a subscription recorded that was never sent.
 function subscribeApp(sent) {
     const app = loadWithElement(null);
@@ -94,7 +94,7 @@ function subscribeApp(sent) {
     return app;
 }
 
-test('a panel that throws while subscribing leaves no subscription recorded (#110)', () => {
+test('a panel that throws while subscribing leaves no subscription recorded', () => {
     const sent = [];
     const app = subscribeApp(sent);
     app.initializeEmptyChart = (id) => {

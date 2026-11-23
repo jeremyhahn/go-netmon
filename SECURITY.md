@@ -30,9 +30,10 @@ Read this before you expose go-netmon to any network.
 - **They listen on every interface by default.** The web UI and the poller
   API default to `0.0.0.0:8080` and the poller's metrics endpoint to
   `0.0.0.0:9100`.
-- **`GET /api/devices` returns SNMP community strings in clear text.** Anyone
-  who can reach the web UI can read the credentials of every monitored device,
-  and can add, change or delete devices.
+- **`GET /api/devices` returns SNMP credentials in clear text.** Anyone who
+  can reach the web UI can read the communities and SNMPv3 passphrases of every
+  monitored device, and can add, change or delete devices. The fix is tracked
+  in [#1](https://github.com/jeremyhahn/go-netmon/issues/1).
 
 Run go-netmon on a trusted management network, or bind it to `127.0.0.1`
 (`listen_address` in the config, or the `-listen`, `-api-listen` and

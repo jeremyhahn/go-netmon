@@ -149,7 +149,7 @@ type importedMIB struct {
 
 	// missingImports names the modules this one IMPORTS from that could not
 	// be found, and untyped the objects kept without a type because of it.
-	// The module is stored either way; these say it is not whole (#62).
+	// The module is stored either way; these say it is not whole.
 	missingImports []string
 	untyped        []string
 }

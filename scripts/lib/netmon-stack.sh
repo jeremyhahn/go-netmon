@@ -40,7 +40,7 @@ DOCKER="${DOCKER:-docker}"
 
 # The compose-project ownership check. This file is its only caller today: the
 # integration harness's guard still carries its own enumeration, and whether it
-# should source this library is the open question in #44. See the header of that
+# should source this library is an open question. See the header of that
 # file for the two defects a second copy here used to carry.
 # shellcheck source=lib/compose-ownership.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/compose-ownership.sh"

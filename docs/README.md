@@ -4,7 +4,7 @@
 
 Every page under `docs/`, grouped by area. Pages in the archive section carry
 an ARCHIVE banner; the rest are current, and are being verified against the
-code page by page (#153).
+code page by page.
 
 ## Current
 

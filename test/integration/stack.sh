@@ -45,7 +45,7 @@ PROJECT_NAME="$(integration_manual_project)"
 
 SERVICES=(prometheus snmp-simulator)
 
-# The e2e profile (#111): the same two, plus a poller and a web UI polling the
+# The e2e profile: the same two, plus a poller and a web UI polling the
 # simulator, for the browser specs. It is the same project, so one "down"
 # removes both.
 E2E_SERVICES=("${SERVICES[@]}" poller webui)

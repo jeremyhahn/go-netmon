@@ -24,7 +24,7 @@ import (
 // 4 MiB is chosen to be comfortably inside what receivers accept and small
 // enough that one refusal is cheap. That second half is the point: a request
 // too large to be accepted is refused at the same size on every retry, so it
-// can never drain and the backlog grows behind it (#63).
+// can never drain and the backlog grows behind it.
 const maxRequestBytes = 4 << 20
 
 // requestSamples is how many samples one request may carry.
@@ -34,7 +34,7 @@ const maxRequestBytes = 4 << 20
 // the entire buffer and sent it as one request. Anything that accumulated
 // between flushes -- a slow remote write, a burst of devices finishing
 // together, a retry backlog -- shipped in a single protobuf, and the backlog
-// floor alone is 100,000 samples (#63).
+// floor alone is 100,000 samples.
 func (e *PrometheusExporter) requestSamples() int {
 	if e.batchSize <= 0 {
 		return defaultBatchSize
@@ -57,8 +57,8 @@ type keyedSample struct {
 // the series it carries. A boundary chosen in buffer order can therefore put a
 // series' NEWER reading in the earlier request and its OLDER one in the later
 // -- and the later request is then refused, taking every other reading in it
-// with it. That is precisely the failure #69 is about, reached by the fix for
-// #63 rather than by a poller.
+// with it. That is precisely the out-of-order failure, reached by the request
+// size bound rather than by a poller.
 //
 // Sorted this way, a boundary inside a series puts the older readings in the
 // earlier request, which is the order the endpoint requires.

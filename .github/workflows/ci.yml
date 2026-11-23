@@ -9,7 +9,7 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
-# Two tiers (#196). There is no `schedule:` trigger: a full-tier run on demand
+# Two tiers. There is no `schedule:` trigger: a full-tier run on demand
 # is a `workflow_dispatch`.
 #
 #   PR tier    every event         lint, security, test (-race), build, scripts
@@ -118,8 +118,8 @@ jobs:
 
       # go vet is scoped to the tag set it is given, so the step above cannot
       # see a file behind //go:build integration at all. One such file had
-      # never compiled since the day it was written and every job stayed green
-      # (#30). This compiles the tree under every tag the repo defines.
+      # never compiled since the day it was written and every job stayed green.
+      # This compiles the tree under every tag the repo defines.
       - run: make vet-tags
 
       - run: make lint

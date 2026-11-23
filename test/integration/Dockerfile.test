@@ -29,7 +29,7 @@ COPY . .
 # This replaces "go test -c -tags=integration ./test/integration": that compiled
 # ONE package, so internal/mib/parser's tagged file went uncompiled for months
 # while every check stayed green, because go build, go vet and go test are all
-# scoped to the tag set they are given (#30). vet over ./... under the tag is
+# scoped to the tag set they are given. vet over ./... under the tag is
 # the whole matrix -- integration is the repository's only build tag.
 RUN go vet -tags=integration ./...
 

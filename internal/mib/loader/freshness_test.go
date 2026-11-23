@@ -73,7 +73,7 @@ func restartLoader(t *testing.T, storePath string, autoLoad []string, extraPaths
 	return l, closeLoader
 }
 
-// TestRestartDoesNotReparseAnUnchangedCatalog is the defect in #58 stated as a
+// TestRestartDoesNotReparseAnUnchangedCatalog is the restart re-parse defect stated as a
 // test: the second start must not repeat the first start's work.
 func TestRestartDoesNotReparseAnUnchangedCatalog(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "mib-storage")

@@ -13,11 +13,11 @@ were not executed for this verification.
 
 | Service            | Purpose |
 | ------------------ | ------- |
-| `prometheus`       | Receives metrics on the remote-write receiver (built from `test/integration/Dockerfile.prometheus`; Prometheus 3.14.0, the version production runs, pinned once as `PROMETHEUS_VERSION` there and checked by `guard-tests.sh`, #138) |
+| `prometheus`       | Receives metrics on the remote-write receiver (built from `test/integration/Dockerfile.prometheus`; Prometheus 3.14.0, the version production runs, pinned once as `PROMETHEUS_VERSION` there and checked by `guard-tests.sh`) |
 | `snmp-simulator`   | Mock SNMP agent serving `public.snmprec` (built from `test/integration/Dockerfile.snmpsim`) |
 | `dind`             | A privileged `docker:27-dind` sibling daemon, behind the `dind` profile, for the backup tests |
 | `integration-test` | The test runner (built from `test/integration/Dockerfile.test`); waits for the first two to be healthy |
-| `poller`, `webui`, `e2e-seed` | The `e2e` profile (#111): a poller polling the simulator into the same `prometheus`, a web UI on `localhost:${NETMON_E2E_PORT:-8083}`, and a one-shot that restores `test/integration/snmp-data/e2e-config.json` into the web UI through the config import: the devices `snmpsim-01` and `snmpsim-02` (one simulator, communities `public` and `second`), the SNMPv2-MIB, IF-MIB and HOST-RESOURCES-MIB sources, and their assignments. The browser specs' default target |
+| `poller`, `webui`, `e2e-seed` | The `e2e` profile: a poller polling the simulator into the same `prometheus`, a web UI on `localhost:${NETMON_E2E_PORT:-8083}`, and a one-shot that restores `test/integration/snmp-data/e2e-config.json` into the web UI through the config import: the devices `snmpsim-01` and `snmpsim-02` (one simulator, communities `public` and `second`), the SNMPv2-MIB, IF-MIB and HOST-RESOURCES-MIB sources, and their assignments. The browser specs' default target |
 
 Prometheus and the simulator publish **ephemeral** host ports, so two stacks do
 not collide. The tests reach them by service name on `test-network`
@@ -64,8 +64,8 @@ pass one through, so use it directly:
 test/integration/run-tests.sh TestEndToEnd
 ```
 
-Narrower targets: `make integration-test-ordering` (the #69 ordering
-reproduction, via `test/integration/Makefile`), and
+Narrower targets: `make integration-test-ordering` (the remote-write
+ordering reproduction, via `test/integration/Makefile`), and
 `make integration-test-parser`, `integration-test-parser-cisco-bgp`,
 `integration-test-parser-critical` (MIB parser tests against real MIB files).
 
@@ -114,7 +114,7 @@ other than that one. Set `NETMON_E2E_PORT` to publish elsewhere, and
 `TestVolumeRoundTripSurvivesTheDaemon`, `TestImportReplacesRatherThanMerges`,
 `TestOwnershipSurvivesTheRoundTrip`, `TestVolumeOwnershipIsReadFromRealLabels`.
 
-`test/integration/ordering_test.go` (the #69 reproduction):
+`test/integration/ordering_test.go` (the remote-write ordering reproduction):
 `TestDisorderInsideOneRequestIsDiscardedWithoutASound`,
 `TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost`,
 `TestOverlappingPollsAreRepairedAndNothingIsLost`,

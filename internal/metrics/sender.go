@@ -594,7 +594,7 @@ func (e *PrometheusExporter) recordSent(samples []*Sample) {
 // background flusher wrote on a tick, so two requests could be in flight with
 // nothing deciding which arrived first. A batch taken later could land first
 // and leave the earlier one permanently unacceptable -- the same failure as a
-// malformed request, reached without one (go-netmon#69).
+// malformed request, reached without one.
 func (e *PrometheusExporter) sender() {
 	defer e.wg.Done()
 
@@ -648,7 +648,7 @@ func (e *PrometheusExporter) giveUp() {
 // through, so that neither the retry nor the discard that follows reaches
 // samples the endpoint already holds.
 //
-// A batch is several requests now (#63), so a failure can arrive with part of
+// A batch is several requests now, so a failure can arrive with part of
 // it delivered. Offering that part again is not merely wasteful: the endpoint's
 // head has moved to the end of it, so on the next attempt those samples are
 // behind their own head -- and the request carrying them is refused whole,

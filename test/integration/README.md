@@ -133,7 +133,7 @@ Tests use these environment variables (automatically set by docker-compose):
 ### prometheus
 
 - Image: `prom/prometheus:v3.14.0`, built by `Dockerfile.prometheus` with the
-  configuration baked in. This is the version production (monitor-01) runs (#138):
+  configuration baked in. This is the version production (monitor-01) runs:
   what the receiver does with a request it refuses differs between majors, so
   the stack tracks the deployed one. The version is named once, as
   `PROMETHEUS_VERSION` in `Dockerfile.prometheus`; `guard-tests.sh` fails when
@@ -157,7 +157,7 @@ Tests use these environment variables (automatically set by docker-compose):
 - Depends on: prometheus, snmp-simulator
 - Runs: `go test -v -tags=integration ./test/integration/...`
 
-### poller, webui, e2e-seed (profile `e2e`, #111)
+### poller, webui, e2e-seed (profile `e2e`)
 
 - Started by `make e2e-up`; removed by `make integration-down`
 - `poller` polls `snmp-simulator` (devices `snmpsim-01` on community `public` and `snmpsim-02` on `second`; SNMPv2-MIB, IF-MIB and HOST-RESOURCES-MIB)

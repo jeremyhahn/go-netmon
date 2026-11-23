@@ -149,8 +149,8 @@ func (c PrometheusConfig) CatalogEmissionEnabled() bool {
 // there is no JWT dependency in the module, no authentication middleware, and
 // the CLI sends no credential, so jwt_secret described an authentication layer
 // that was never built. A secret-shaped setting nobody reads is worse than an
-// absent one — it reads as though the API is protected. Both are removed; see
-// issue #3. Config files still carrying the keys load unchanged, because the
+// absent one — it reads as though the API is protected. Both are removed.
+// Config files still carrying the keys load unchanged, because the
 // decoder ignores unknown fields.
 type APIConfig struct {
 	ListenAddress string `yaml:"listen_address"`

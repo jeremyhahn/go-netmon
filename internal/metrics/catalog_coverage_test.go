@@ -244,7 +244,7 @@ func TestCatalogDescribesTheIdentityMetricItPointsAt(t *testing.T) {
 var _ = strings.ToLower
 var _ = context.Background
 
-// TestCatalogAfterReloadWritesOnlyTheCurrentRow is the #9 case: a MIB reload
+// TestCatalogAfterReloadWritesOnlyTheCurrentRow is the stale-row case: a MIB reload
 // that changes an object's metadata must not leave two live descriptions of
 // one metric.
 //

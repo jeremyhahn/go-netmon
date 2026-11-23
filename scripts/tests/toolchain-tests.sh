@@ -166,7 +166,7 @@ fake_scanner() {
     chmod +x "$path"
 }
 
-# The issue this guard was added for (#155): security ran no trivy scan, and
+# The defect this guard was added for: security ran no trivy scan, and
 # with trivy absent from PATH it must fail, not pass having scanned less.
 test_security_refuses_a_missing_trivy() {
     local dir="$TMPDIR_TEST/notrivy"

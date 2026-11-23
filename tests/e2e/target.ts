@@ -1,4 +1,4 @@
-// The one place the e2e suite's default target is set (#111).
+// The one place the e2e suite's default target is set.
 //
 // DISPOSABLE_URL is the web UI of the disposable e2e stack: the "e2e" profile
 // of docker-compose.test.yml, brought up with "make e2e-up" on the machine that
@@ -8,7 +8,7 @@
 // away.
 //
 // Production (monitor-01) is never a default, and its address appears nowhere in
-// this suite: it is read-only to the factory (#70). Reaching any other stack is
+// this suite: it is read-only to the factory. Reaching any other stack is
 // a decision made on the command line with NETMON_URL, never one checked in
 // here or in a spec:
 // scripts/e2e-target-guard.sh fails the build when a spec names an address

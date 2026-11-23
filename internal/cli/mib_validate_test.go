@@ -178,7 +178,7 @@ END
 
 // A module that resolves its OIDs but takes a type from an absent module is
 // usable, so validation passes, but the report names what it could not
-// import (#62).
+// import.
 func TestValidateWarnsWhenATypeImportIsMissing(t *testing.T) {
 	dir := t.TempDir()
 	writeMIB(t, dir, "DEGRADED-MIB.mib", `DEGRADED-MIB DEFINITIONS ::= BEGIN

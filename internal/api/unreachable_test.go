@@ -309,7 +309,7 @@ func awaitUnreachable(t *testing.T, handler *PollerControlHandler, device string
 			// They used to be written at two points in the worker's cycle, and
 			// a status read between them came back with the zero time here --
 			// which is what made TestDeviceStatusReportsAnUnreachableDevice
-			// fail once in three runs on a loaded host (#33). Asserted rather
+			// fail once in three runs on a loaded host. Asserted rather
 			// than waited out: a regression is a failure, not a slower test.
 			if status.NextPollTime.IsZero() {
 				t.Fatalf("device %s is reported unreachable with no scheduled retry: %+v", device, status)

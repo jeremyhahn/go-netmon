@@ -12,7 +12,7 @@
 # counted by a reader as coverage of the parser's OID handling, with no path to
 # execution at all. One of the two had never compiled since the day it was
 # written, and nothing noticed for months, because go build, go vet and go test
-# are all scoped to the tag set they are given (#30).
+# are all scoped to the tag set they are given.
 #
 # A corrected hardcoded list has the identical failure mode the next time a
 # package grows a tagged file, and fails the same silent way. So the list is

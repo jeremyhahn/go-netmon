@@ -39,7 +39,7 @@ const MaxSubscriptionsPerClient = 2048
 // DefaultStreamInterval is how often a hub re-reads its subscribed queries and
 // pushes what changed, when its caller does not say.
 //
-// It was a bare literal in Run until #99. That made it the one cadence in the
+// It used to be a bare literal in Run. That made it the one cadence in the
 // system nobody could state: the dashboard showed a refresh rate it did not
 // control, the poller ran at per-device intervals of the operator's choosing, and
 // this sat between them at five seconds because five seconds was typed here.

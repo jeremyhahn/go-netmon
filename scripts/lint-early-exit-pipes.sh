@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lint-early-exit-pipes.sh: refuse a pipe into a consumer that exits early
-# (grep -q, grep -...q..., head) in any shell file that sets pipefail (#120).
+# (grep -q, grep -...q..., head) in any shell file that sets pipefail.
 #
 # Usage: scripts/lint-early-exit-pipes.sh FILE...
 #

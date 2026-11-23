@@ -333,7 +333,7 @@ corpus (see *Scope*); the set only feeds the two coverage gauges.
 the catalog synchronously, reporting whether Prometheus took it. It is split
 into bounded requests on the way out, by sample count and by encoded size, like
 every other write — it used to do its own count-only chunking, because at the
-time nothing else bounded a request (#63).
+time nothing else bounded a request.
 
 That is a correctness property, not an optimization. Sharing one buffer meant a
 rejected catalog write put device samples back with it — delaying them and,

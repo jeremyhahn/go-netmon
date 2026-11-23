@@ -87,7 +87,7 @@ func addressOverrides() config.Overrides {
 func runUntilSignal() error {
 	// When the process began, so that the line marking the end of startup can
 	// say how long the service was unable to serve. That number is the whole
-	// of #84: a restart is an outage of the dashboard, and it should be stated
+	// point: a restart is an outage of the dashboard, and it should be stated
 	// by the service rather than discovered during an incident.
 	started := time.Now()
 

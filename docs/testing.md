@@ -491,7 +491,7 @@ shape and this repository has now met all three in one day:
 - **"nothing to compare" is not "everything agrees."** Only the second justifies
   leaving a column out. Reading the first as the second is what the bug did.
 - **absent is not zero.** A counter that does not exist yet is not a counter
-  reading nothing; see the export-counter work and `#73`.
+  reading nothing, and an absent series must not be read as one.
 
 ## An assertion that reaches its evidence through the code under test
 

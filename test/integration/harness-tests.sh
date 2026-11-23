@@ -326,7 +326,7 @@ run_harness_with() {
 # The helper image must be BUILT here and LOADED into the sibling daemon, never
 # pulled from a registry inside it. dind starts with an empty image store on
 # every run, so a registry-hosted helper is a fresh third-party pull every time
-# -- #37, where a TLS handshake timeout to auth.docker.io failed the suite for a
+# -- and once a TLS handshake timeout to auth.docker.io failed the suite for a
 # reason unrelated to the code under test.
 test_the_helper_image_is_built_and_loaded_into_the_sibling_daemon() {
     local log="$TMP/seed.log"
@@ -373,7 +373,7 @@ test_a_daemon_that_cannot_be_seeded_is_not_offered_to_the_tests() {
 # compose run, which is the only place the suite's scope is decided.
 go_test_command() {
     # -m1, not "| head -1": a log with many matches would SIGPIPE grep and
-    # pipefail would fail the function on exactly the line it found (#120).
+    # pipefail would fail the function on exactly the line it found.
     grep -m1 -oE 'go test .*' "$1"
 }
 
@@ -395,7 +395,7 @@ tagged_dirs() {
 
 # The defect this guards: the scope was the literal "./test/integration/...",
 # which does not match ./internal/..., so internal/mib/parser's two tagged
-# files were never compiled and never run by any target or CI job (#30). A
+# files were never compiled and never run by any target or CI job. A
 # package that grows a tagged file and is not run is a suite a reader counts as
 # coverage and nothing executes.
 test_the_run_covers_every_integration_tagged_package() {
@@ -421,7 +421,7 @@ test_the_run_covers_every_integration_tagged_package() {
 
 # Pinned separately from the derived check above, so that a discovery which
 # silently returns a shorter list still fails here by name. This is the package
-# #30 found sitting unrun.
+# that was once found sitting unrun.
 test_the_run_includes_the_mib_parser_suite() {
     local log="$TMP/parser.log"
     run_harness "$log" ggg777

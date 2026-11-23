@@ -31,7 +31,7 @@ api:
   # yaml tag still yields "0.0.0.0:8080" via the default and the test stays
   # green. A distinctive value is what makes it a test.
   listen_address: "127.0.0.1:18080"
-  # enable_cors and jwt_secret were removed from APIConfig (issue #3) after it
+  # enable_cors and jwt_secret were removed from APIConfig after it
   # turned out nothing read either. They stay in this fixture on purpose: a
   # deployed config file still carrying them must keep loading, and this is
   # what proves it. Do not delete them to "tidy" the fixture.
@@ -78,7 +78,7 @@ logging:
 	}
 
 	// Verify the API block. The fixture's api section also carries enable_cors
-	// and jwt_secret, which APIConfig no longer declares (issue #3), so this
+	// and jwt_secret, which APIConfig no longer declares, so this
 	// doubles as the check that a config file written against the old struct
 	// still loads and still yields the settings that do survive.
 	//

@@ -917,7 +917,7 @@ func BenchmarkCatalogRender(b *testing.B) {
 	}
 }
 
-// TestSendCatalogNeverTouchesTheTelemetryBuffer is the #11 half that matters:
+// TestSendCatalogNeverTouchesTheTelemetryBuffer is the half that matters:
 // a description must never be able to cost a reading.
 //
 // Sharing one buffer meant a rejected catalog write put device samples back

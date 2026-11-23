@@ -53,7 +53,7 @@ OUT=""
 # filter that does not exist fails here instead of in production.
 #
 # MODEL IT OR REFUSE IT, which is the rule scripts/tests/fake-docker was given
-# in #46 and this stub was not. It parsed "ps" argv with "for a in \$@" over a
+# and this stub was not. It parsed "ps" argv with "for a in \$@" over a
 # case with NO terminal arm, so an option it did not model fell through and was
 # ignored, and it used the EMPTY STRING as "no project filter seen" -- which the
 # matching loop reads as match-all. Measured on this suite before the fix, by
@@ -305,7 +305,7 @@ expect_refused() {
 # Mutating the guard's query and watching the suite go red does not pin this.
 # That direction is satisfied by a stub which reads no argv at all -- it would
 # answer the mutated query too, and the tests that failed would fail for the
-# fixture's reasons rather than the parser's. #46 measured exactly this on the
+# fixture's reasons rather than the parser's. Exactly this was measured on the
 # other stub: every template fix looked demonstrated until the stub-side case
 # was written, and then five of them turned out not to be.
 #
@@ -545,7 +545,7 @@ test_down_removes_volumes_and_orphans() {
 
 # The e2e profile's poller and web UI are invisible to a compose command that
 # does not name the profile, so a "down" without it would leave them running
-# and their volumes behind (#111).
+# and their volumes behind.
 test_down_reaches_the_e2e_profile() {
     run_stack down || fail "down failed" || return 1
 
@@ -564,8 +564,8 @@ test_e2e_up_starts_the_poller_and_seeds_only_through_the_config_import() {
         || fail "e2e-up does not run the seed" || return 1
 
     # The seed's one write is the operator's restore path, the config import,
-    # against the disposable stack (#111). It reads the device list to wait for
-    # the web UI and calls no other endpoint: no device or MIB write (#70).
+    # against the disposable stack. It reads the device list to wait for
+    # the web UI and calls no other endpoint: no device or MIB write.
     local seed="$REPO_ROOT/test/integration/e2e-seed.sh"
     local doc="$REPO_ROOT/test/integration/snmp-data/e2e-config.json"
     local writes
@@ -1118,7 +1118,7 @@ test_run_tests_can_never_address_the_project_clean_protects() {
             # comparison, written against "the first project", would pass over
             # precisely the case it exists to catch. The teardown drifting from
             # the setup is a realistic way to get there.
-            if printf '%s\n' "$addressed" | grep -qxF -- "$protected"; then # pipefail-ok: one printf of a few project names, written before grep can exit (#120)
+            if printf '%s\n' "$addressed" | grep -qxF -- "$protected"; then # pipefail-ok: one printf of a few project names, written before grep can exit
                 fail "[$env_desc] run-tests.sh addressed the project clean.sh protects: $protected" || failed=1
                 printf '      %s\n' "$(grep -E -- "-p $protected .* down" "$ROOT/log" || true)" >&2
             fi
@@ -1386,7 +1386,7 @@ test_guard_reports_each_foreign_container_on_one_line() {
     esac
 }
 
-# The stack's Prometheus is the deployed one (#138): its version is pinned once,
+# The stack's Prometheus is the deployed one: its version is pinned once,
 # as PROMETHEUS_VERSION in Dockerfile.prometheus, and no other file of the stack
 # may name a different one. What a remote-write receiver does with a request it
 # refuses is a property of its version, so a second, stale version anywhere in

@@ -60,8 +60,8 @@ assert_eq() {
 
 # assert_contains refuses an empty needle. Every string contains the empty
 # string, so such a call can never fail, and five of them sat in this file
-# since the initial import asserting a safety property that was never checked
-# (#47). No caller can legitimately want one: an exact match is assert_eq, and
+# since the initial import asserting a safety property that was never checked.
+# No caller can legitimately want one: an exact match is assert_eq, and
 # an absence is its own assertion with its own positive control.
 assert_contains() {
     if [ -z "$3" ]; then
@@ -88,7 +88,7 @@ assert_no_file() {
 # The archive assertions capture tar's output before they look in it. Written
 # "tar ... | grep -q x" under this file's pipefail, the check FAILS on an archive
 # that holds x as soon as tar writes more than a pipe buffer: grep exits at the
-# match, tar takes SIGPIPE, and pipefail reports tar's 141 (#120). A fixture of
+# match, tar takes SIGPIPE, and pipefail reports tar's 141. A fixture of
 # one file passes; a realistic tree of a few hundred modules inverts it.
 
 # assert_archive_has_member LABEL ARCHIVE MEMBER: the listing names MEMBER.
@@ -111,7 +111,7 @@ assert_archive_member_holds() {
 # --- the "stack was never stopped" property --------------------------------
 #
 # These assertions back the five tests that check a REFUSED operation left the
-# running stack alone. Until #47 all five were spelled
+# running stack alone. Originally all five were spelled
 #
 #     assert_contains "stack was never stopped" "$(cat .../actions)" ""
 #
@@ -211,7 +211,7 @@ new_fixture() {
     printf '%s\n' go-netmon webui prometheus grafana >"$FAKE_DOCKER_ROOT/running"
     # The images this daemon HAS. "docker image inspect" reports a name that is
     # not here as missing, exactly as a real daemon does -- which is what makes
-    # ImageID's empty-id branch reachable at all (#39, #46). The list matches
+    # ImageID's empty-id branch reachable at all. The list matches
     # the images in every service rendering the suite writes.
     printf '%s\n' go-netmon:latest go-netmon-webui:latest \
         prom/prometheus:latest grafana/grafana:latest \
@@ -1078,7 +1078,7 @@ test_restore_plan_states_the_tree_overwrite() {
 # harmless. Nothing asserted the value, so the whole path was invisible: with
 # the fake-docker run arm fixed to refuse an unmodelled invocation, dropping
 # :ro, dropping --network none or changing the helper image on the size probe
-# still left the suite green (#50, and the same measurement #46 made of six of
+# still left the suite green (the same was measured of six of
 # its nine arms).
 test_restore_plan_reports_what_a_volume_actually_holds() {
     make_backup b1 || fail "backup failed" || return 1
@@ -1239,7 +1239,7 @@ test_restore_accepts_a_schema_1_backup_without_trees() {
         "$FAKE_DOCKER_ROOT/volumes/go-netmon_webui-data/data/webui.db"
 }
 
-# The manifest records the image id each backup was produced by. Until #46 the
+# The manifest records the image id each backup was produced by. Originally the
 # only assertion over .images counted the ENTRIES and never read image_id, so a
 # stub that returned a hash of its own argv -- or, once it started refusing,
 # nothing at all -- was invisible to the suite. A test that counts rows without
@@ -1266,7 +1266,7 @@ test_backup_records_the_image_id_of_every_service() {
 }
 
 # ImageID records an image the daemon does not have as an EMPTY id rather than
-# failing the backup -- documented at netmon-stack.sh and raised as #39. Nothing
+# failing the backup -- documented at netmon-stack.sh. Nothing
 # could reach that branch while the stub answered every image inspect
 # unconditionally; this is its first coverage.
 test_backup_records_an_empty_id_for_an_image_the_daemon_lacks() {
@@ -1296,8 +1296,8 @@ test_backup_records_an_empty_id_for_an_image_the_daemon_lacks() {
 # versions. Both are read through templates, and both are wrapped in
 # "|| echo unknown" -- so a query the daemon refuses records the string
 # "unknown" and the backup still succeeds. Nothing asserted these, which is why
-# the version arm could ignore its --format template for the life of the suite
-# (#46). "unknown" is the value a refused query produces, so asserting the real
+# the version arm could ignore its --format template for the life of the suite.
+# "unknown" is the value a refused query produces, so asserting the real
 # one is what makes the template load-bearing.
 test_backup_records_the_daemon_and_compose_versions() {
     make_backup b1 || fail "backup failed" || return 1
@@ -1312,7 +1312,7 @@ test_backup_records_the_daemon_and_compose_versions() {
 # "volume ls --format '{{.Name}}'" and names any that resemble a stack volume
 # without carrying the project label. The fixture holds exactly one, the
 # unlabelled look-alike this tooling must never touch. Nothing asserted the
-# report, so the ls arm could ignore its template (#46).
+# report, so the ls arm could ignore its template.
 test_backup_reports_the_unlabelled_lookalike_volume() {
     local out
     out="$("$BACKUP" --name b1 2>&1)" || fail "backup failed" || return 1
@@ -1331,7 +1331,7 @@ test_backup_reports_the_unlabelled_lookalike_volume() {
 # volume NAME from the first -v and then matched a marker anywhere in the whole
 # argv, so the mount target, :ro, --network none, --rm, -i and the helper image
 # all decided nothing. Each is present in the production call deliberately, and
-# each could have been dropped without a test noticing (#50).
+# each could have been dropped without a test noticing.
 #
 # Tested directly as well as through the scripts, because the production paths
 # issue only the three correct shapes: a refusal they never trigger is a
@@ -1630,7 +1630,7 @@ test_assert_contains_refuses_an_empty_needle() {
 # A real MIB tree is hundreds of modules, so its listing is far past a pipe
 # buffer. The member sought is archived FIRST, which is the case that inverted
 # "tar -tzf | grep -q": the match comes while tar still has most of the listing
-# to write (#120).
+# to write.
 test_archive_assertions_hold_on_a_large_archive() {
     local src="$TEST_TMP/large" archive="$TEST_TMP/large.tar.gz" i
     mkdir -p "$src/fill"
