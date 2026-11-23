@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Tests for the release scripts, their Makefile targets and release.yml:
-# scripts/release.sh behind make release-alpha, release-candidate and release;
-# changelog-assemble.sh, release-version-check.sh, release-notes.sh and
-# release-check-tag.sh; the release artifact targets; and the invariants of
-# .github/workflows/release.yml.
+# Tests for the release scripts, their Makefile targets and the release
+# workflows: scripts/release.sh behind make release-alpha, release-candidate
+# and release, which prepare a release PR; changelog-assemble.sh,
+# release-version-check.sh, release-notes.sh and release-check-tag.sh; the
+# release artifact targets; and the invariants of
+# .github/workflows/release.yml and auto-release.yml.
 #
 # Every release runs in a scratch repository whose "origin" remote is a bare
-# repository beside it, so a test can see exactly what a release pushed.
+# repository beside it, so a test can see exactly what a release pushed: the
+# release branch, and never main or a tag.
 # Nothing here touches this checkout, the network or a real remote. The
 # Makefile targets are driven against this checkout only with versions they
 # must refuse before looking at anything else, or with make -n, which prints
@@ -98,10 +100,12 @@ new_repo() {
 
 # state prints everything a refused release must leave alone.
 state() {
+    git -C "$REPO" symbolic-ref --quiet HEAD || true
     git -C "$REPO" rev-parse HEAD
     git -C "$REPO" status --porcelain
+    git -C "$REPO" branch --list --format='%(refname)'
     git -C "$REPO" tag -l
-    git -C "$BARE" rev-parse main
+    git -C "$BARE" branch --list --format='%(refname) %(objectname)'
     git -C "$BARE" tag -l
 }
 
@@ -189,12 +193,13 @@ test_malformed_versions_are_refused() {
 
 # --- dry run and the default alpha ----------------------------------------
 
-test_dry_run_prints_the_tag_and_writes_nothing() {
+test_dry_run_prints_the_branch_and_writes_nothing() {
     new_repo
     local before
     before="$(state)"
     expect_success "dry run" release candidate v0.1.4-rc.1 DRY_RUN=1 || return 1
-    expect_output "dry run names the tag" "would cut v0.1.4-rc.1 (candidate)" || return 1
+    expect_output "dry run names the branch" "would prepare v0.1.4-rc.1 (candidate) on release/v0.1.4-rc.1" || return 1
+    expect_output "dry run names the remote" "push the branch to origin" || return 1
     expect_output "dry run names the fragment" "folding changelog.d/179-release.md" || return 1
     expect_equal "dry run wrote nothing" "$before" "$(state)"
 }
@@ -202,7 +207,7 @@ test_dry_run_prints_the_tag_and_writes_nothing() {
 test_alpha_defaults_to_the_next_patch() {
     new_repo
     expect_success "alpha dry run without a version" release alpha "" DRY_RUN=1 || return 1
-    expect_output "next patch alpha" "would cut v0.1.4-alpha (alpha)"
+    expect_output "next patch alpha" "would prepare v0.1.4-alpha (alpha)"
 }
 
 test_dry_run_takes_only_one() {
@@ -276,15 +281,15 @@ test_missing_remote_is_refused() {
     refused candidate v0.1.4-rc.1 "no 'origin' remote"
 }
 
-# The release goes to the remote main tracks, whatever it is named, so a
-# clone whose GitHub remote is not "origin" releases to the right place.
+# The release branch goes to the remote main tracks, whatever it is named, so
+# a clone whose GitHub remote is not "origin" releases to the right place.
 test_release_pushes_to_the_remote_main_tracks() {
     new_repo
     git -C "$REPO" remote rename origin github
     git -C "$REPO" config branch.main.remote github
     expect_success "release to the upstream" release candidate v0.1.4-rc.1 || return 1
-    expect_output "names the upstream" "v0.1.4-rc.1 pushed to github" || return 1
-    released v0.1.4-rc.1
+    expect_output "names the upstream" "release/v0.1.4-rc.1 pushed to github" || return 1
+    prepared v0.1.4-rc.1
 }
 
 test_release_remote_overrides_the_upstream() {
@@ -292,14 +297,46 @@ test_release_remote_overrides_the_upstream() {
     git -C "$REPO" remote rename origin github
     git -C "$REPO" config branch.main.remote nowhere
     expect_success "RELEASE_REMOTE" release candidate v0.1.4-rc.1 RELEASE_REMOTE=github || return 1
-    expect_output "names RELEASE_REMOTE" "v0.1.4-rc.1 pushed to github" || return 1
-    released v0.1.4-rc.1
+    expect_output "names RELEASE_REMOTE" "release/v0.1.4-rc.1 pushed to github" || return 1
+    prepared v0.1.4-rc.1
 }
 
-test_local_main_must_equal_the_remote() {
+# RELEASE_GIT commits and pushes; the scratch wrapper logs what it was given.
+test_release_git_commits_and_pushes() {
+    new_repo
+    local wrapper="$TMPDIR_TEST/wrapper"
+    printf '#!/bin/sh\necho "$*" >>"%s/wrapper.log"\nexec git "$@"\n' "$TMPDIR_TEST" >"$wrapper"
+    chmod +x "$wrapper"
+    expect_success "RELEASE_GIT" release candidate v0.1.4-rc.1 RELEASE_GIT="$wrapper" || return 1
+    prepared v0.1.4-rc.1 || return 1
+    run cat "$TMPDIR_TEST/wrapper.log" || return 1
+    expect_output "wrapper committed" "commit -q -m chore(release): v0.1.4-rc.1" || return 1
+    expect_output "wrapper pushed" "push -q origin refs/heads/release/v0.1.4-rc.1:refs/heads/release/v0.1.4-rc.1"
+}
+
+test_local_main_ahead_of_the_remote_is_refused() {
     new_repo
     git -C "$REPO" commit -q --allow-empty -m unpushed
     refused candidate v0.1.4-rc.1 "local main is not origin's main"
+}
+
+# A main someone else moved on: the release would be cut from a stale main.
+test_stale_main_is_refused() {
+    new_repo
+    local other="$TMPDIR_TEST/other"
+    git clone -q "$BARE" "$other"
+    git -C "$other" commit -q --allow-empty -m "merged elsewhere"
+    git -C "$other" push -q origin main
+    refused candidate v0.1.4-rc.1 "local main is not origin's main"
+}
+
+test_existing_release_branch_is_refused() {
+    new_repo
+    git -C "$REPO" branch release/v0.1.4-rc.1
+    refused candidate v0.1.4-rc.1 "branch release/v0.1.4-rc.1 already exists locally" || return 1
+    git -C "$REPO" push -q origin release/v0.1.4-rc.1
+    git -C "$REPO" branch -q -D release/v0.1.4-rc.1
+    refused candidate v0.1.4-rc.1 "branch release/v0.1.4-rc.1 already exists on origin"
 }
 
 test_version_must_move_forward() {
@@ -325,28 +362,48 @@ test_nothing_to_release_is_refused() {
     refused candidate v0.1.4-rc.1 "nothing to release"
 }
 
-# --- releasing --------------------------------------------------------------
+# --- preparing the release PR -------------------------------------------------
 
-# released VERSION: the remote holds the tag on its main, VERSION and the
-# CHANGELOG carry it, and no fragment is left.
-released() {
-    local version="$1"
-    expect_equal "$version: tag pushed on main" "$(git -C "$BARE" rev-parse main)" "$(git -C "$BARE" rev-parse "$version^{commit}")" || return 1
-    expect_equal "$version: VERSION" "${version#v}" "$(git -C "$BARE" show "$version:VERSION")" || return 1
-    expect_equal "$version: fragments folded" "changelog.d/README.md" "$(git -C "$BARE" ls-tree -r --name-only "$version" changelog.d)" || return 1
-    run git -C "$BARE" show "$version:CHANGELOG.md" || return 1
+# prepared VERSION: the remote holds release/VERSION one commit past its main,
+# carrying VERSION and the assembled CHANGELOG with no fragment left; main and
+# the tags on the remote are as new_repo left them, no tag exists locally, and
+# the checkout is on the clean release branch.
+prepared() {
+    local version="$1" branch="release/$1"
+    expect_equal "$version: remote main untouched" "$(git -C "$BARE" rev-parse 'v0.1.3^{commit}')" "$(git -C "$BARE" rev-parse main)" || return 1
+    expect_equal "$version: no tag on the remote" "v0.1.3" "$(git -C "$BARE" tag -l)" || return 1
+    expect_equal "$version: no tag created locally" "v0.1.3" "$(git -C "$REPO" tag -l)" || return 1
+    expect_equal "$version: branch one commit past main" "$(git -C "$BARE" rev-parse main)" "$(git -C "$BARE" rev-parse "$branch^")" || return 1
+    expect_equal "$version: commit subject" "chore(release): $version" "$(git -C "$BARE" log -1 --format=%s "$branch")" || return 1
+    expect_equal "$version: VERSION" "${version#v}" "$(git -C "$BARE" show "$branch:VERSION")" || return 1
+    expect_equal "$version: fragments folded" "changelog.d/README.md" "$(git -C "$BARE" ls-tree -r --name-only "$branch" changelog.d)" || return 1
+    run git -C "$BARE" show "$branch:CHANGELOG.md" || return 1
     expect_output "$version: CHANGELOG section" "## [${version#v}] - " || return 1
     expect_output "$version: CHANGELOG entry" "- release targets" || return 1
+    expect_equal "$version: on the release branch" "$branch" "$(git -C "$REPO" symbolic-ref --short HEAD)" || return 1
+    expect_equal "$version: local branch is the pushed one" "$(git -C "$BARE" rev-parse "$branch")" "$(git -C "$REPO" rev-parse HEAD)" || return 1
     expect_equal "$version: tree clean" "" "$(git -C "$REPO" status --porcelain)"
 }
 
-test_each_kind_tags_and_pushes() {
+# merge_and_tag VERSION does what merging the release PR and auto-release.yml
+# do: main moves to the release branch and the merged commit is tagged.
+merge_and_tag() {
+    local version="$1"
+    git -C "$REPO" checkout -q main
+    git -C "$REPO" merge -q --ff-only "release/$version"
+    git -C "$REPO" push -q origin main
+    git -C "$REPO" tag -a -m "go-netmon $version" "$version"
+    git -C "$REPO" push -q origin "refs/tags/$version"
+}
+
+test_each_kind_prepares_a_release_branch() {
     local kind version
     while read -r kind version; do
         new_repo
         expect_success "$kind $version" release "$kind" "$version" || return 1
-        expect_output "$kind $version pushed" "$version pushed to origin" || return 1
-        released "$version" || return 1
+        expect_output "$kind $version pushed" "release/$version pushed to origin; nothing was pushed to main and no tag was created" || return 1
+        expect_output "$kind $version PR command" "gh pr create --base main --head release/$version --title \"chore(release): $version\"" || return 1
+        prepared "$version" || return 1
     done <<'EOF'
 alpha v0.1.4-alpha
 candidate v0.1.4-rc.1
@@ -356,35 +413,43 @@ release v0.2.0
 EOF
 }
 
-test_default_alpha_releases_the_next_patch() {
+test_default_alpha_prepares_the_next_patch() {
     new_repo
     expect_success "alpha without a version" release alpha "" || return 1
-    released v0.1.4-alpha
+    prepared v0.1.4-alpha
 }
 
+# Each release is prepared from main after the previous one merged and was
+# tagged, and is checked against what is already tagged.
 test_candidates_follow_one_another() {
     new_repo
     expect_success "rc.1" release candidate v0.1.4-rc.1 || return 1
+    merge_and_tag v0.1.4-rc.1
     refused candidate v0.1.4-rc.1 "already exists locally" || return 1
     printf '### Fixed\n\n- a second candidate\n' >"$REPO/changelog.d/180-fix.md"
-    git -C "$REPO" add -A
-    git -C "$REPO" commit -q -m fix
-    git -C "$REPO" push -q origin main
+    commit_and_push fix
     refused alpha v0.1.4-alpha "is not greater than" || return 1
     expect_success "rc.2" release candidate v0.1.4-rc.2 || return 1
-    expect_success "production" bash -c "cd '$REPO' && printf '### Fixed\n\n- final\n' >changelog.d/181-final.md && git add -A && git commit -q -m final && git push -q origin main" || return 1
+    merge_and_tag v0.1.4-rc.2
+    printf '### Fixed\n\n- final\n' >"$REPO/changelog.d/181-final.md"
+    commit_and_push final
     expect_success "v0.1.4" release release v0.1.4 || return 1
-    expect_equal "tags on the remote" "$(printf 'v0.1.3\nv0.1.4\nv0.1.4-rc.1\nv0.1.4-rc.2')" "$(git -C "$BARE" tag -l)"
+    expect_equal "tags on the remote" "$(printf 'v0.1.3\nv0.1.4-rc.1\nv0.1.4-rc.2')" "$(git -C "$BARE" tag -l)" || return 1
+    expect_equal "release branches on the remote" "$(printf 'release/v0.1.4\nrelease/v0.1.4-rc.1\nrelease/v0.1.4-rc.2')" "$(git -C "$BARE" branch --list 'release/*' --format='%(refname:short)')"
 }
 
 test_failed_push_says_how_to_undo() {
     new_repo
+    local before_main
+    before_main="$(git -C "$BARE" rev-parse main)"
     # A remote that answers ls-remote but refuses the push.
     printf '#!/bin/sh\nexit 1\n' >"$BARE/hooks/pre-receive"
     chmod +x "$BARE/hooks/pre-receive"
     expect_failure "rejected push" release candidate v0.1.4-rc.1 || return 1
-    expect_output "undo instructions" "git tag -d v0.1.4-rc.1 && git reset --hard HEAD~1" || return 1
-    expect_equal "nothing reached the remote" "v0.1.3" "$(git -C "$BARE" tag -l)"
+    expect_output "undo instructions" "git checkout main && git branch -D release/v0.1.4-rc.1" || return 1
+    expect_equal "no branch reached the remote" "main" "$(git -C "$BARE" branch --list --format='%(refname:short)')" || return 1
+    expect_equal "remote main untouched" "$before_main" "$(git -C "$BARE" rev-parse main)" || return 1
+    expect_equal "no tag anywhere" "v0.1.3 v0.1.3" "$(git -C "$BARE" tag -l) $(git -C "$REPO" tag -l)"
 }
 
 # --- changelog-assemble.sh --------------------------------------------------
@@ -451,6 +516,10 @@ check_tag() {
 test_check_tag_reconciles_tag_version_and_changelog() {
     new_repo
     expect_success "release" release candidate v0.1.4-rc.1 || return 1
+    # Before the merge the release commit is on its branch, not on main.
+    expect_failure "not merged yet" check_tag v0.1.4-rc.1 refs/heads/main || return 1
+    expect_success "consistent before the merge" check_tag v0.1.4-rc.1 || return 1
+    merge_and_tag v0.1.4-rc.1
     expect_success "consistent" check_tag v0.1.4-rc.1 refs/heads/main || return 1
     expect_failure "other tag" check_tag v0.1.4-rc.2 || return 1
     expect_output "other tag" "VERSION holds '0.1.4-rc.1', the tag v0.1.4-rc.2 needs '0.1.4-rc.2'" || return 1
@@ -553,19 +622,194 @@ test_publish_needs_the_archives_and_the_images() {
 }
 
 # unpinned_actions FILE prints every `uses:` not pinned to a full commit SHA
-# with its version in a trailing comment.
+# with its version in a trailing comment. A workflow in this repository
+# (./.github/workflows/...) is the same commit by definition.
 unpinned_actions() {
-    grep -nE '^[[:space:]]*(- )?uses:' "$1" | grep -vE 'uses: [^@[:space:]]+@[0-9a-f]{40} # v[0-9]' || true
+    grep -nE '^[[:space:]]*(- )?uses:' "$1" | grep -vE 'uses: ([^@[:space:]]+@[0-9a-f]{40} # v[0-9]|\./\.github/workflows/[a-z-]+\.yml$)' || true
 }
 
 # The release jobs hold write tokens, so every action they run is pinned to a
 # commit; a tag can be moved under them.
-test_release_workflow_pins_every_action() {
-    local rel="$REPO_DIR/.github/workflows/release.yml"
-    expect_equal "unpinned actions in release.yml" "" "$(unpinned_actions "$rel")" || return 1
+test_release_workflows_pin_every_action() {
+    local wf
+    for wf in release.yml auto-release.yml; do
+        expect_equal "unpinned actions in $wf" "" "$(unpinned_actions "$REPO_DIR/.github/workflows/$wf")" || return 1
+    done
     # The check itself catches a tag.
     printf '      - uses: actions/checkout@v7\n' >"$TMPDIR_TEST/tagged.yml"
     expect_equal "a tag is caught" "1:      - uses: actions/checkout@v7" "$(unpinned_actions "$TMPDIR_TEST/tagged.yml")"
+}
+
+# workflow_top_block FILE KEY prints the lines of the top-level block KEY,
+# without blank lines and comments.
+workflow_top_block() {
+    awk -v key="$2:" '
+        $0 == key { in_b = 1; next }
+        in_b && /^[^ ]/ { exit }
+        in_b && NF && !/^ *#/ { print }
+    ' "$1"
+}
+
+# workflow_job FILE JOB prints JOB's lines.
+workflow_job() {
+    awk -v job="  $2:" '
+        $0 == job { in_job = 1; next }
+        in_job && /^  [^ ]/ { exit }
+        in_job { print }
+    ' "$1"
+}
+
+# write_permissions FILE [JOB] prints, sorted, the permissions granted at job
+# level as "name: write": of JOB, or of every job.
+write_permissions() {
+    awk -v job="${2:+  $2:}" '
+        job != "" && $0 == job { in_job = 1; next }
+        job != "" && in_job && /^  [^ ]/ { in_job = 0 }
+        job != "" && !in_job { next }
+        /^    permissions:$/ { in_p = 1; next }
+        in_p && /^      [a-z-]+: write$/ { sub(/^ +/, ""); print; next }
+        in_p && !/^      / { in_p = 0 }
+    ' "$1" | sort -u
+}
+
+# auto-release.yml acts only on a green CI run of a push to main: a pull
+# request, a failed run or another branch never tags anything.
+test_auto_release_runs_only_on_green_push_to_main_ci() {
+    local auto="$REPO_DIR/.github/workflows/auto-release.yml" ci="$REPO_DIR/.github/workflows/ci.yml" ci_name on resolve
+    ci_name="$(sed -n 's/^name: //p' "$ci")"
+    on="$(workflow_top_block "$auto" on)"
+    expect_equal "triggers" "$(printf '  workflow_run:\n    workflows: [%s]\n    types: [completed]' "$ci_name")" "$on" || return 1
+    resolve="$(workflow_job "$auto" resolve)"
+    local cond
+    for cond in "github.event.workflow_run.conclusion == 'success' &&" \
+        "github.event.workflow_run.event == 'push' &&" \
+        "github.event.workflow_run.head_branch == 'main'" \
+        "ref: \${{ github.event.workflow_run.head_sha }}"; do
+        case "$resolve" in
+            *"$cond"*) ;;
+            *) printf '    auto-release.yml: resolve lacks %s\n' "$cond" >&2; return 1 ;;
+        esac
+    done
+    expect_equal "release only when resolved" "    if: needs.resolve.outputs.release == 'true'" \
+        "$(workflow_job "$auto" release | grep -E '^    if: ')"
+}
+
+# Before the tag: an existing tag or a commit that is no longer main's tip
+# releases nothing; release-verify and the version order (against the parent)
+# pass; then the tag is pushed and release.yml is called with it.
+test_auto_release_checks_before_it_tags() {
+    local auto="$REPO_DIR/.github/workflows/auto-release.yml" job pattern line last=0
+    job="$(workflow_job "$auto" resolve)"
+    while IFS= read -r pattern; do
+        line="$(grep -nE -- "$pattern" <<<"$job" | cut -d: -f1)"
+        [[ "$line" =~ ^[0-9]+$ ]] ||
+            { printf '    auto-release.yml: resolve has %s lines matching %s\n' "$(grep -cE -- "$pattern" <<<"$job")" "$pattern" >&2; return 1; }
+        [ "$line" -gt "$last" ] || { printf '    auto-release.yml: %s comes too early\n' "$pattern" >&2; return 1; }
+        last="$line"
+    done <<'EOF'
+echo .*is already tagged
+echo .*is no longer main's tip
+run: make release-verify
+git worktree add .* HEAD\^$
+\./scripts/release-version-check\.sh
+git tag -a
+git push origin "refs/tags/
+EOF
+    run workflow_job "$auto" resolve || return 1
+    expect_output "bot identity" 'git config user.name "github-actions[bot]"' || return 1
+    run workflow_job "$auto" release || return 1
+    expect_output "calls release.yml" "uses: ./.github/workflows/release.yml" || return 1
+    expect_output "with the tag" "version: \${{ needs.resolve.outputs.tag }}"
+}
+
+# A called workflow runs with the caller's token: the release job grants
+# exactly the write permissions release.yml's jobs ask for, and nothing else
+# in auto-release.yml writes but the job that pushes the tag.
+test_auto_release_grants_what_release_needs() {
+    local auto="$REPO_DIR/.github/workflows/auto-release.yml" rel="$REPO_DIR/.github/workflows/release.yml"
+    expect_equal "release job permissions" "$(write_permissions "$rel")" "$(write_permissions "$auto" release)" || return 1
+    expect_equal "resolve job permissions" "contents: write" "$(write_permissions "$auto" resolve)" || return 1
+    expect_equal "workflow default" "  contents: read" "$(workflow_top_block "$auto" permissions)" || return 1
+    # The check itself catches a missing grant.
+    awk '!/^      attestations: write$/' "$auto" >"$TMPDIR_TEST/auto.yml"
+    [ "$(write_permissions "$rel")" != "$(write_permissions "$TMPDIR_TEST/auto.yml" release)" ] ||
+        { printf '    a dropped grant went unnoticed\n' >&2; return 1; }
+}
+
+# release.yml runs on a tag push, a call from auto-release.yml and a manual
+# run, each naming the tag; runs for one tag wait for each other.
+test_release_workflow_accepts_call_and_dispatch() {
+    local rel="$REPO_DIR/.github/workflows/release.yml" on trigger
+    on="$(workflow_top_block "$rel" on)"
+    for trigger in "  push:" "    tags: ['v*']" "  workflow_dispatch:" "  workflow_call:"; do
+        grep -qxF -- "$trigger" <<<"$on" || { printf '    release.yml: no %s\n' "$trigger" >&2; return 1; }
+    done
+    expect_equal "a version input for dispatch and call" 2 "$(grep -cxF '      version:' <<<"$on")" || return 1
+    expect_equal "concurrency on the tag" "  group: release-\${{ inputs.version || github.ref_name }}" \
+        "$(workflow_top_block "$rel" concurrency | grep group:)"
+}
+
+# Only verify reads the triggering ref: every other job builds and publishes
+# verify's commit. On a call or a manual run github.ref and github.sha name
+# main, not the release.
+test_release_jobs_use_the_resolved_release() {
+    local rel="$REPO_DIR/.github/workflows/release.yml" job
+    expect_equal "github.sha anywhere" "" "$(grep -n 'github\.sha' "$rel" | grep -v '^[0-9]*: *#' || true)" || return 1
+    expect_equal "github.ref outside verify and concurrency" "" \
+        "$(awk '/^  verify:$/ { v = 1; next } v && /^  [^ ]/ { v = 0 } !v && /github\.ref/ && !/^ *#/ && !/^  group: / { print NR": "$0 }' "$rel")" || return 1
+    run workflow_job "$rel" verify || return 1
+    expect_output "verify checks out the tag" "ref: refs/tags/\${{ inputs.version || github.ref_name }}" || return 1
+    expect_output "verify resolves the tag" "TAG: \${{ inputs.version || github.ref_name }}" || return 1
+    # Every other checkout is of verify's commit, and its job needs verify.
+    expect_equal "checkouts not of verify's commit" "" "$(awk '
+        /^  [a-z-]+:$/ { job = $1 }
+        want { if ($0 !~ /^ +with:$/) { if ($0 !~ /ref: \$\{\{ needs\.verify\.outputs\.sha \}\}/) print job; want = 0 } }
+        /uses: actions\/checkout@/ && job != "verify:" { want = 1 }
+    ' "$rel")" || return 1
+    for job in lint security test build scripts fips integration binaries; do
+        grep -qE '^    needs: (verify|\[verify[],])' <<<"$(workflow_job "$rel" "$job")" ||
+            { printf '    release.yml: %s does not need verify\n' "$job" >&2; return 1; }
+    done
+}
+
+# verify decides once whether a release is latest -- every 0.x release, and
+# from 1.0 on only a plain vX.Y.Z -- and the images and the GitHub release
+# both follow that one output.
+test_release_workflow_decides_latest_once() {
+    local rel="$REPO_DIR/.github/workflows/release.yml"
+    run workflow_job "$rel" verify || return 1
+    expect_output "0.x is latest" "0.*) latest=true ;;" || return 1
+    expect_output "a 1.x pre-release is not" "*-*) latest=false ;;" || return 1
+    expect_output "a 1.x release is" "*) latest=true ;;" || return 1
+    expect_output "latest is an output" "latest: \${{ steps.release.outputs.latest }}" || return 1
+    run workflow_job "$rel" manifest || return 1
+    expect_output "manifest reads latest" "LATEST: \${{ needs.verify.outputs.latest }}" || return 1
+    # shellcheck disable=SC2016  # the workflow's own text
+    expect_output ":X.Y and :latest only when latest" 'tags+=(-t "${IMAGE}:${core%.*}${SUFFIX}" -t "${IMAGE}:latest${SUFFIX}")' || return 1
+    run workflow_job "$rel" publish || return 1
+    expect_output "pre-release unless latest" "prerelease: \${{ needs.verify.outputs.latest != 'true' }}" || return 1
+    expect_output "make_latest legacy when latest" "make_latest: \${{ needs.verify.outputs.latest == 'true' && 'legacy' || 'false' }}" || return 1
+    expect_output "the published draft keeps it" "MAKE_LATEST: \${{ needs.verify.outputs.latest == 'true' && 'legacy' || 'false' }}" || return 1
+    expect_equal "no other pre-release decision" "" "$(grep -n 'outputs.prerelease' "$rel" || true)"
+}
+
+# The latest decision itself, run as the shell the verify step runs: the case
+# statement is lifted from release.yml, so the table tests what ships.
+test_latest_decision_table() {
+    local rel="$REPO_DIR/.github/workflows/release.yml" decide tag want
+    decide="$(awk '/case "\$\{version\}" in/ { p = 1 } p { print } p && /esac/ { exit }' "$rel")"
+    [ -n "$decide" ] || { printf '    release.yml: no latest decision found\n' >&2; return 1; }
+    while read -r tag want; do
+        expect_equal "latest for $tag" "$want" "$(version="${tag#v}" bash -c "$decide"$'\n''echo "$latest"')" || return 1
+    done <<'EOF'
+v0.2.1-alpha true
+v0.3.0-rc.1 true
+v0.3.0 true
+v1.0.0-alpha false
+v1.0.0-rc.2 false
+v1.0.0 true
+v2.3.4 true
+EOF
 }
 
 # --- release artifacts --------------------------------------------------------

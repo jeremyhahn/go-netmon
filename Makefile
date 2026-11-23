@@ -572,9 +572,11 @@ lint-scripts: ## Shellcheck every shell script and refuse early-exit pipes under
 # --- Releases ---------------------------------------------------------------
 #
 # One target per kind; each refuses the other two. All three run
-# scripts/release.sh, which checks everything before it writes anything and
-# pushes main and the tag to $(RELEASE_REMOTE) atomically; the tag starts
-# .github/workflows/release.yml. docs/operations/releasing.md is the
+# scripts/release.sh, which checks everything before it writes anything,
+# commits the release on a release/vX.Y.Z branch and pushes that branch to
+# $(RELEASE_REMOTE) for a PR. Nothing is pushed to main and no tag is made
+# here: when the merged PR's CI is green, .github/workflows/auto-release.yml
+# tags it and calls release.yml. docs/operations/releasing.md is the
 # operator's page.
 #
 # VERSION is also this Makefile's build stamp, defaulted from the VERSION
@@ -583,8 +585,9 @@ lint-scripts: ## Shellcheck every shell script and refuse early-exit pipes under
 # value reaches the scripts through the environment, unexpanded ($(value)),
 # never spliced into a shell command line.
 #
-# RELEASE_REMOTE is empty by default: scripts/release.sh then pushes to the
-# remote main tracks, or to origin when main tracks nothing.
+# RELEASE_REMOTE is empty by default: scripts/release.sh then pushes the
+# release branch to the remote main tracks, or to origin when main tracks
+# nothing.
 RELEASE_REMOTE?=
 RELEASE_GIVEN_VERSION = $(if $(filter command line environment environment override,$(origin VERSION)),$(value VERSION))
 
@@ -600,19 +603,20 @@ release-alpha release-candidate release: override export DRY_RUN := $(value DRY_
 release-alpha release-candidate release: override export RELEASE_REMOTE := $(value RELEASE_REMOTE)
 release-alpha release-candidate release: override export RELEASE_GIT := $(value RELEASE_GIT)
 
-release-alpha: ## Tag and push an alpha: [VERSION=vX.Y.Z-alpha] (default: next patch) [DRY_RUN=1]
+release-alpha: ## Prepare an alpha release PR: [VERSION=vX.Y.Z-alpha] (default: next patch) [DRY_RUN=1]
 	@./scripts/release.sh alpha
 
-release-candidate: ## Tag and push a release candidate: VERSION=vX.Y.Z-rc.N [DRY_RUN=1]
+release-candidate: ## Prepare a release candidate PR: VERSION=vX.Y.Z-rc.N [DRY_RUN=1]
 	@./scripts/release.sh candidate
 
-release: ## Tag and push a production release: VERSION=vX.Y.Z [DRY_RUN=1]
+release: ## Prepare a production release PR: VERSION=vX.Y.Z [DRY_RUN=1]
 	@./scripts/release.sh release
 
 release-verify release-notes: override export TAG := $(value TAG)
 
-# release.yml runs this on the tagged commit: the tree matches the tag and the
-# commit is on origin/main.
+# auto-release.yml runs this before it tags a merged release, and release.yml
+# on the tagged commit: the tree matches the tag and the commit is on
+# origin/main.
 release-verify: ## Check the checked-out tree carries the release TAG=vX.Y.Z[-alpha|-rc.N] and is on main
 	@./scripts/release-check-tag.sh "$$TAG" origin/main
 

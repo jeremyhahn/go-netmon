@@ -38,12 +38,17 @@ Download `go-netmon_<version>_linux_amd64.tar.gz` or
 `go-netmon_<version>_linux_arm64.tar.gz` from
 [GitHub Releases](https://github.com/jeremyhahn/go-netmon/releases). Each has a
 `_fips` variant (`go-netmon_<version>_linux_amd64_fips.tar.gz`) built for FIPS
-140-3 mode; see [docs/fips.md](docs/fips.md). Verify the download before
-extracting it:
+140-3 mode; see [docs/fips.md](docs/fips.md). To fetch the latest release and
+verify it before extracting it:
 
 ```sh
+tag=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/jeremyhahn/go-netmon/releases/latest)
+tag=${tag##*/}
+base=https://github.com/jeremyhahn/go-netmon/releases/download/${tag}
+curl -LO "${base}/go-netmon_${tag#v}_linux_amd64.tar.gz"
+curl -LO "${base}/SHA256SUMS"
 sha256sum --ignore-missing -c SHA256SUMS
-gh attestation verify go-netmon_<version>_linux_amd64.tar.gz --repo jeremyhahn/go-netmon
+gh attestation verify "go-netmon_${tag#v}_linux_amd64.tar.gz" --repo jeremyhahn/go-netmon
 ```
 
 ### Container images
@@ -56,7 +61,8 @@ Multi-arch (amd64, arm64) images are published to GitHub Container Registry:
 | `ghcr.io/jeremyhahn/go-netmon-webui` | the web UI |
 
 Tags are `X.Y.Z`, `X.Y` and `latest`; the FIPS builds are tagged `X.Y.Z-fips`,
-`X.Y-fips` and `latest-fips`.
+`X.Y-fips` and `latest-fips`. `latest` follows the latest release: before 1.0
+that is every release, `-alpha` included.
 
 ```sh
 docker pull ghcr.io/jeremyhahn/go-netmon:latest

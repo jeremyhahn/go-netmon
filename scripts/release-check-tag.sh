@@ -3,9 +3,10 @@
 #
 # Usage: scripts/release-check-tag.sh <tag> [main-ref]   (from the repository root)
 #
-# The release targets run this on the assembled tree before they commit, and
-# release.yml runs it (through `make release-verify`) on the tagged commit
-# before any gate or publication. The tag and the tree carry the version in
+# The release targets run this on the assembled tree before they commit,
+# auto-release.yml runs it (through `make release-verify`) on the merged
+# commit before it tags it, and release.yml's verify job on the tagged commit
+# before any gate or publication. The tag need not exist yet. The tag and the tree carry the version in
 # places nothing else reconciles:
 #
 #   - the tag is vX.Y.Z, vX.Y.Z-alpha or vX.Y.Z-rc.N;

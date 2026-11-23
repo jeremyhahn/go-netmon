@@ -1,0 +1,137 @@
+# Publishes a release when a green merge to main brings a new VERSION.
+#
+# A release is still a deliberate act: `make release-alpha`,
+# `make release-candidate` or `make release` prepares a release/vX.Y.Z PR that
+# folds changelog.d/ into CHANGELOG.md and writes VERSION. What no longer needs
+# a person is the tag. Once CI is green on a push to main, this reads VERSION
+# at that commit; if v$VERSION is not a tag yet, it checks the release the way
+# release.yml's verify job will, tags the commit, and calls release.yml, which
+# runs the gate and publishes the archives, the images and the GitHub release.
+# A merge that leaves VERSION alone publishes nothing.
+#
+# The release is called, not started by the tag: a tag pushed with
+# GITHUB_TOKEN starts no workflow. Pushing a tag by hand still works, and
+# release.yml's workflow_dispatch re-runs a release.
+#
+# Third-party actions are pinned to a full commit SHA, the same pins as
+# release.yml: this workflow pushes tags.
+#
+# docs/operations/releasing.md is the operator's page.
+
+name: Auto Release
+
+on:
+  workflow_run:
+    # ci.yml's `name:`.
+    workflows: [CI]
+    types: [completed]
+
+# One release decision at a time. Two green merges in quick succession must not
+# both see an untagged VERSION and both try to tag it.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+# Read-only unless a job asks for more below.
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve the release
+    # Only a green CI run for a push to main. Pull request runs, manual runs,
+    # failed runs and other branches never release.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    # To push the tag.
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      release: ${{ steps.resolve.outputs.release }}
+    steps:
+      # Full history: every tag for the version ordering check, the parent
+      # commit it runs against, and origin/main for release-verify.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Resolve the version
+        id: resolve
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          tag="v$(tr -d '[:space:]' < VERSION)"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+            echo "${tag} is already tagged; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A later commit can carry the same VERSION as an earlier one whose
+          # CI failed; that later green commit is the one released. A commit
+          # that is no longer main's tip is not: a newer commit is on its way
+          # through CI and will be judged on its own.
+          git fetch --quiet --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if [ "$(git rev-parse refs/remotes/origin/main)" != "${HEAD_SHA}" ]; then
+            echo "${HEAD_SHA} is no longer main's tip; the newer commit decides."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+      # The check release.yml's verify job makes, run before the tag exists:
+      # the tag's form, VERSION, exactly one non-empty CHANGELOG section, no
+      # fragment or [Unreleased] entry left, and the commit on origin/main. A
+      # tag that verify then refused would be a published tag naming a
+      # release that never shipped. The tag reaches make only through the
+      # environment.
+      - name: make release-verify
+        if: steps.resolve.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: make release-verify
+
+      # release-version-check.sh orders the version against VERSION and every
+      # v* tag, so it runs against the commit before this one, where VERSION
+      # still holds the previous release.
+      - name: Check the version moves forward
+        if: steps.resolve.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          git worktree add --quiet --detach "${RUNNER_TEMP}/previous" HEAD^
+          cd "${RUNNER_TEMP}/previous"
+          ./scripts/release-version-check.sh "${TAG}"
+
+      - name: Tag the release
+        if: steps.resolve.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "go-netmon ${TAG}" "${HEAD_SHA}"
+          git push origin "refs/tags/${TAG}"
+
+  release:
+    name: Release
+    needs: resolve
+    if: needs.resolve.outputs.release == 'true'
+    # Exactly what release.yml's jobs ask for: packages to push the images,
+    # id-token and attestations to attest them and the archives, contents to
+    # create the GitHub release.
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.resolve.outputs.tag }}
