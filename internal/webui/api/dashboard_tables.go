@@ -76,7 +76,7 @@ type TableColumn struct {
 	//
 	// Hiding would make the layout depend on the data, and then a column's
 	// absence would carry meaning while having three possible causes: uniform,
-	// deselected, or not reported at all. That is the shape that cost us #73,
+	// deselected, or not reported at all. That is the shape that once cost us an incident,
 	// where an absent series read as "the old build is running" while the
 	// binary hash said otherwise.
 	//

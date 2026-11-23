@@ -906,8 +906,8 @@ func TestMaxBufferSize(t *testing.T) {
 	}
 }
 
-// TestOverlappingPollsOfOneDeviceEncodeInTimestampOrder is the trigger from
-// go-netmon#69, at the layer that decides whether the request is valid.
+// TestOverlappingPollsOfOneDeviceEncodeInTimestampOrder is the trigger of the
+// out-of-order remote-write incident, at the layer that decides whether the request is valid.
 //
 // Two polls of one device overlap whenever the device is reconfigured. Their
 // samples reach the buffer in whole-poll batches at completion, while each
@@ -1037,7 +1037,7 @@ func TestSeriesAreOrderedIndependently(t *testing.T) {
 // whatever someone typed into it -- so a comma or an equals sign inside one
 // made a delimited key ambiguous, and two different series produced the same
 // string. Merging them interleaves their readings into one series, which is a
-// descending pair and a rejected request (#69).
+// descending pair and a rejected request.
 //
 // The two fixtures below flatten to the identical string under `name,k=v`
 // joining -- verified by mutation, because the first pair written here did not:

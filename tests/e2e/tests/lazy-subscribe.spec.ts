@@ -2,7 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Lazy per-tab subscription (issue #104).
+// Lazy per-tab subscription.
 //
 // A device used to subscribe every module's panels the moment it was opened --
 // on a switch with a full catalog that is ~200 queries and a multi-megabyte

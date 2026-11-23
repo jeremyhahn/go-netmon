@@ -2,7 +2,7 @@
 
 > **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-11-23
 >
-> The FIPS profile is incomplete (#7). The build, the `_fips` release
+> The FIPS profile is incomplete (#4). The build, the `_fips` release
 > artifacts and the CI job below exist, but SNMPv3 `authPriv` does not work in
 > FIPS mode — see [SNMPv3](#snmpv3-md5-sha-1-and-des).
 
@@ -60,7 +60,7 @@ and under `fips140=only` Go refuses CFB. A device configured for `authPriv`
 therefore fails at runtime in a FIPS build; only `noAuthNoPriv` and
 `authNoPriv` work. Authentication is unaffected: SHA224, SHA256, SHA384 and
 SHA512 work exactly as in an ordinary build. Fixing `authPriv` is tracked in
-#7 and is not scheduled.
+#4 and is not scheduled.
 
 Beyond that, three protocol names are missing:
 

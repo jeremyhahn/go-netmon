@@ -44,7 +44,7 @@ use this cache.
 
 ## The cache
 
-The cache holds current inventory, not history (#54). `TableIndexCache.friendly`
+The cache holds current inventory, not history. `TableIndexCache.friendly`
 is per device: a `sync.Map` from device name to that device's names, which are
 one immutable map (table entry OID → row index and label name → value)
 published by atomic pointer, next to a per-device writer mutex

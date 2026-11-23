@@ -8,7 +8,7 @@ different faults it is. They exist because a single "samples dropped" number
 could not tell a clock problem from a backpressure problem from an endpoint
 refusing what it will always refuse — and go-netmon once discarded samples for
 hours while every signal it published said "buffered, failing to flush", which
-was true and was a different problem (go-netmon#69).
+was true and was a different problem.
 
 ## Is anything being lost
 
@@ -53,7 +53,7 @@ so it appears in neither.
 
 `gonetmon_exports_total` used to carry a third child, `status="dropped"`, which
 counted samples among its flush-counting siblings. Anything summed or divided
-across that metric was therefore meaningless, and #69's own measurement had to
+across that metric was therefore meaningless, and that incident's own measurement had to
 carry a paragraph saying so. It is gone; `sum(gonetmon_export_dropped_samples_
 total)` is the number it held.
 

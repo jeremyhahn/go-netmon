@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for scripts/e2e-target-guard.sh (#111).
+# Tests for scripts/e2e-target-guard.sh.
 #
 # Each test builds a throwaway e2e tree and runs the guard against it, so a
 # case is a statement about the rule rather than about today's specs. One test

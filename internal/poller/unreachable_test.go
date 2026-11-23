@@ -440,7 +440,7 @@ func TestFirstPollFailureIsReportedAsAFailedPoll(t *testing.T) {
 	// before it reports the result. This used to need awaitScheduledRetry,
 	// because the retry was scheduled after poll returned and NextPoll read as
 	// the zero time until then -- the window that made
-	// TestDeviceStatusReportsAnUnreachableDevice load-dependent (#33).
+	// TestDeviceStatusReportsAnUnreachableDevice load-dependent.
 	status, polling := p.WorkerStatus("bastion")
 	if !polling {
 		t.Fatal("the poller has no worker for bastion, which it was just given")
@@ -581,7 +581,7 @@ func TestPollResultIsDroppedRatherThanStallingTheLoop(t *testing.T) {
 	}
 }
 
-// TestARetiredPollDoesNotPublishReachability is the guard from go-netmon#69 at
+// TestARetiredPollDoesNotPublishReachability is the out-of-order guard at
 // the line above the export.
 //
 // gonetmon_device_unreachable is labeled by device NAME, and a device update
@@ -862,7 +862,7 @@ func TestACommitInProgressHoldsOffRemoval(t *testing.T) {
 // anyway. Its deferred forget could then delete a same-name replacement's
 // series.
 //
-// That is the original go-netmon#69 defect, alive through an error path. A
+// That is the original out-of-order defect, alive through an error path. A
 // partial invariant is worse than none: the comments and tests assert that
 // every poll outcome is atomic with removal, so the next reader stops looking.
 func TestRemovalDuringAFailingClientInitPublishesNothing(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 )
 
-// The friendly-name cache holds current inventory, not history (#54).
+// The friendly-name cache holds current inventory, not history.
 //
 // A status column -- ifName, ifDescr, entPhysicalName -- names the rows of
 // its table, and the other columns of a row are labeled with that name. The

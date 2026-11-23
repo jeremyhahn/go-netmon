@@ -2,7 +2,7 @@ package metrics
 
 // What the exporter says about what it threw away.
 //
-// #69 was invisible for fifteen hours while the process was losing a million
+// The out-of-order remote-write incident was invisible for fifteen hours while the process was losing a million
 // samples an hour, and both halves of that were reporting faults rather than
 // losing faults: a counter whose siblings were in different units, so no ratio
 // taken across them meant anything, and an error that named memory pressure
@@ -160,7 +160,7 @@ func TestASupersededDiscardReportsSupersession(t *testing.T) {
 // gonetmon_exports_total{status="dropped"} counted SAMPLES while its two
 // siblings counted FLUSHES. rate(...{status="dropped"}) /
 // rate(...{status="success"}) is how anyone would ask "what fraction are we
-// losing", and it divided samples by flushes -- so #69's own measurement had to
+// losing", and it divided samples by flushes -- so the incident's own measurement had to
 // carry a paragraph saying its two headline figures could not be compared.
 //
 // The samples are counted where they mean something instead, by reason.

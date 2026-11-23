@@ -193,7 +193,7 @@ func (w *worker) commit(ctx context.Context, result *PollResult, health cycle) b
 	//
 	// Recording the outcome IS scheduling the retry. They were two steps, the
 	// second of them after poll returned, and a status read between them saw a
-	// device reported unreachable with no retry time at all (#33).
+	// device reported unreachable with no retry time at all.
 	w.health.record(!health.unreachable())
 
 	if w.exporter != nil && len(result.Results) > 0 {
@@ -1013,7 +1013,7 @@ func (p *Poller) RemoveDevice(deviceName string) error {
 
 	// And so does what the exporter remembers of it between polls -- the
 	// friendly names its status columns reported -- or every device ever
-	// removed would stay in that cache (#54). After awaitCommit for the same
+	// removed would stay in that cache. After awaitCommit for the same
 	// reason as the series: no later commit can put them back.
 	if forgetter, ok := p.exporter.(metrics.DeviceForgetter); ok {
 		forgetter.ForgetDevice(deviceName)

@@ -444,7 +444,7 @@ END
 `
 
 // A module with an absent import is stored, and the response names what it
-// could not import and which objects that left untyped (#62).
+// could not import and which objects that left untyped.
 func TestImportNamesUnresolvedImports(t *testing.T) {
 	f := newReimportFixture(t)
 

@@ -155,7 +155,7 @@ const ZERO_TIME_CEILING = Date.UTC(1971, 0, 1);
 // shared: the fleet overview and a selected device's dashboards take turns on
 // this tick rather than each running a timer of their own.
 //
-// This was a fixed 30000 until #99, while the Settings view offered an "update
+// This used to be a fixed 30000, while the Settings view offered an "update
 // interval" input that nothing read. The number is now the default for that
 // input rather than the whole story, and it stays 30 so a browser that has
 // never touched the setting behaves exactly as it did.
@@ -211,7 +211,7 @@ class MonitoringApp {
         // browser's localStorage and reaches no one else. Changing it never
         // touches how often a device is polled -- that is the poller's
         // configuration, and a viewer does not get to retune collection for
-        // every other viewer (#99).
+        // every other viewer.
         this.refreshIntervalSec = DEFAULT_REFRESH_SECONDS;
         this.refreshTimer = null;
         this.profiles = [];
@@ -604,7 +604,7 @@ class MonitoringApp {
     // renderDashboardCadence states what the reader is being served: how often
     // the selected device is polled, and how often this browser re-reads.
     //
-    // This is the whole of what #99 asked for on the poller's side. The poll
+    // This is all the page shows of the poller's side. The poll
     // interval is the operator's configuration, shown here and NOT editable from
     // this page: a display preference must not repoint collection, and one
     // viewer must not retune a device for every other viewer. So the dashboard
@@ -7891,7 +7891,7 @@ class MonitoringApp {
     //
     // Value conditions -- "show me when X > Y" -- are v2 and are a different
     // feature: they need a query language rather than a substring, and go
-    // through PromQL. See go-netmon#95.
+    // through PromQL.
     // ------------------------------------------------------------------
 
     bindSeriesSearch() {
@@ -9176,7 +9176,7 @@ class MonitoringApp {
         // so a browser that had chosen "Last 30 days" came back showing "Last 6
         // hours" while holding 30d -- the control and the state it represents
         // disagreeing silently, which is the same defect class as a control
-        // that drives nothing (#99).
+        // that drives nothing.
         const timeRange = document.getElementById('dashboardTimeRange');
         if (timeRange) timeRange.value = this.currentTimeRange;
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# THE compose-project ownership check. One implementation, and since #44 both
+# THE compose-project ownership check. One implementation, shared by both
 # of the callers that need it.
 #
 # This library is sourced, never executed. Callers are responsible for
@@ -19,7 +19,7 @@
 # and keeps no state, which is what would let the deployment tooling and the
 # test harness share it without sharing anything else.
 #
-# IT NOW HAS TWO CALLERS (#44): scripts/lib/netmon-stack.sh, guarding backup.sh
+# IT NOW HAS TWO CALLERS: scripts/lib/netmon-stack.sh, guarding backup.sh
 # and restore.sh, and test/integration/compose-guard.sh, guarding the
 # integration harness. The decision is recorded in both files.
 #
@@ -41,7 +41,7 @@
 # The argument would bite if guard-tests.sh used this library as its ORACLE,
 # comparing the guard's answer against this one. It does not: its oracle is
 # hand-written fixtures and expected refusals. If that ever stops being true,
-# reopen #44 rather than trusting this paragraph.
+# revisit the decision to share it rather than trusting this paragraph.
 #
 # An earlier version of this comment said "both callers now use this", which was
 # not true when written. A header claiming a consolidation that did not happen

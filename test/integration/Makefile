@@ -44,7 +44,7 @@ test-pipeline:
 test-index:
 	@$(RUN_TESTS) TestTableIndexExtraction
 
-# The #69 ordering disorder, driven deliberately (#75). Four tests: what the
+# The remote-write ordering disorder, driven deliberately. Four tests: what the
 # real receiver does with disorder inside one request and across two, and what
 # the exporter does when two overlapping polls of one device produce each.
 test-ordering:

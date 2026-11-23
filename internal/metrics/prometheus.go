@@ -85,7 +85,7 @@ const minExportStallThreshold = time.Minute
 // therefore nonsense: sum(gonetmon_exports_total) adds flushes to samples, and
 // rate(...{status="dropped"}) / rate(...{status="success"}), which is how
 // anyone would ask "what fraction are we losing", divides samples by flushes
-// and returns something shaped like a ratio. #69's own measurement had to carry
+// and returns something shaped like a ratio. The out-of-order incident's own measurement had to carry
 // a paragraph warning that its two headline figures were not comparable, which
 // is the tell.
 //
@@ -595,7 +595,7 @@ func (e *PrometheusExporter) Flush(ctx context.Context) error {
 // a retry backlog all shipped as one protobuf -- and the backlog floor alone is
 // 100,000 samples. A request too large to be accepted is then refused at the
 // same size on every retry, so it can never drain and everything queues behind
-// it (#63).
+// it.
 //
 // The count returned is what makes a partial delivery survivable: the caller
 // puts back batch[delivered:] and nothing else, so a prefix the endpoint
@@ -838,8 +838,7 @@ func sameValue(a, b float64) bool {
 // a comma or an equals sign in one of them makes a delimited key ambiguous, and
 // two different series can produce the same string. Two series sharing a key
 // are merged by the encoder, which interleaves their readings into one and puts
-// them out of order, and a request whose samples descend is rejected whole
-// (#69).
+// them out of order, and a request whose samples descend is rejected whole.
 //
 // One function, because the ordering check and the encoder must agree on what
 // "the same series" means or the check reports on something the request does
@@ -881,14 +880,14 @@ func seriesKey(sample *Sample) string {
 // Prometheus rejects the WHOLE request on the first that does not -- 400 "out
 // of order sample". One such pair cost monitor-01 a million samples an hour for
 // fifteen hours, because a rejected batch is re-queued and can never land once
-// newer samples for its series have been accepted (go-netmon#69).
+// newer samples for its series have been accepted.
 //
 // This orders one REQUEST. It does not order two, and Flush is not serialized:
 // a poll worker that fills the buffer flushes inline while the background
 // flusher may already be sending, so a batch taken later can reach Prometheus
 // first and leave the earlier one out of order against what was just accepted.
-// That is the same permanent backlog by another route, and it is filed on #69
-// rather than fixed here -- serializing the send costs poll latency, which is a
+// That is the same permanent backlog by another route, and it is deliberately
+// not fixed here -- serializing the send costs poll latency, which is a
 // trade rather than a correction.
 //
 // Samples that are IDENTICAL -- same timestamp and same value -- are collapsed
@@ -1143,7 +1142,7 @@ func (e *PrometheusExporter) TableIndexCache() *TableIndexCache {
 }
 
 // ForgetDevice drops the per-device state the exporter keeps for naming a
-// device's samples: its friendly-name cache entries (#54). It implements
+// device's samples: its friendly-name cache entries. It implements
 // DeviceForgetter.
 func (e *PrometheusExporter) ForgetDevice(deviceName string) {
 	if e.tableIndexCache != nil {
@@ -1175,7 +1174,7 @@ func (e *PrometheusExporter) ForgetDevice(deviceName string) {
 // into batch_size pieces itself, because one emission is around 20,000 series
 // and nothing else bounded a request -- and it deliberately did not attempt a
 // byte bound, on the grounds that bounding a request by its encoded size
-// belongs to every send rather than to one caller. It does now (#63), so this
+// belongs to every send rather than to one caller. It does now, so this
 // hands the whole catalog to send and gets both bounds for free.
 func (e *PrometheusExporter) SendCatalog(ctx context.Context, samples []*Sample) error {
 	_, err := e.send(ctx, samples)

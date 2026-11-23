@@ -123,7 +123,7 @@ When an imported module is absent but the OIDs still resolve (`ATM-MIB` without
 `ATM-TC-MIB`), the objects typed by the missing module keep their OID and lose
 everything read from the type: `Type`, `Units`, `DisplayHint` and `EnumValues`
 come out empty, and `atmVplOperStatus` polls as a bare integer. The module
-still loads, degraded, and says so (#62):
+still loads, degraded, and says so:
 
 - the `ParseReport` names the missing modules (`MissingImports`) and the
   affected objects (`Untyped`), and `Err()` returns an `*UnresolvedImportsError`;

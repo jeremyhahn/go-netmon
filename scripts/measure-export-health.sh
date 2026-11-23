@@ -4,7 +4,7 @@
 #
 # The expectations are written down BEFORE the run and this script prints
 # observed against expected, line by line, marking each. That is the whole
-# point: nearly every measurement fault in go-netmon#69 was a number that
+# point: nearly every measurement fault in the out-of-order remote-write incident was a number that
 # looked plausible and let its reader supply the meaning. A run that cannot
 # come out wrong is not a measurement.
 #
@@ -319,7 +319,7 @@ cmd_edit() {
     judge out_of_order "$d_ooo" "matches:$d_superseded" 'flat, or equal to superseded'
     judge repaired "$d_repaired" non-negative 'may rise: the poller reordering, repaired before sending'
 
-    printf '\n=== the go-netmon#69 mechanism ===\n'
+    printf '\n=== the out-of-order mechanism ===\n'
     if [ "$d_repaired" = "$ABSENT" ]; then
         printf '  cannot say: this build does not publish the ordering counters\n'
     elif awk -v r="$d_repaired" -v o="$d_ooo" -v s="$d_superseded" \

@@ -39,7 +39,7 @@ func sample(i int, at time.Time) *Sample {
 // background flusher wrote on a tick, so two requests could be on the wire with
 // nothing deciding which arrived first. A batch taken later could land first and
 // leave the earlier one permanently unacceptable to Prometheus -- the same
-// failure as a malformed request, reached without one (go-netmon#69).
+// failure as a malformed request, reached without one.
 //
 // The handler below holds each request open long enough that an overlap would
 // be certain if one were possible.

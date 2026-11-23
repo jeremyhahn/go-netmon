@@ -1,4 +1,4 @@
-# The e2e stack's second simulated device, "snmpsim-02" (#111).
+# The e2e stack's second simulated device, "snmpsim-02".
 #
 # snmpsim serves each file under its community: this one answers community
 # "second" on the same agent as public.snmprec. It exists so the fleet views

@@ -119,11 +119,11 @@ test-integration: ## Run integration tests in Docker environment
 # names now work rather than one of them being a documented command that fails.
 integration-test: test-integration ## Alias for test-integration (documented name)
 
-# The #69 ordering reproduction (#75), on its own. It is a separate exercise
+# The remote-write ordering reproduction, on its own. It is a separate exercise
 # from the deploy check in scripts/measure-export-health.sh, which answers
 # "did this deploy break anything" -- a different question, with a different
 # acceptable runtime. This one produces the disorder rather than waiting for it.
-integration-test-ordering: ## Run the #69 ordering-disorder reproduction (#75)
+integration-test-ordering: ## Run the remote-write ordering-disorder reproduction
 	@$(MAKE) -C test/integration test-ordering
 
 test-e2e: ## Run the Playwright browser suite against a running stack (default: make e2e-up's)
@@ -132,7 +132,7 @@ test-e2e: ## Run the Playwright browser suite against a running stack (default: 
 	@cd tests/e2e && npm ci && npx playwright test
 
 # No spec may default to production, or to anything but the disposable e2e
-# stack (#111). Checked before every browser run above, and tested here.
+# stack. Checked before every browser run above, and tested here.
 test-e2e-guard: ## Test the e2e default-target guard and run it on the suite (no browser)
 	@./scripts/tests/e2e-target-guard-tests.sh $(RUN)
 
@@ -399,7 +399,7 @@ vet-tags: ## Run go vet under every build tag the repository defines
 	@# under the default tags, so it can fail to compile indefinitely while
 	@# every default-tagged check reports green -- which is exactly what
 	@# internal/mib/parser/parser_oid_integration_test.go did, from the day it
-	@# was written until #30. A package enumeration cannot find it either:
+	@# was written until this check caught it. A package enumeration cannot find it either:
 	@# "go list ./..." reports the same 36 packages with and without the tag.
 	@# Only compiling under the tag does.
 	@for tag in $(BUILD_TAGS); do \
@@ -558,7 +558,7 @@ SHELLCHECK_OTHER = $(shell git ls-files '*.sh' | grep -vE '^(scripts/|test/integ
 # lint-early-exit-pipes.sh then refuses "producer | grep -q" and "| head" in
 # any of them that sets pipefail: the consumer's early exit SIGPIPEs the
 # producer and pipefail inverts the check once the input outgrows a pipe
-# buffer (#120). A site safe for a reason the lint cannot see carries an
+# buffer. A site safe for a reason the lint cannot see carries an
 # inline "# pipefail-ok: <reason>"; the script's header has the rules.
 lint-scripts: ## Shellcheck every shell script and refuse early-exit pipes under pipefail
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not installed" && exit 1)

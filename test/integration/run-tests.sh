@@ -106,7 +106,7 @@ HELPER_IMAGE="netmon-integration-helper:local"
 # whatever image the backup tests name is fetched fresh on every run. Naming a
 # registry-hosted image there made the suite's success conditional on a
 # rate-limited third party being reachable, every time: measured 2026-08-28
-# (#37) as a TLS handshake timeout to auth.docker.io that failed the run, with
+# as a TLS handshake timeout to auth.docker.io that failed the run, with
 # the immediately following re-run passing.
 #
 # Building and piping it in instead removes that per-run pull. The helper is

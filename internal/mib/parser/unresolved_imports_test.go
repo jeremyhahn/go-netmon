@@ -35,7 +35,7 @@ END
 
 // A module whose IMPORTS name an absent module still loads, but says so: the
 // report names the missing module and the objects it left untyped, and the
-// caller can tell by type (#62).
+// caller can tell by type.
 func TestAModuleWithAnAbsentImportReportsIt(t *testing.T) {
 	dir := t.TempDir()
 	p := New(standardMIBs(t), dir)

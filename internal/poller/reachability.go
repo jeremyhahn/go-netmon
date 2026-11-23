@@ -139,7 +139,7 @@ func (c *cycle) unreachable() bool {
 // between them read a device that was unreachable and had no scheduled retry,
 // and answered an operator "this device is down, and it will next be tried at
 // 0001-01-01T00:00:00Z". That is the pair the whole status endpoint exists to
-// report, and it was the one pair that could be read half-written (#33).
+// report, and it was the one pair that could be read half-written.
 type reachState struct {
 	// consecutive is how many cycles in a row the device answered nothing.
 	consecutive uint32

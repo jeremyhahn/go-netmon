@@ -88,7 +88,7 @@ func columnFor(t *testing.T, dash Dashboard, metric string) TableColumn {
 //     absent exactly when the network is healthy and appears only once
 //     something breaks -- a dashboard that goes dark when it is working. Worse,
 //     its absence would carry meaning with three possible causes: uniform,
-//     deselected, or not reported at all. That is #73's shape, in a UI.
+//     deselected, or not reported at all. That is a past incident's shape, in a UI.
 //   - EXEMPT enums from the rule and keep them as full columns. Then 72 rows
 //     spend their width repeating one word, which is the crowding this
 //     replaces.

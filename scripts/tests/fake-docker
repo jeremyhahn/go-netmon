@@ -654,7 +654,7 @@ image)
     #     netmon-stack.sh reads that error as "unknown, record an empty id"
     #     via "|| echo". While this arm could not fail, THAT BRANCH WAS
     #     UNREACHABLE FROM THE TESTS -- documented behaviour with no possible
-    #     coverage (#39).
+    #     coverage.
     #
     # Known images are listed in $root/images, written by the fixture from the
     # same service definitions that produce services.json, so the two cannot

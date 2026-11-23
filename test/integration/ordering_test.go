@@ -3,9 +3,9 @@
 
 package integration
 
-// The #69 ordering disorder, driven deliberately against a real Prometheus.
+// The remote-write ordering disorder, driven deliberately against a real Prometheus.
 //
-// #75 exists because the #72/#74 measurement on monitor-01 came back "6 matched, 0
+// This file exists because a measurement on monitor-01 came back "6 matched, 0
 // unexpected" with the mechanism NOT OBSERVED -- repaired_order_total 0,
 // out_of_order_total 0, nothing dropped. That is a pass and it is not evidence:
 // "no disorder occurred" and "disorder occurred and was repaired" produce the
@@ -21,7 +21,7 @@ package integration
 // was told what to refuse. A fake cannot be evidence about a contract -- it is
 // the same belief under test, restated as a stub.
 //
-// Asking the real receiver changed the answer. #69 records the chain as
+// Asking the real receiver changed the answer. The incident report recorded the chain as
 // "overlapping polls put a request out of order, Prometheus answers 400, the
 // batch is re-queued and the buffer overflows". The first two tests here take
 // that apart:
@@ -30,7 +30,7 @@ package integration
 //     accepted, HTTP 200, and the older reading is discarded in silence;
 //   - a reading offered after a newer one for its series has been COMMITTED is
 //     refused, 400. Prometheus 2.45.0 took every other reading in its request
-//     with it; 3.x, which production runs and this stack pins (#138), skips
+//     with it; 3.x, which production runs and this stack pins, skips
 //     that one reading and commits the rest.
 //
 // So the intra-request sort is not what prevents a 400 -- it is what prevents
@@ -38,8 +38,8 @@ package integration
 // measured on monitor-01 came from the second mechanism: a retried batch offered
 // after fresher samples for its series had landed.
 //
-// Both fail without their fix, which is what #75 asked for. Measured on this
-// stack when it pinned Prometheus 2.45.0, before #138 raised it: with the per-series sort removed, the overlapping
+// Both fail without their fix. Measured on this
+// stack when it pinned Prometheus 2.45.0, before the pin moved to 3.14.0: with the per-series sort removed, the overlapping
 // polls test stores 10 of 20 readings for every one of its 64 series -- 640
 // readings gone with every flush reporting success. With the admission check
 // removed, the superseded-poll test turns one late poll into a 400 and 64
@@ -69,7 +69,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/metrics"
 )
 
-// The reproduction's shape. #75 asks for a device with more interfaces than
+// The reproduction's shape. The reproduction needs a device with more interfaces than
 // pdu-03, a faster cadence than a 30s poll, and a repeated overlap rather
 // than one edit; these are those three, sized so the whole exercise runs in a
 // few seconds.
@@ -147,7 +147,7 @@ func (e *RemoteWriteTransportError) Unwrap() error { return e.Err }
 // Absence is the failure this whole exercise is about. A counter that does not
 // exist reads as zero to anything that squints, and "the mechanism did not
 // happen" then becomes indistinguishable from "the build cannot say whether it
-// happened" -- which is exactly how #69 stayed invisible for fifteen hours.
+// happened" -- which is exactly how the incident stayed invisible for fifteen hours.
 type CounterMissingError struct {
 	Name   string
 	Labels map[string]string
@@ -170,9 +170,9 @@ func (e *GatherError) Error() string { return fmt.Sprintf("gathering process met
 func (e *GatherError) Unwrap() error { return e.Err }
 
 // TestDisorderInsideOneRequestIsDiscardedWithoutASound is the first half of the
-// instrument, and it corrects the chain #69 wrote down.
+// instrument, and it corrects the chain the incident report wrote down.
 //
-// #69 says the disorder two overlapping polls produce is what Prometheus
+// The incident report says the disorder two overlapping polls produce is what Prometheus
 // answers "400: out of order sample" to. Asked directly, this receiver does
 // not. A request whose samples DESCEND WITHIN A SERIES is accepted -- HTTP 200
 // -- and the older reading is thrown away without appearing in the answer at
@@ -215,7 +215,7 @@ func TestDisorderInsideOneRequestIsDiscardedWithoutASound(t *testing.T) {
 
 	if err := postRemoteWrite(ctx, remoteWriteURL(prometheusURL), request); err != nil {
 		t.Fatalf("the endpoint refused a request whose samples descend within a series (%s): %v\n"+
-			"That is what #69 assumed, and the tests below are written for the behavior measured "+
+			"That is what the incident report assumed, and the tests below are written for the behavior measured "+
 			"instead. If the receiver now refuses, the intra-request repair is preventing a 400 "+
 			"rather than silent loss and this file's reasoning needs revisiting",
 			prometheusVersion(ctx, prometheusURL), err)
@@ -239,20 +239,20 @@ func TestDisorderInsideOneRequestIsDiscardedWithoutASound(t *testing.T) {
 }
 
 // TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost is the other half of
-// the instrument, and it is the mechanism #69 actually measured.
+// the instrument, and it is the mechanism the incident actually measured.
 //
 // A reading offered after a newer one for its series has been COMMITTED cannot
 // be staged at all: the check has something to compare it against. What the
-// receiver does next is a property of its version (#138), recorded per version
+// receiver does next is a property of its version, recorded per version
 // in refusalCommitsTheRest. Prometheus 2.45.0 returned on the first failure and
 // rolled the whole appender back, so one such reading cost every other reading
-// in its request -- #69's headline, "one out-of-order sample rejects a whole
+// in its request -- the incident's headline, "one out-of-order sample rejects a whole
 // remote-write batch". Prometheus 3.14.0, which production runs and this stack
-// pins, does the same: measured on #201's CI, 200 of 200 good series in the
+// pins, does the same: measured in CI on 2026-10-21, 200 of 200 good series in the
 // refused request were lost with it.
 //
 // So against the deployed receiver a refusal still costs the whole request,
-// and #69's cost arithmetic holds. That is why the exporter holds back a
+// and the incident's cost arithmetic holds. That is why the exporter holds back a
 // reading the endpoint has moved past (partition, reason="superseded") rather
 // than offering it in a request it would sink.
 //
@@ -337,7 +337,7 @@ func TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost(t *testing.T) {
 	case commitsTheRest && len(lost) != 0:
 		t.Errorf("%d of %d good series were lost with a request refused for ONE reading behind its "+
 			"head (endpoint %s, recorded as committing the rest): the receiver now rolls the request "+
-			"back, and #69's cost arithmetic applies again. Lost: %v", len(lost), good, version, lost)
+			"back, and the incident's cost arithmetic applies again. Lost: %v", len(lost), good, version, lost)
 	case !commitsTheRest && len(lost) != good:
 		t.Errorf("%d of %d good series survived a request refused for ONE reading behind its head "+
 			"(endpoint %s, recorded as rolling the request back): the receiver's behaviour has "+
@@ -348,7 +348,7 @@ func TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost(t *testing.T) {
 			"one reading behind its head costs that reading alone", good, version)
 	default:
 		t.Logf("all %d good series in the refused request were lost with it (endpoint %s): "+
-			"one reading behind its head costs the whole request, #69's arithmetic", good, version)
+			"one reading behind its head costs the whole request, the incident's arithmetic", good, version)
 	}
 }
 
@@ -361,16 +361,16 @@ func TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost(t *testing.T) {
 // instead of silently changing what a 400 costs. A version absent from the map
 // fails too: its cost has not been measured.
 var refusalCommitsTheRest = map[string]bool{
-	// #69, measured on the integration stack 2026-09-06.
+	// The incident's receiver, measured on the integration stack 2026-09-06.
 	"2.45.0": false,
-	// The pin since #138 (test/integration/Dockerfile.prometheus). Measured by
-	// CI on #201, 2026-10-21: refused with 400 "out of order sample", and 200
+	// The current pin (test/integration/Dockerfile.prometheus). Measured by
+	// CI on 2026-10-21: refused with 400 "out of order sample", and 200
 	// of 200 good series in the request lost with it.
 	"3.14.0": false,
 }
 
-// TestOverlappingPollsAreRepairedAndNothingIsLost is the reproduction #75 asks
-// for, and its success criterion is the one the issue states: repaired_order
+// TestOverlappingPollsAreRepairedAndNothingIsLost is the reproduction, and its
+// success criterion is: repaired_order
 // _total rising, out_of_order_total flat, nothing dropped.
 //
 // The disorder is produced the way the poller produces it. snmp.Client stamps
@@ -435,7 +435,7 @@ func TestOverlappingPollsAreRepairedAndNothingIsLost(t *testing.T) {
 
 		if err := exporter.Flush(ctx); err != nil {
 			t.Fatalf("round %d: the endpoint refused a request carrying two overlapping polls, "+
-				"which is the whole failure #69 describes: %v", round, err)
+				"which is the whole out-of-order failure: %v", round, err)
 		}
 	}
 
@@ -448,7 +448,7 @@ func TestOverlappingPollsAreRepairedAndNothingIsLost(t *testing.T) {
 	if got := after.repaired - before.repaired; got != wantRepaired {
 		t.Errorf("gonetmon_export_repaired_order_total rose by %v, want %v: "+
 			"the reproduction did not produce the disorder it exists to produce, so a pass below "+
-			"would be the same absence of evidence #75 was filed about", got, wantRepaired)
+			"would be the same absence of evidence this reproduction exists to replace", got, wantRepaired)
 	} else {
 		t.Logf("produced and repaired %v out-of-order samples across %d rounds of overlapping polls",
 			got, orderingRounds)
@@ -490,7 +490,7 @@ func TestOverlappingPollsAreRepairedAndNothingIsLost(t *testing.T) {
 }
 
 // TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever is the other half
-// of #69, and the half that turned one bad request into fifteen hours.
+// of the out-of-order incident, and the half that turned one bad request into fifteen hours.
 //
 // Ordering within a request is repairable. Ordering ACROSS requests is not: once
 // the endpoint has accepted a newer reading for a series, an older one for that
@@ -576,7 +576,7 @@ func TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever(t *testing.T) {
 	}
 	if got := exporter.BufferedSamples(); got != 0 {
 		t.Errorf("%d sample(s) are still queued, want 0: an unlandable batch that stays in the queue "+
-			"is the self-sustaining backlog #69 describes", got)
+			"is the self-sustaining backlog the incident produced", got)
 	}
 
 	// And the newer poll -- the data that could land -- is intact.
@@ -651,7 +651,7 @@ type exportCounts struct {
 // The dropped total is SUMMED from gonetmon_export_dropped_samples_total's
 // reasons rather than read from gonetmon_exports_total{status="dropped"}.
 //
-// That child no longer exists, and its removal is the point of #136: it counted
+// That child no longer exists, and its removal was deliberate: it counted
 // SAMPLES while its two siblings count FLUSHES, so anything summed or divided
 // across that metric was nonsense -- rate(...{dropped})/rate(...{success}),
 // which is how anyone asks "what fraction are we losing", divided samples by

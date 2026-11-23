@@ -20,7 +20,7 @@
 # So it lives here now, and every entry point calls it. A safety property that
 # has to be remembered separately at each call site is not a safety property.
 #
-# WHY THE OWNERSHIP CHECK IS SOURCED RATHER THAN REIMPLEMENTED (#44)
+# WHY THE OWNERSHIP CHECK IS SOURCED RATHER THAN REIMPLEMENTED
 #
 # This file used to carry its own copy of the ownership enumeration. The
 # argument for keeping it was real and is worth stating before it is dismissed:
@@ -163,13 +163,13 @@ integration_require_safe_project() {
 
     # Rule 3 is compose_foreign_containers, in scripts/lib/compose-ownership.sh
     # -- THE single implementation of this property. This file carried a second
-    # one until #44 decided it should not; the header records why, and the
+    # one until it was decided it should not; the header records why, and the
     # library's header carries the same decision from its side.
     #
     # Exit 2 is "the question could not be answered", which is a REFUSAL and is
     # deliberately not the same as an empty answer. Treating an unanswered
-    # question as a clean bill of health is one of the two defects that produced
-    # #41, and the library's header documents both. The library prints what
+    # question as a clean bill of health is one of the two defects behind
+    # an earlier guard failure, and the library's header documents both. The library prints what
     # actually failed -- which docker call, its exit status, its stderr -- and
     # this adds what that means for this caller.
     local foreign status=0

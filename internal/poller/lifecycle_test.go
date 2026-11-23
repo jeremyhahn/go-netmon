@@ -364,8 +364,8 @@ func (b *safeBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestAPollThatOutlivedItsDeviceReportsNothing is the trigger from
-// go-netmon#69, at the layer that decides whether those samples exist at all.
+// TestAPollThatOutlivedItsDeviceReportsNothing is the trigger of the
+// out-of-order remote-write incident, at the layer that decides whether those samples exist at all.
 //
 // RemoveDevice deliberately does not wait for the poll in flight -- the control
 // plane must not stall behind a device that has stopped answering, which

@@ -21,7 +21,7 @@ var ErrUnresolvedImports = errors.New("mib module has unresolved imports")
 // returned and still pollable by OID; what they lose is everything read from
 // the type -- Type, Units, DisplayHint and EnumValues -- so an enumerated
 // status polls as a bare integer. Getting this as a value, rather than a
-// module that silently looks fine, is the point (#62).
+// module that silently looks fine, is the point.
 type UnresolvedImportsError struct {
 	// Module is the module that was parsed.
 	Module string

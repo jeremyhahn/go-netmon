@@ -112,10 +112,10 @@ services:
     # run-tests.sh overrides this with the same package set. It is spelled here
     # too so that a bare "docker compose run integration-test" runs the whole
     # tagged suite rather than the one directory somebody happened to name --
-    # the omission that left internal/mib/parser unrun (#30).
+    # the omission that left internal/mib/parser unrun.
     command: ["bash", "-c", "go test -v -tags=integration $(test/integration/tagged-packages.sh)"]
 
-  # THE E2E PROFILE (#111): a whole disposable go-netmon for the browser specs.
+  # THE E2E PROFILE: a whole disposable go-netmon for the browser specs.
   #
   # The rendering specs need a stack that has polled something, and until this
   # profile the only ones that had were long-lived: the shared dev stack, and
@@ -134,7 +134,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # The poller and web UI lock sealed SNMP credentials in memory (#8), as in
+    # The poller and web UI lock sealed SNMP credentials in memory, as in
     # docker-compose.yml.
     ulimits:
       memlock:
@@ -171,7 +171,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.webui
-    # The poller and web UI lock sealed SNMP credentials in memory (#8), as in
+    # The poller and web UI lock sealed SNMP credentials in memory, as in
     # docker-compose.yml.
     ulimits:
       memlock:
@@ -216,7 +216,7 @@ services:
   # UI through the config import (the operator's restore path), so the device
   # list and dashboards the specs read have both simulated devices and their
   # standard MIBs. Its only write is that import; it calls no device or MIB
-  # endpoint (#70).
+  # endpoint.
   e2e-seed:
     profiles: ["e2e"]
     build:

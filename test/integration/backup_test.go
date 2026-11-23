@@ -82,7 +82,7 @@ func requireDinD(t *testing.T) *backup.CLI {
 //
 // The previous value was the literal "busybox:1.36". dind is recreated for
 // every run and starts with an empty image store, so that was a fresh Docker
-// Hub pull on EVERY run -- measured 2026-08-28 (#37) as a TLS handshake
+// Hub pull on EVERY run -- measured 2026-08-28 as a TLS handshake
 // timeout to auth.docker.io that failed the suite for a reason unrelated to
 // the code under test. A tag pin fixes WHICH image, not whether it can be
 // fetched.

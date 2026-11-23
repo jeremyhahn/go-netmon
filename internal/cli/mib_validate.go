@@ -51,7 +51,7 @@ type validation struct {
 	// its imports did not resolve.
 	empty bool
 	// degraded is set when the module loaded but some of its IMPORTS did not
-	// resolve, leaving objects without a type (#62). It is a warning: the
+	// resolve, leaving objects without a type. It is a warning: the
 	// module is usable, just not whole.
 	degraded error
 	// skipped marks a file that is not a MIB module at all. A directory of MIBs

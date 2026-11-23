@@ -5,7 +5,7 @@
 # with those applets in the sibling "dind" daemon. That daemon is recreated for
 # every run and starts with an EMPTY image store, so naming a registry-hosted
 # image there means a fresh third-party pull on every single run, in CI and
-# locally. Measured 2026-08-28 (#37): a TLS handshake timeout to auth.docker.io
+# locally. Measured 2026-08-28: a TLS handshake timeout to auth.docker.io
 # failed the suite for a reason with nothing to do with the code under test,
 # and the immediately following re-run passed.
 #
@@ -18,7 +18,7 @@
 #
 # This does NOT make the suite run with no network at all -- Dockerfile.test
 # still runs "apk add" and "go mod download". It removes the per-run pull into
-# dind, which is the dependency #37 is about.
+# dind, which is the dependency that failed.
 #
 # Pinned to the digest, and it must stay equal to Dockerfile.test's FROM line.
 ARG HELPER_BASE=golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf

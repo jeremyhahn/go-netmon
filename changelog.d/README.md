@@ -13,7 +13,7 @@ they land under:
 ```markdown
 ### Added
 
-- **devices**: Registering a device that is already registered returns the existing device instead of an error. ([#83](../../issues/83))
+- **devices**: Registering a device that is already registered returns the existing device instead of an error. ([#N](../../issues/N))
 
 ### Changed
 
