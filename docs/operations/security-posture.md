@@ -1,0 +1,168 @@
+# Security Posture
+
+> **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-11-23
+
+What this deployment does and does not defend against, so neither has to be
+rediscovered by reading the code.
+
+## The API is unauthenticated, deliberately
+
+**Every endpoint the web UI serves is open to anyone who can reach the port
+(8080 on a native install, published as 8082 by `docker-compose.yml`), and
+`GET /api/devices` returns each device's SNMP community string in clear text.**
+
+```
+$ curl -s http://<host>:8080/api/devices | head -c 120
+{"devices":[{"id":4,"name":"bastion","address":"198.51.100.14","snmp_version":"2c","community":"public",...
+```
+
+The same applies to the poller's control API on 9080 and the metrics endpoint on
+9100. There is no authentication, no authorization, and no rate limiting on any
+of them.
+
+This is a design decision, not an oversight. go-netmon is meant to run on a
+trusted management network, and the access control is the network: whoever can
+reach the port is already trusted. Out of the box the poller binds
+`0.0.0.0:8080` (API) and `0.0.0.0:9100` (metrics) and the web UI binds `:8080`
+([`internal/config/addresses.go`](../../internal/config/addresses.go)), so a
+fresh install listens on every interface until you change `listen_address`.
+
+### What that means in practice
+
+* **Do not publish these ports.** No port forward, no reverse proxy exposing
+  them to the internet, no binding to a public interface. Everything the API
+  offers — reading credentials, adding and deleting devices, importing MIBs,
+  changing poll intervals — is available to any client that reaches it.
+* **Reaching the host is enough.** Anything running on the host, in another
+  container on a shared network, or on the same LAN segment can call these
+  endpoints. There is no second factor behind the network.
+* **The community strings are the real prize.** They are read-only SNMP
+  credentials for core routers and PDUs. Anyone who can read them can poll those
+  devices directly.
+
+### The recommended deployment
+
+**Keep the ports private, or put an authenticating reverse proxy in front of
+them.** This is the same posture as go-sysmon, and for the same reason: the
+service is a component, not a product with its own identity system, and building
+a second-rate one into it would be worse than deferring to something that does
+authentication properly.
+
+Either of these is a supported way to run it:
+
+* **Private ports.** Bind the web UI port (8080, or 8082 under compose), 9080 and 9100 to an interface only trusted
+  clients can reach — a management VLAN, a WireGuard interface, or `127.0.0.1`
+  with an SSH tunnel for occasional access. The shipped `deploy/config.yaml`
+  binds 9080 and 9100 on all interfaces (`:9080`, `:9100`), so this needs a
+  firewall or an edited `listen_address`; it is not the default.
+* **An authenticating reverse proxy.** Terminate TLS and authenticate at nginx,
+  Caddy, Authelia, oauth2-proxy or equivalent, and let only that proxy reach the
+  service ports. The API is stateless and has no session of its own, so a proxy
+  that injects an identity header or simply gates access works without any
+  change here.
+
+What is **not** supported is publishing these ports directly. Everything the API
+offers — reading credentials, adding and deleting devices, importing MIBs — is
+available to whatever reaches it.
+
+### Why authentication is not built in
+
+go-netmon is intended to become a plugin for **go-trusted-platform**, which owns
+identity, authorization and attestation for the components that run under it.
+Authentication belongs at that layer. Implementing a private scheme here would
+mean either throwing it away at integration, or carrying two identity systems
+that disagree — and a monitoring tool is a poor place to invent credential
+handling.
+
+Until then the network is the boundary, as above.
+
+If that changes before the platform integration lands, the API router in
+`internal/webui/api/server.go` is where a check would go. It has no middleware
+today: `noCacheMiddleware` wraps only the static asset handler. Options
+considered, for whoever picks this up:
+
+| Approach | Cost | Notes |
+|---|---|---|
+| Authenticating reverse proxy | None in this codebase | The recommendation above. No code change, and the proxy is replaceable. |
+| Bearer token from config, plus a login page for the browser | Moderate | Self-contained; no dependency on other services. The CLI is already an HTTP client and would carry the token as a flag. Likely thrown away at platform integration. |
+| Redact credentials from the API and bind to `127.0.0.1` | Small | Removes the credential leak and the remote surface, but anything on the host still has full control. Worth doing independently of authentication. |
+| Identity from go-trusted-platform | Large, but the intended end state | Where this is going. Not worth building against before the plugin interface exists. |
+
+## What is defended
+
+These are properties the code holds regardless of the network, and they have
+tests that fail if they stop holding.
+
+* **Filesystem containment.** `netmon-backup` resolves every path it creates,
+  empties or overwrites against an open directory handle (`os.Root`), so a path
+  that would leave the chosen directory is refused by the kernel rather than
+  sanitized. `TestNothingBypassesTheContainment` fails the build if any code in
+  that tool reaches the filesystem another way or hands a command line to a
+  shell. See [backup-restore.md](backup-restore.md).
+* **MIB uploads.** The upload directory is held open as an `os.Root` and files
+  are addressed by name within it, so an uploaded name cannot traverse out and
+  cannot be followed through a symbolic link planted in that directory.
+  `TestUploadCannotWriteThroughASymlink` plants one and asserts the target is
+  untouched.
+* **Compose project ownership.** The backup tool refuses to stop, copy or
+  restore anything in a project holding a container its own compose file did not
+  create, and refuses volumes not labelled for the project.
+* **Dependency vulnerabilities.** `make security` runs `govulncheck` over the
+  dependencies and the linked standard library, and it runs as a job in
+`.github/workflows/ci.yml`.
+* **SNMP credentials in the poller's memory.** Sealed in go-enclave protected
+  memory, opened only for the length of one request. See below.
+
+## Where SNMP credentials live
+
+This covers the v2c community and the v3 authentication and privacy passphrases.
+It describes the **poller process**. The web UI's copy is covered further down.
+
+* **Loaded config.** `poller.Start` builds a worker per device and seals that
+  device's secrets. It then blanks them in the loaded `Config`
+  (`Config.ScrubCredentials`). After that the config holds no credential.
+* **Device worker.** Each worker owns a `*snmp.Credentials`, which holds one
+  go-enclave `Sealed` per secret. The worker's own copy of the device has those
+  fields empty.
+* **Pooled client.** The client borrows the worker's credentials. For each
+  request it:
+  1. opens the secrets;
+  2. puts them on the gosnmp connection;
+  3. sends;
+  4. blanks the passphrases and wipes the derived v3 keys before it returns.
+
+  Between requests the connection holds nothing.
+* **gosnmp's passphrase cache.** It is process-wide and would keep derived keys
+  indefinitely, so it is disabled (`gosnmp.PasswordCaching(false)`). As a result,
+  v3 keys are re-derived on every request.
+* **Removing a device, stopping the poller.** `RemoveDevice` and `Stop` destroy
+  the device's sealed credentials. A request after that fails with a
+  `*snmp.CredentialError` wrapping `enclave.ErrEnclaveDestroyed`, and nothing is
+  sent.
+* **Choosing the provider.** The go-enclave provider is constructed in exactly
+  one place, `credential.Default()`. It is injected with `poller.WithSealer`, and
+  netmon code depends only on the `enclave.Sealer` interface.
+
+`internal/poller/credentials_test.go` checks these properties:
+
+* it polls v2c and v3 agents, which reject any wrong credential;
+* it reflects over the whole poller to confirm that no reachable string or byte
+  slice holds a secret;
+* it confirms that removing a device and stopping the poller destroy the sealed
+  credentials.
+
+### What is not covered
+
+* **Immutable Go strings.** Strings decoded from the YAML file or from API
+  request bodies cannot be wiped. They stay in the heap until the garbage
+  collector reclaims them.
+* **The web UI.** The web UI database, its API DTOs, the SNMP tester and the CLI
+  flags still carry credentials as plain strings. `GET /api/devices` still
+  returns them, as described above.
+* **On disk.** The storage format is unchanged, and credentials are not encrypted
+  at rest.
+
+## Reporting
+
+Report a vulnerability privately as described in
+[SECURITY.md](../../SECURITY.md). Do not open a public issue for it.

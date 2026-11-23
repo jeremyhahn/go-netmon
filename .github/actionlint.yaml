@@ -1,0 +1,7 @@
+# actionlint configuration.
+#
+# Every job runs on a GitHub-hosted runner, so no self-hosted runner label is
+# declared. No repository configuration variable is used either: the empty
+# list makes any `vars.*` reference a lint error rather than a silent empty
+# string.
+config-variables: []

@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in go-netmon does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security vulnerabilities here. Follow SECURITY.md instead.
+        Remove SNMP community strings, passphrases and addresses you do not want public from anything you paste.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add a device with SNMP v2c ...
+        2. Assign IF-MIB ...
+        3. Open the dashboard ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `netmon version`, or the release archive or image tag.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is it installed?
+      options:
+        - Release archive
+        - Container image (ghcr.io)
+        - Docker Compose from source (make run)
+        - systemd services (make deploy)
+        - Built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      options:
+        - Ordinary
+        - FIPS
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and SNMP version
+      description: Vendor, model and OS of the device involved, and SNMP v1, v2c or v3, if relevant.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines from the poller or web UI.
+      render: text

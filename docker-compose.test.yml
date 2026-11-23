@@ -1,0 +1,292 @@
+services:
+  # Prometheus for receiving metrics
+  prometheus:
+    build:
+      context: .
+      dockerfile: test/integration/Dockerfile.prometheus
+    # Published on an ephemeral host port, not a fixed one: the tests reach
+    # prometheus as "prometheus:9090" over test-network, so a fixed host port
+    # serves only local poking while making two concurrent stacks collide on
+    # the bind. Find it with: docker compose -p <project> port prometheus 9090
+    ports:
+      - "9090"
+    volumes:
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-remote-write-receiver'
+      - '--web.enable-lifecycle'
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Mock SNMP agent for testing
+  snmp-simulator:
+    build:
+      context: .
+      dockerfile: test/integration/Dockerfile.snmpsim
+    # Ephemeral for the same reason as prometheus; the tests use
+    # SNMP_HOST=snmp-simulator on test-network.
+    ports:
+      - "161/udp"
+    environment:
+      - SNMPSIM_AGENT_UDPV4_ENDPOINT=0.0.0.0:161
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "test", "-f", "/usr/local/snmpsim/data/public.snmprec"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+      start_period: 5s
+
+  # Integration test runner
+  # A Docker daemon of its own, for the tests that drive one.
+  #
+  # netmon-backup exports and imports volumes, stops and starts services, and
+  # empties directories inside containers. Testing that needs a real daemon, and
+  # the two obvious ways to get one are both bad: mounting the host socket gives
+  # the test container root on the host, and running the suite on the host
+  # breaks the rule that integration tests run in a container.
+  #
+  # This is the third way. The daemon is a sibling container, privileged but
+  # ephemeral and empty: it sees none of the host's containers or volumes, so a
+  # backup test cannot reach the live go-netmon deployment even if its project
+  # resolution were wrong. Everything it creates dies with the stack.
+  dind:
+    image: docker:27-dind
+    # Behind a profile, so it is started only when something asks for it.
+    #
+    # A privileged container is not available everywhere -- a CI runner that is
+    # itself unprivileged or rootless cannot start one. That must degrade to
+    # "this coverage was not obtained", announced, rather than failing the whole
+    # suite: the other integration tests have nothing to do with Docker.
+    # run-tests.sh tries to start it and passes DOCKER_HOST only if it comes up.
+    profiles: ["dind"]
+    privileged: true
+    environment:
+      # Plain TCP on an internal bridge network with no published ports. TLS
+      # here would only protect the test container from itself.
+      - DOCKER_TLS_CERTDIR=
+    command: ["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"]
+    volumes:
+      # Its own storage, so overlay2 is not stacked on the test image's overlay.
+      - dind-storage:/var/lib/docker
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  integration-test:
+    build:
+      context: .
+      dockerfile: test/integration/Dockerfile.test
+    # The tests run the poller and the web UI in-process, sealing and opening
+    # SNMP credentials in locked memory; the same limit as docker-compose.yml.
+    ulimits:
+      memlock:
+        soft: 16777216
+        hard: 16777216
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      snmp-simulator:
+        condition: service_healthy
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - SNMP_HOST=snmp-simulator
+      - SNMP_PORT=161
+    networks:
+      - test-network
+    # run-tests.sh overrides this with the same package set. It is spelled here
+    # too so that a bare "docker compose run integration-test" runs the whole
+    # tagged suite rather than the one directory somebody happened to name --
+    # the omission that left internal/mib/parser unrun (#30).
+    command: ["bash", "-c", "go test -v -tags=integration $(test/integration/tagged-packages.sh)"]
+
+  # THE E2E PROFILE (#111): a whole disposable go-netmon for the browser specs.
+  #
+  # The rendering specs need a stack that has polled something, and until this
+  # profile the only ones that had were long-lived: the shared dev stack, and
+  # production. These three services poll the simulator above into the
+  # prometheus above -- the one pin, 3.14.0, nothing second -- and serve the web
+  # UI on localhost:${NETMON_E2E_PORT:-8083}, which is DISPOSABLE_URL in
+  # tests/e2e/target.ts. Bring it up with "make e2e-up"; "make integration-down"
+  # removes it with its volumes.
+  #
+  # The simulated devices are the two recordings in test/integration/snmp-data
+  # (SNMPv2-MIB system, IF-MIB with ifXTable, HOST-RESOURCES-MIB, some IP-MIB),
+  # so the specs see two devices, "snmpsim-01" and "snmpsim-02", and their
+  # series. tests/e2e/stack.ts names them for the specs.
+  poller:
+    profiles: ["e2e"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # The poller and web UI lock sealed SNMP credentials in memory (#8), as in
+    # docker-compose.yml.
+    ulimits:
+      memlock:
+        soft: 16777216
+        hard: 16777216
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      snmp-simulator:
+        condition: service_healthy
+    # Copied into the container by compose, not bind-mounted: the CI daemon
+    # resolves bind paths on its own host, which is why this stack bakes or
+    # copies every file it reads.
+    configs:
+      - source: e2e-poller-config
+        target: /app/config/config.yaml
+    environment:
+      - CONFIG_PATH=/app/config/config.yaml
+      # No WEBUI_URL: the poller's devices are the config's, so the stack polls
+      # from its first second without the seed having run.
+    volumes:
+      - e2e-poller-data:/app/data
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  webui:
+    profiles: ["e2e"]
+    build:
+      context: .
+      dockerfile: Dockerfile.webui
+    # The poller and web UI lock sealed SNMP credentials in memory (#8), as in
+    # docker-compose.yml.
+    ulimits:
+      memlock:
+        soft: 16777216
+        hard: 16777216
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      poller:
+        condition: service_healthy
+    configs:
+      - source: e2e-poller-config
+        target: /app/config/config.yaml
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - CONFIG_PATH=/app/config/config.yaml
+    command:
+      - "-listen=:8080"
+      - "-prometheus=http://prometheus:9090"
+      - "-poller=http://poller:9080"
+      - "-db=/app/data/webui/webui.db"
+      - "-mib-storage=/app/data/mibs"
+      - "-mib-catalog=/app/data/webui/mib.db"
+    volumes:
+      - e2e-webui-data:/app/data/webui
+      - e2e-poller-data:/app/data/mibs
+    # Fixed, unlike prometheus and the simulator: the browser runs on the host
+    # and needs an address it can be told in advance. Loopback only -- the web
+    # UI is unauthenticated (docs/operations/security-posture.md).
+    ports:
+      - "127.0.0.1:${NETMON_E2E_PORT:-8083}:8080"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  # One shot: restores test/integration/snmp-data/e2e-config.json into the web
+  # UI through the config import (the operator's restore path), so the device
+  # list and dashboards the specs read have both simulated devices and their
+  # standard MIBs. Its only write is that import; it calls no device or MIB
+  # endpoint (#70).
+  e2e-seed:
+    profiles: ["e2e"]
+    build:
+      context: .
+      dockerfile: test/integration/Dockerfile.test
+    depends_on:
+      webui:
+        condition: service_healthy
+    environment:
+      - WEBUI_URL=http://webui:8080
+    networks:
+      - test-network
+    command: ["bash", "test/integration/e2e-seed.sh"]
+
+networks:
+  test-network:
+    driver: bridge
+
+configs:
+  e2e-poller-config:
+    content: |
+      global:
+        default_poll_interval: 15
+        max_workers: 2
+        snmp_timeout: 5
+        snmp_retries: 2
+      prometheus:
+        remote_write_url: "http://prometheus:9090/api/v1/write"
+        batch_size: 1000
+        flush_interval: 5
+        # The only collector on this stack.
+        emit_metric_catalog: true
+      api:
+        listen_address: ":9080"
+        enabled: true
+      metrics:
+        listen_address: ":9100"
+        enabled: true
+      mib:
+        paths:
+          - "./mibs/standard"
+        storage_path: "./data/mib-storage"
+        auto_load:
+          - "SNMPv2-MIB"
+          - "IF-MIB"
+          - "HOST-RESOURCES-MIB"
+      logging:
+        level: "info"
+        format: "json"
+        output: "stdout"
+      devices:
+        - name: "snmpsim-01"
+          address: "snmp-simulator:161"
+          snmp_version: "2c"
+          community: "public"
+          modules: ["SNMPv2-MIB", "IF-MIB", "HOST-RESOURCES-MIB"]
+          poll_interval: 15
+          enabled: true
+        # The same agent under community "second": test/integration/snmp-data/
+        # second.snmprec, so the fleet views have two devices.
+        - name: "snmpsim-02"
+          address: "snmp-simulator:161"
+          snmp_version: "2c"
+          community: "second"
+          modules: ["SNMPv2-MIB", "IF-MIB", "HOST-RESOURCES-MIB"]
+          poll_interval: 15
+          enabled: true
+
+volumes:
+  prometheus-data:
+  dind-storage:
+  e2e-poller-data:
+  e2e-webui-data:

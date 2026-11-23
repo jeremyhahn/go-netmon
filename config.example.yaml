@@ -1,0 +1,141 @@
+# go-netmon Configuration for Cisco Routers
+# Copy this to config.yaml and update with your router details
+
+global:
+  default_poll_interval: 30  # Poll every 30 seconds
+  max_workers: 10
+  snmp_timeout: 10
+  snmp_retries: 3
+
+prometheus:
+  remote_write_url: "http://prometheus:9090/api/v1/write"
+
+  # batch_size bounds BOTH when a flush is triggered and how many samples one
+  # remote-write request may carry. It used to bound only the trigger: Flush
+  # took the whole buffer and sent it as one request, so a retry backlog -- at
+  # least 100,000 samples -- shipped as a single protobuf that the endpoint
+  # would refuse at the same size on every attempt (#63). A request is
+  # additionally bounded by its encoded size, because a sample is not a fixed
+  # width: an ifAlias or an entPhysicalName is whatever somebody typed into the
+  # box.
+  batch_size: 1000
+  flush_interval: 10
+
+  # This collector publishes the metric catalog: the series that tell a
+  # dashboard what every metric means, so the UI renders from Prometheus alone
+  # and needs no MIBs of its own.
+  #
+  # EXACTLY ONE collector in a fleet may have this on. The catalog carries no
+  # device label, so every collector would write the same series at
+  # uncoordinated moments, and a write landing behind one already ingested is
+  # rejected out of order. That needs more than one collector to show up at
+  # all, so it works in development and fails intermittently in production.
+  #
+  # Defaults to FALSE, so designation is always a decision somebody made: an
+  # upgraded shard whose config predates this field must not silently become a
+  # second emitter. Set explicitly here because this appliance runs one
+  # collector.
+  emit_metric_catalog: true
+
+api:
+  listen_address: ":8080"
+  enabled: true
+
+metrics:
+  # Must match the port published for the go-netmon service in
+  # docker-compose.yml and the go-netmon scrape target in prometheus.yml.
+  listen_address: ":9100"
+  enabled: true
+
+mib:
+  paths:
+    - "./mibs/standard"
+  storage_path: "./data/mib-storage"
+  # A bootstrap list, not a limit: modules assigned to a device through the web
+  # UI are parsed on demand from the paths above when that device is registered.
+  auto_load:
+    - "SNMPv2-MIB"
+    - "IF-MIB"
+
+webui:
+  # How often the web UI pushes a round of metric updates to every connected
+  # browser, in seconds. One hub serves every open browser, so this is a server
+  # setting rather than something a viewer can change: a dashboard control would
+  # change the rate for everyone else too. A viewer's own refresh cadence lives
+  # in their browser, under Settings, and reaches no one but them.
+  #
+  # Devices are polled on their own schedule -- per device, or
+  # global.default_poll_interval above. Nothing here changes that: pushing more
+  # often than a device is polled re-sends readings that have not moved.
+  stream_interval: 5
+
+logging:
+  # debug turns on per-OID and per-query tracing; info keeps it silent.
+  level: "info"
+  format: "json"   # json | text
+  output: "stdout" # stdout | file
+  # file: "/app/data/netmon.log"  # required when output is "file"
+
+# Configure your Cisco routers here
+devices:
+  # Example 1: SNMPv2c Cisco Router
+  - name: "cisco-router-1"
+    address: "203.0.113.1:161"  # Replace with your router IP
+    snmp_version: "2c"
+    community: "public"          # Replace with your SNMP community string
+    profile: "cisco"
+    poll_interval: 30
+    enabled: true
+    tags:
+      location: "datacenter"
+      device_type: "router"
+
+  # Example 2: SNMPv3 Cisco Router (more secure)
+  - name: "cisco-router-2"
+    address: "203.0.113.2:161"  # Replace with your router IP
+    snmp_version: "3"
+    username: "snmpuser"         # Replace with your SNMPv3 username
+    auth_protocol: "SHA"
+    auth_password: "authpass123" # Replace with your auth password
+    priv_protocol: "AES"
+    priv_password: "privpass123" # Replace with your priv password
+    profile: "cisco"
+    poll_interval: 30
+    enabled: true
+    tags:
+      location: "branch-office"
+
+# What the bell reports.
+#
+# Read by the web UI, which evaluates them against Prometheus and shows what is
+# firing; the poller ignores them. Send the web UI SIGHUP -- `systemctl reload
+# go-netmon-webui` on a systemd deployment -- to re-read this file without a
+# restart. A file that will not parse or will not validate leaves the running
+# rules exactly as they were, so a typo cannot empty the bell.
+#
+# A rule is PromQL and fires once per series its expression returns, so a rule
+# about interfaces fires once per interface. Two ports being down is two things
+# to fix -- but it is also what to think about when writing one, because an
+# expression that matches broadly will fill the bell.
+#
+# severity is critical, warning or info, and orders the list.
+# for is how long the expression must keep returning a series before the alarm
+# is raised. It is what separates a condition from a blip; omit it to raise on
+# the first evaluation.
+alarms:
+  - name: DeviceUnreachable
+    expr: gonetmon_device_unreachable == 1
+    severity: critical
+    for: 2m
+    summary: A device has stopped answering SNMP
+    description: >-
+      The poller has not had an answer from this device. Everything on its
+      dashboard is the last thing it said, however recent the timestamps look.
+
+  - name: MetricsNotReachingPrometheus
+    expr: gonetmon_export_stalled == 1
+    severity: critical
+    summary: The collector cannot write to Prometheus
+    description: >-
+      Samples are being buffered and not delivered. The devices are being
+      polled and nothing is being recorded.

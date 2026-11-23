@@ -1,0 +1,440 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # `labeled` so that adding `ci:full` to an open PR starts a full-tier run.
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+# Two tiers (#196). There is no `schedule:` trigger: a full-tier run on demand
+# is a `workflow_dispatch`.
+#
+#   PR tier    every event         lint, security, test (-race), build, scripts
+#   full tier  push to main,       fips, integration
+#              a PR labelled
+#              `ci:full`, or
+#              workflow_dispatch
+#
+# A full-tier job carries its own `if:`; CI Passed evaluates the same condition
+# and, when it holds, requires those jobs to succeed as well.
+
+# One group per ref: a newer PR push cancels the older PR run. On main, one group per
+# event and sha: every main commit gets its own full run and a merge never cancels one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The go.mod directive pins the toolchain, so CI follows whatever the project
+  # declares rather than a constant here that drifts from it.
+  GO_VERSION_FILE: go.mod
+
+jobs:
+  lint:
+    name: Format, Vet & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      # GitHub-hosted runners ship neither golangci-lint nor actionlint, and
+      # "make lint" fails closed on a missing binary. Each tool is used if the
+      # runner already has it and otherwise installed here with "go install" at
+      # its pin, retried because the module proxy flakes. Full sumdb
+      # verification stays on.
+      #
+      # The golangci-lint pin lives in the Makefile (GOLANGCI_LINT_VERSION) and
+      # "make lint" refuses a binary whose version does not match it EXACTLY,
+      # so this step checks the same equality and fails here, naming the
+      # mismatch, rather than linting with the wrong version. v2.14.0 is
+      # required because v2.12.2 cannot lint Go 1.27 (its buildir SSA pass
+      # panics on stdlib "poll") and v2.13.0's nilness pass panics; either
+      # reports a red gate with zero findings.
+      #
+      # A version bump changes the Makefile pin and this floor together.
+      - name: Provide golangci-lint
+        env:
+          GOLANGCI_LINT_MIN: "2.14.0"    # keep in step with the Makefile
+        run: |
+          set -eu
+          gobin="$(go env GOPATH)/bin"
+          export PATH="$gobin:$PATH"
+          echo "$gobin" >> "$GITHUB_PATH"
+          if command -v golangci-lint > /dev/null 2>&1; then
+            echo "using the runner's golangci-lint: $(command -v golangci-lint)"
+          else
+            echo "golangci-lint absent; installing the pinned version"
+            ok=0
+            for i in 1 2 3; do
+              if go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${GOLANGCI_LINT_MIN}"; then ok=1; break; fi
+              echo "install attempt $i failed; retrying"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "golangci-lint install failed after 3 attempts"; exit 1; }
+          fi
+          out=$(golangci-lint version 2>&1)
+          echo "golangci-lint reports: $out"
+          have=$(printf '%s\n' "$out" | sed -n 's/.* version v\{0,1\}\([0-9.]*\).*/\1/p')
+          if [ "$have" != "$GOLANGCI_LINT_MIN" ]; then
+            echo "golangci-lint is '${have}', but make lint accepts exactly ${GOLANGCI_LINT_MIN}"; exit 1
+          fi
+
+      - name: Provide actionlint
+        env:
+          ACTIONLINT_MIN: "1.7.12"
+        run: |
+          set -eu
+          gobin="$(go env GOPATH)/bin"
+          export PATH="$gobin:$PATH"
+          if command -v actionlint > /dev/null 2>&1; then
+            echo "using the runner's actionlint: $(command -v actionlint)"
+          else
+            echo "actionlint absent; installing the pinned version"
+            ok=0
+            for i in 1 2 3; do
+              if go install "github.com/rhysd/actionlint/cmd/actionlint@v${ACTIONLINT_MIN}"; then ok=1; break; fi
+              echo "install attempt $i failed; retrying"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "actionlint install failed after 3 attempts"; exit 1; }
+          fi
+          out=$(actionlint -version 2>&1)
+          echo "actionlint reports: $out"
+          have=$(printf '%s\n' "$out" | sed -n '1s/^v\{0,1\}\([0-9.]*\).*/\1/p')
+          lowest=$(printf '%s\n%s\n' "$ACTIONLINT_MIN" "$have" | sort -V | sed -n 1p)
+          if [ -z "$have" ] || [ "$lowest" != "$ACTIONLINT_MIN" ]; then
+            echo "actionlint is '${have}', below the floor ${ACTIONLINT_MIN}"; exit 1
+          fi
+
+      # Separate targets so a formatting failure is distinguishable from a lint
+      # finding in the job log.
+      - run: make fmt-check
+      - run: make vet
+
+      # go vet is scoped to the tag set it is given, so the step above cannot
+      # see a file behind //go:build integration at all. One such file had
+      # never compiled since the day it was written and every job stayed green
+      # (#30). This compiles the tree under every tag the repo defines.
+      - run: make vet-tags
+
+      - run: make lint
+
+      - name: Lint workflows
+        run: actionlint
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    # No `needs`: every job starts at once, so a run takes
+    # as long as its slowest job. CI Passed needs them all and fails closed.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      # GitHub-hosted runners have neither govulncheck nor trivy, so each is
+      # used if the runner has it and otherwise installed here at a pin, for
+      # the reason spelled out in the lint job above. Both are pinned rather than "@latest": an
+      # unpinned scanner makes the finding set whatever was published that
+      # morning.
+      - name: Provide govulncheck
+        env:
+          GOVULNCHECK_MIN: "1.8.0"
+        run: |
+          set -eu
+          gobin="$(go env GOPATH)/bin"
+          export PATH="$gobin:$PATH"
+          echo "$gobin" >> "$GITHUB_PATH"
+          if command -v govulncheck > /dev/null 2>&1; then
+            echo "using the runner's govulncheck: $(command -v govulncheck)"
+          else
+            echo "govulncheck absent; installing the pinned version"
+            ok=0
+            for i in 1 2 3; do
+              if go install "golang.org/x/vuln/cmd/govulncheck@v${GOVULNCHECK_MIN}"; then ok=1; break; fi
+              echo "install attempt $i failed; retrying"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "govulncheck install failed after 3 attempts"; exit 1; }
+          fi
+          out=$(govulncheck -version 2>&1)
+          echo "govulncheck reports: $out"
+          have=$(printf '%s\n' "$out" | sed -n 's/.*govulncheck@v\([0-9.]*\).*/\1/p')
+          lowest=$(printf '%s\n%s\n' "$GOVULNCHECK_MIN" "$have" | sort -V | sed -n 1p)
+          if [ -z "$have" ] || [ "$lowest" != "$GOVULNCHECK_MIN" ]; then
+            echo "govulncheck is '${have}', below the floor ${GOVULNCHECK_MIN}"; exit 1
+          fi
+
+      # trivy is a release tarball, not a Go module, so there is no sumdb to
+      # verify it: the tarball is checked against a sha256 pinned here instead.
+      # TRIVY_SHA256 is the trivy_0.75.0_Linux-64bit.tar.gz line of
+      # https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_checksums.txt
+      # A version bump changes TRIVY_MIN and TRIVY_SHA256 together, the hash
+      # read again from the new release's checksums file.
+      - name: Provide trivy
+        env:
+          TRIVY_MIN: "0.75.0"
+          TRIVY_SHA256: "c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f"
+        run: |
+          set -eu
+          if command -v trivy > /dev/null 2>&1; then
+            echo "using the runner's trivy: $(command -v trivy)"
+          else
+            echo "trivy absent; installing the pinned version"
+            dir="$RUNNER_TEMP/trivy"
+            mkdir -p "$dir"
+            tarball="trivy_${TRIVY_MIN}_Linux-64bit.tar.gz"
+            url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_MIN}/${tarball}"
+            ok=0
+            for i in 1 2 3; do
+              if curl -fsSL -o "$dir/$tarball" "$url"; then ok=1; break; fi
+              echo "download attempt $i failed; retrying"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "trivy download failed after 3 attempts"; exit 1; }
+            (cd "$dir" && echo "${TRIVY_SHA256}  ${tarball}" | sha256sum -c -)
+            tar -xzf "$dir/$tarball" -C "$dir" trivy
+            echo "$dir" >> "$GITHUB_PATH"
+            export PATH="$dir:$PATH"
+          fi
+          out=$(trivy --version 2>&1)
+          echo "trivy reports: $out"
+          have=$(printf '%s\n' "$out" | sed -n 's/^Version: v\{0,1\}\([0-9.]*\).*/\1/p')
+          lowest=$(printf '%s\n%s\n' "$TRIVY_MIN" "$have" | sort -V | sed -n 1p)
+          if [ -z "$have" ] || [ "$lowest" != "$TRIVY_MIN" ]; then
+            echo "trivy is '${have}', below the floor ${TRIVY_MIN}"; exit 1
+          fi
+
+      # Covers the dependencies and the standard library this project links
+      # against, so a regression in the go.mod toolchain pin fails here; trivy fs
+      # adds dependency CVEs and leaked secrets across the tree. A missing
+      # scanner fails the target rather than skipping it.
+      - run: make security
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      # The unit suite under -race.
+      - name: Run unit tests
+        run: make test
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -25
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 7
+
+  build:
+    name: Build All Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      # Five binaries ship from this repository: the poller, the web UI, the
+      # MIB importer, the CLI and the backup tool. Building only the default
+      # target let cmd/netmon-backup break without CI noticing.
+      - run: make build-all
+
+  scripts:
+    name: Shell Suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      # This repository ships five bash test suites -- 88 cases covering the
+      # backup/restore scripts, the golangci-lint pin guard, the integration
+      # cleanup trap, the harness's compose namespacing and the compose
+      # project guard -- and until this job existed CI ran NONE of them. They are reachable only
+      # through "make ci-fast", which no workflow calls: every job above runs
+      # a specific target (fmt-check, vet, lint, security, test, build-all,
+      # integration-test) and none of those depends on them.
+      #
+      # That is the worst shape a guard can have. The suites are real, they
+      # pass, they are cited in review as the evidence for safety-critical
+      # behaviour -- and a change that broke one of them turned nothing red.
+      # The teardown suite in particular exists because a leak passed CI for
+      # weeks; it was merged into a repository that then never ran it.
+      #
+      # Named individually rather than as "make ci-fast", which would also
+      # re-run lint, the unit tests and every binary build that the lint,
+      # test and build jobs already run.
+      - name: Shell test suites
+        run: make test-scripts test-toolchain test-teardown test-integration-harness test-integration-guard test-e2e-guard test-release
+
+      # The linter, which this job left behind when it was created.
+      #
+      # "make lint-scripts" has always existed and named all seven scripts, and
+      # no workflow ran it -- so shellcheck ran nowhere. That is the same defect
+      # this job was added to fix, one notch over: it wired up the shell SUITES
+      # and not the shell LINTER, which is harder to notice because the job now
+      # exists and reads as coverage.
+      #
+      # It was excluded until now for a real reason: shellcheck was not in the
+      # runner image, and installing it at job time is what that image exists to
+      # prevent. The image carries shellcheck 0.11.0 now, so the reason is gone.
+      #
+      # Findings are suppressed per site with a reason on the line, never with
+      # --severity or a .shellcheckrc: a blanket silences the next real finding
+      # as well as this one. Every suppression in the tree has been shown to
+      # suppress something -- the finding present without the directive, absent
+      # with it -- because a misplaced directive silently suppresses nothing
+      # while reading as a settled question, which is how one of them sat
+      # broken in guard-tests.sh.
+      - name: Lint shell scripts
+        run: make lint-scripts
+
+  fips:
+    name: FIPS
+    runs-on: ubuntu-latest
+    # Full tier. The same condition is repeated in CI Passed.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    # No `needs`: every job starts at once, so a run takes
+    # as long as its slowest job. CI Passed needs them all and fails closed.
+    timeout-minutes: 30
+    env:
+      GOFIPS140: latest
+      # STRICT mode, not `on`. `fips140=on` loads the Go Cryptographic Module
+      # but still PERMITS non-approved algorithms, so a path using MD5 or
+      # SHA-1 succeeds and this job reports green -- a compliance gate that
+      # cannot fail on the thing it exists to catch. `fips140=only` makes
+      # those operations error or panic, which is what a FedRAMP / PCI DSS /
+      # HIPAA gate has to do.
+      #
+      # If this job fails, that failure IS the finding. Do not weaken it back
+      # to `on` to make it pass.
+      GODEBUG: fips140=only
+    steps:
+      # Same action majors and the same cache setting as every other job in
+      # this file. The template this job came from used @v6 and no cache, which
+      # left one job in the workflow on a different major -- so a breaking
+      # change in either action would land here and nowhere else, which is the
+      # hardest version of that failure to recognise. The missing cache was not
+      # free either: this job builds and tests the whole module twice over, and
+      # without it that starts from an empty module and build cache every run.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      # -tags fips selects the FIPS variant of the product. It is not a way to
+      # test less: the tag removes exactly the code that CANNOT operate under
+      # fips140=only, because the algorithm is named by an external protocol
+      # rather than chosen by this repository --
+      #
+      #   * the WebSocket upgrade handshake, whose Sec-WebSocket-Accept is a
+      #     SHA-1 digest (RFC 6455 section 4.2.2), and
+      #   * SNMPv3's MD5 and SHA-1 authentication and DES privacy
+      #     (RFC 3414 sections 6 and 8).
+      #
+      # Everything the tag removes is still built, vetted, linted, scanned and
+      # unit-tested by every other job in this workflow, all of which build
+      # untagged. SNMPv3 itself is NOT removed: a FIPS build authenticates with
+      # the SHA-2 family and encrypts with AES, and a deployment subject to
+      # FIPS 140-3 could not lawfully have used MD5, SHA-1 or DES anyway.
+      # docs/fips.md carries the full statement of what is absent and why.
+      - name: Build all packages (FIPS mode)
+        run: go build -tags fips ./...
+      - name: Unit tests (FIPS mode)
+        run: go test -count=1 -timeout=900s -tags fips ./...
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    # Full tier. The same condition is repeated in CI Passed.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    # No `needs`: every job starts at once, so a run takes
+    # as long as its slowest job. CI Passed needs them all and fails closed.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      # Runs against Prometheus and an SNMP simulator in containers, under a
+      # pinned compose project so it can never reach a deployed stack.
+      - run: make integration-test
+
+  ci-passed:
+    name: CI Passed
+    runs-on: ubuntu-latest
+    needs: [lint, security, test, build, scripts, fips, integration]
+    if: always()
+    env:
+      # 'true' on the full tier, 'false' on a PR without `ci:full`. The same
+      # condition as the full-tier jobs' `if:`, so the two cannot disagree.
+      FULL_TIER: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+    steps:
+      # Each job is listed explicitly rather than read from
+      # join(needs.*.result), so the gate names every job it requires and a
+      # result that cannot be read fails it rather than vanishing from a list.
+      # A gate that passes vacuously is worse than no gate at all.
+      #
+      # The empty case is the backstop: if a result cannot be read on some
+      # future runner, this fails rather than waving the run through.
+      #
+      # Expression strings must be single-quoted -- GitHub rejects double quotes
+      # and invalidates the whole file before any job starts.
+      - name: Verify every job succeeded
+        run: |
+          # Only `success` passes. A skipped job never ran and proved nothing,
+          # and an empty (unreadable) result is refused rather than waved
+          # through, so every outcome but success fails the gate.
+          check() { case "$2" in
+            success) echo "OK   $1";;
+            skipped) echo "SKIP $1 (did not run, see its job)"; BAD=1;;
+            '')      echo "FAIL $1 (result unreadable)"; BAD=1;;
+            *)       echo "FAIL $1 ($2)"; BAD=1;;
+          esac; }
+          BAD=0
+          check lint        '${{ needs.lint.result }}'
+          check security    '${{ needs.security.result }}'
+          check test        '${{ needs.test.result }}'
+          check build       '${{ needs.build.result }}'
+          check scripts     '${{ needs.scripts.result }}'
+          # Full tier. Only the literal 'false' (a PR without `ci:full`) lets
+          # these through unchecked; anything else, an empty value included,
+          # requires them, so an unreadable tier fails closed. Even off the
+          # full tier a job that ran and did not succeed still fails the gate.
+          if [ "$FULL_TIER" = false ]; then
+            echo "PR tier: fips and integration are not required."
+            check() { case "$2" in
+              success|skipped) echo "--   $1 ($2, not required)";;
+              *)               echo "FAIL $1 (${2:-result unreadable})"; BAD=1;;
+            esac; }
+          fi
+          check fips        '${{ needs.fips.result }}'
+          check integration '${{ needs.integration.result }}'
+          if [ "$BAD" -ne 0 ]; then
+            echo "One or more CI jobs did not succeed."
+            exit 1
+          fi
+          echo "All CI jobs succeeded."

@@ -1,0 +1,27 @@
+# Prometheus for the integration stack, with its configuration baked in.
+#
+# The configuration used to arrive as a bind mount of
+# ./test/integration/prometheus.yml. That works only when the process running
+# "docker compose" and the Docker daemon share a filesystem. Under CI they do
+# not: the job runs inside a container where the checkout is at
+# /workspace/<owner>/<repo> and talks to the host's daemon over a mounted
+# socket, and the daemon resolves a bind-mount source against the HOST, where
+# that path does not exist. The failure is
+#
+#   error while creating mount source path
+#   '/workspace/jeremyhahn/go-netmon/test/integration/prometheus.yml':
+#   mkdir /workspace: file exists
+#
+# Copying the file into the image removes the host path from the equation, so
+# the stack comes up identically on a workstation and in CI.
+#
+# The version is the one production (monitor-01) runs, measured 2026-09-06 (#138).
+# The stack represents what is deployed: what a remote-write receiver does with
+# a request it refuses differs between Prometheus majors, so a test passing
+# against another version says nothing reliable about the appliance. This ARG is
+# the one place the version is named; guard-tests.sh fails when any other file
+# of the stack names a different one.
+ARG PROMETHEUS_VERSION=v3.14.0
+FROM prom/prometheus:${PROMETHEUS_VERSION}
+
+COPY test/integration/prometheus.yml /etc/prometheus/prometheus.yml

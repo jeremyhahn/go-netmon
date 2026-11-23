@@ -1,0 +1,146 @@
+services:
+  go-netmon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: go-netmon:latest
+    container_name: go-netmon
+    hostname: go-netmon
+    restart: unless-stopped
+    # Locked memory for the sealed SNMP credentials (go-enclave). A device's
+    # credentials are open only for the length of its request, and one open
+    # locks at most 24 KiB: three secrets, each a 4 KiB plaintext page and its
+    # data key's page. 16 MiB, less the sealer's own 12 KiB of keys, holds
+    # about 680 opens at once: a 256-device fleet polling at the same instant,
+    # with better than 2x headroom. Past that, polls wait their turn instead of
+    # failing. Docker's 64 KiB default holds two. See docs/deployment/user.md.
+    ulimits:
+      memlock:
+        soft: 16777216
+        hard: 16777216
+    ports:
+      - "9080:9080"  # API/Web UI
+      - "9100:9100"  # Metrics endpoint (metrics.listen_address in config.yaml,
+                     # scraped as go-netmon:9100 by prometheus.yml)
+    volumes:
+      - ./config.yaml:/app/config/config.yaml:ro
+      - go-netmon-data:/app/data
+      - ./grafana/provisioning/dashboards/_generated:/app/dashboards:rw
+    environment:
+      - CONFIG_PATH=/app/config/config.yaml
+      - LOG_LEVEL=info
+      - WEBUI_URL=http://webui:8080
+    depends_on:
+      - prometheus
+    networks:
+      - netmon-network
+      # Monitored devices are reached through the bridge network via the
+      # host's routing table; no macvlan network is needed.
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"  # Prometheus UI (mapped to 9091 to avoid conflict)
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - netmon-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    hostname: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # Grafana UI
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_INSTALL_PLUGINS=
+    depends_on:
+      - prometheus
+    networks:
+      - netmon-network
+
+  webui:
+    build:
+      context: .
+      dockerfile: Dockerfile.webui
+    image: go-netmon-webui:latest
+    container_name: go-netmon-webui
+    hostname: webui
+    restart: unless-stopped
+    # The web UI seals and opens SNMP credentials too; sized as for go-netmon.
+    ulimits:
+      memlock:
+        soft: 16777216
+        hard: 16777216
+    ports:
+      # UNAUTHENTICATED. Every endpoint here is open to whoever reaches the
+      # port, and GET /api/devices returns each device's SNMP community string
+      # in clear text. That is accepted because the port is on an internal
+      # network — so do not publish it, forward it, or put it behind a proxy
+      # that is reachable from anywhere less trusted.
+      # See docs/operations/security-posture.md.
+      - "8082:8080"  # Web UI
+    volumes:
+      # The same config the poller reads. Without it the web UI falls back to
+      # the code defaults, and global.default_poll_interval differs between the
+      # two (file 30, code 60) — so the UI reported a device polling every 60s
+      # while the poller polled it every 30s. Sharing the file makes one source
+      # of truth. Safe despite mib.storage_path pointing at the poller's Pebble
+      # store, which is single-writer: configureMIB() in cmd/webui always
+      # overrides StoragePath from -mib-catalog.
+      - ./config.yaml:/app/config/config.yaml:ro
+      - webui-data:/app/data/webui     # WebUI records and MIB catalog (Pebble)
+      - go-netmon-data:/app/data/mibs  # SHARED MIB storage with go-netmon
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - CONFIG_PATH=/app/config/config.yaml
+    command:
+      - "-listen=:8080"
+      - "-prometheus=http://prometheus:9090"
+      - "-poller=http://go-netmon:9080"
+      - "-db=/app/data/webui/webui.db"
+      - "-mib-storage=/app/data/mibs"
+      # The parsed MIB catalog. It must sit on a mounted volume: left at its
+      # default it lands on the container's writable layer and every rebuild
+      # or recreate destroys the whole catalog. It must also stay out of
+      # /app/data/mibs, which is the poller's Pebble store directory and
+      # admits only one writer.
+      - "-mib-catalog=/app/data/webui/mib.db"
+    depends_on:
+      - prometheus
+    networks:
+      - netmon-network
+
+networks:
+  netmon-network:
+    driver: bridge
+
+volumes:
+  go-netmon-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  webui-data:
+    driver: local

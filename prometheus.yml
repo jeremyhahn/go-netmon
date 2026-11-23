@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+# Alertmanager configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "rules/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Scrape go-netmon internal metrics
+  - job_name: 'go-netmon'
+    static_configs:
+      - targets: ['go-netmon:9100']
+        labels:
+          service: 'go-netmon'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+# Remote write configuration will be used by go-netmon
+# No explicit remote_write needed here as go-netmon will push via the remote write endpoint

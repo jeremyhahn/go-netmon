@@ -1,0 +1,229 @@
+# golangci-lint configuration (schema v2).
+#
+# The previous file used the v1 schema, which the installed linter refuses to
+# load — "make lint" failed before analysing a single package. The linter set is
+# carried over; only the layout is migrated, plus the removal of linters that
+# no longer exist (gosimple folded into staticcheck, typecheck is implicit) and
+# of rowserrcheck/sqlclosecheck, which target database/sql and this project
+# does not use.
+version: "2"
+
+run:
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - revive
+    - gosec
+    - gocritic
+    - misspell
+    - unconvert
+    - prealloc
+    - bodyclose
+    - noctx
+    - unparam
+    - whitespace
+    - gocyclo
+    - dupl
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # Writing the rendered output is the last thing these calls do. If the
+        # stream is already broken there is nowhere left to report it, and
+        # threading an error back through every render helper would obscure the
+        # rendering logic without changing any outcome.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+
+    govet:
+      enable-all: true
+      disable:
+        # Reports every unkeyed nested struct literal in test fixtures; the
+        # signal-to-noise ratio does not justify it here.
+        - fieldalignment
+
+    revive:
+      confidence: 0.8
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes:
+        - G404 # weak RNG: nothing here is security-sensitive
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - whyNoLint
+        - unnamedResult
+        # hugeParam / rangeValCopy fire on the record types that model the API
+        # and the dashboard schema: client.Device, client.MIBAssignment,
+        # grafana.Panel, config.Device and friends. Passing those by value is
+        # deliberate — the callee cannot reach back into the caller's record —
+        # and for pkg/client it is part of the published SDK signature, so
+        # switching to pointers would be an API break to save a copy that
+        # happens once per HTTP call or once per generated panel, not per poll.
+        # The one flagged site on the per-poll path, decodeIndexColumn in
+        # internal/metrics/table_index_cache.go, is left as it is pending a
+        # benchmark rather than changed on a linter's say-so.
+        - hugeParam
+        - rangeValCopy
+
+    gocyclo:
+      min-complexity: 15
+
+    dupl:
+      threshold: 100
+
+    misspell:
+      locale: US
+
+    unparam:
+      check-exported: false
+
+  exclusions:
+    rules:
+      # G301/G306 (directory and file modes) on the artifact trees: generated
+      # Grafana dashboard JSON and downloaded/uploaded MIB text are read by
+      # other processes — the Grafana container reads the provisioning
+      # directory, and the poller reads the MIB directory — which in these
+      # deployments do not share a UID with the writer. The content is schema
+      # data with no secrets in it, so 0755/0644 is the intended mode and
+      # tightening it would break provisioning rather than protect anything.
+      - path: (internal/grafana/template/|internal/mib/importer/downloader\.go|internal/webui/api/mib_import\.go)
+        linters:
+          - gosec
+        text: "G30[16]"
+
+      # Test files trade some of these off deliberately: table tests repeat
+      # structure, fixtures ignore errors that cannot fail, and a long test
+      # body is usually clearer than a decomposed one.
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+          - gocritic
+          - unparam
+          # revive's unused-parameter fires on every httptest handler that only
+          # needs one of (w, r) and on every stub that exists to satisfy an
+          # interface; renaming those to _ makes the fixtures harder to read
+          # than the warning is worth.
+          - revive
+          # noctx: requests here go to an httptest.Server whose lifetime is the
+          # test's own, so there is no cancellation for a context to carry.
+          - noctx
+
+      # dupl on the CLI command constructors (internal/cli device/profile/mib
+      # list, show and delete subcommands) and on the web UI's per-record Pebble
+      # CRUD (device.go / mib.go / profile.go). Both are real duplication, not
+      # false positives, but neither collapses without a design decision: the
+      # CLI would need the command-factory treatment that assignmentScope
+      # already gives the enable/disable/filter subtree, and the storage layer
+      # would need a generic prefix-keyed record store. Those are architecture
+      # changes, so they are recorded here rather than made under a lint pass.
+      # The narrower duplication this pass did collapse — the three
+      # pkg/client resolvers, the four internal/snmp walk methods and the web
+      # UI device/profile link handlers — is gone from the code, not excluded.
+      - path: (internal/cli/(device|profile|mib)\.go|internal/webui/storage/(device|mib|profile)\.go)
+        linters:
+          - dupl
+
+      # gocyclo: an itemised ratchet, not a blanket. Any function not named here
+      # is still held to 15, so new code cannot drift. Two groups are listed.
+      #
+      # Flat dispatch and linear wiring, where the score counts breadth rather
+      # than tangle: a switch over every ASN.1 type, a validator that checks
+      # twenty fields in sequence, or a run() that constructs a dozen components
+      # each with its own `if err != nil`. Nesting stays at two or three levels
+      # and splitting them would scatter one readable decision table.
+      #
+      # Genuinely tangled, and left alone deliberately: parseIndexValue,
+      # (*Parser).parseNode, (*worker).poll, (*Builder).Generate,
+      # (*Server).generateDashboard, (*Server).handleQueryMetrics,
+      # ConvertSNMPResultsWithTableIndexes and their neighbours reach five to
+      # seven levels of nesting over 90-240 lines. Restructuring those changes
+      # what the code does often enough that it needs its own pass with the
+      # SNMP and dashboard tests in front of it, not a drive-by edit inside a
+      # linter cleanup.
+      - linters:
+          - gocyclo
+        text: "func `(run|dashboardGenerateAll|setDefaults|\\(\\*Config\\)\\.Validate|\\(\\*Builder\\)\\.Generate|\\(\\*PanelGenerator\\)\\.GenerateTablePanels|\\(\\*PanelGenerator\\)\\.determineUnit|\\(\\*Engine\\)\\.Validate|SanitizeMetricName|\\(\\*TableIndexCache\\)\\.CacheFriendlyNames|parseIndexValue|ConvertStatusColumnsToInfoMetrics|ConvertSNMPResultsWithTableIndexes|parseOctetHint|FormatValue|\\(\\*Loader\\)\\.LoadModule|\\(\\*Parser\\)\\.parseNode|\\(\\*Parser\\)\\.determineChartability|\\(\\*worker\\)\\.poll|\\(\\*Result\\)\\.TypeString|\\(\\*Result\\)\\.GetUint64Value|\\(\\*Server\\)\\.generateDashboard|\\(\\*Server\\)\\.handleMetricsQuery|convertToTimeSeries|\\(\\*Server\\)\\.handleImportMIB|\\(\\*Server\\)\\.handleQueryMetrics|\\(\\*Server\\)\\.performSNMPTest|GenerateDashboardWithLearnedTables|buildTableWidgetWithLearnedData|buildInstanceSelectorFromMultiple|findFriendlyNameLabel|\\(\\*Storage\\)\\.GetDeviceMIBs|\\(\\*Storage\\)\\.GetDeviceMIBsSeparated)` is high"
+
+      # The web UI storage layer and the API helpers that feed it take a
+      # context.Context on every call by contract, so callers are already
+      # cancellation-correct and the signatures do not churn when the embedded
+      # Pebble store grows context support. Renaming those parameters to _ would
+      # delete that contract from the godoc to silence a warning about a
+      # deliberate design choice.
+      - path: internal/webui/(storage|api)/
+        linters:
+          - revive
+        text: "unused-parameter: parameter 'ctx'"
+      - path: internal/webui/(storage|api)/
+        linters:
+          - unparam
+        text: "ctx is unused"
+
+      # govet's unusedwrite on fixtures: table tests populate a struct fully to
+      # document the shape under test even when one case only reads some of it.
+      - path: _test\.go
+        linters:
+          - govet
+        text: "unusedwrite"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/jeremyhahn/go-netmon
+
+issues:
+  # The tree is clean, so caps would only hide the size of a regression.
+  max-issues-per-linter: 0
+  max-same-issues: 0

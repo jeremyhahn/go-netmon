@@ -1,0 +1,103 @@
+# Build output.
+#
+# The binary name is anchored with a leading slash so it matches only the built
+# artifact at the repository root. Unanchored, "go-netmon" also matched the
+# directory cmd/go-netmon/ and silently kept the poller's own main package out
+# of the repository - CI caught it as "directory not found" on the first build.
+/go-netmon
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Compiled test binaries from "go test -c". The negation matters: this pattern
+# also matches any file whose name ends in ".test", and it was excluding
+# test/integration/Dockerfile.test — so CI checked out a tree with no dockerfile
+# for the integration runner and failed with "open Dockerfile.test: no such file
+# or directory" while every local run worked from the untracked copy on disk.
+*.test
+!Dockerfile.test
+!**/Dockerfile.test
+/vendor/
+/bin/
+/dist/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Review tooling scratch.
+#
+# Serena code-indexer state is per-machine and never tracked.
+.serena/
+
+# Local configuration.
+#
+# config.yaml is this deployment's own settings and is bind-mounted into the
+# containers. config.example.yaml is the committed template; copy it to
+# config.yaml on a fresh checkout. Device credentials (SNMP communities, v3
+# auth) are held in the web UI's store, not here, but this file still describes
+# one host's deployment rather than the project.
+config.yaml
+# deploy/config.yaml is the opposite: it is the tracked starting configuration
+# shipped to a deployment target, and it holds no credentials because devices
+# live in the web UI's store. The rule above matches at every level, so it has
+# to be exempted by name or `make deploy` fails on a clean checkout.
+!deploy/config.yaml
+*.local.yaml
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Coverage and profiling output.
+#
+# Scoped to the coverage artifacts by name. An unqualified "*.html" was here
+# before and silently excluded internal/webui/static/index.html — the entire web
+# UI page the server serves — from the repository.
+*.coverprofile
+*.out
+coverage.html
+coverage-*.html
+/coverage/
+
+# Runtime state, not source.
+#
+# data/ holds the local (non-Docker) run's Pebble stores; backups/ holds
+# netmon-backup archives, which are hundreds of megabytes of compressed volume
+# copies and are themselves the disaster-recovery artifact, not source.
+/data/
+/backups/
+
+# Node dependencies for the Playwright e2e suite, restored by npm ci.
+node_modules/
+/tests/e2e/test-results/
+/tests/e2e/playwright-report/
+
+# Scraped vendor support lists. These are saved HTML pages from Cisco's site
+# used to check which objects a platform implements; they are reference
+# material, not project source, and are large.
+mibs/*/support-list/
+missing-mibs.txt
+
+# The MIB trees under mibs/ are testdata and are committed.
+#
+# They were briefly excluded as "operational, belongs with the infrastructure
+# config" and that was wrong: the parser and dashboard suites read them
+# directly through internal/testsupport.MIBDir, so a clean checkout could not
+# run its own tests. They are also the project's only multi-vendor parser
+# coverage - mibs/asr1001 is Cisco IOS-XE and mibs/r640 is Dell OpenManage, and
+# the Dell modules (10892.mib, dcstorag.mib) exercise SMIv2 constructs the
+# Cisco set does not.
+#
+# Only the scraped support-list pages above are excluded; they are reference
+# material no test reads.

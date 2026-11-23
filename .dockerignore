@@ -1,0 +1,10 @@
+# Kept out of the build context: none of it is a build input, and a vendor/
+# at the module root would switch the build to -mod=vendor.
+.git
+/bin
+/dist
+/coverage
+/backups
+/vendor
+tests/e2e/node_modules
+tests/e2e/test-results

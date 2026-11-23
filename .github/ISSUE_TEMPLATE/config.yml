@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/jeremyhahn/go-netmon/security/advisories/new
+    about: Report vulnerabilities privately, as described in SECURITY.md. Do not open a public issue.
+  - name: Documentation
+    url: https://github.com/jeremyhahn/go-netmon/blob/main/docs/README.md
+    about: Check the documentation index before opening an issue.

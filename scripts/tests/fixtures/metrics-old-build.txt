@@ -1,0 +1,12 @@
+# HELP gonetmon_exports_total Total number of metric export outcomes, by status (success, error, dropped).
+# TYPE gonetmon_exports_total counter
+gonetmon_exports_total{status="success"} 821
+# HELP gonetmon_export_buffered_samples Samples buffered awaiting export.
+# TYPE gonetmon_export_buffered_samples gauge
+gonetmon_export_buffered_samples 0
+# HELP gonetmon_export_consecutive_failures Consecutive failed flushes.
+# TYPE gonetmon_export_consecutive_failures gauge
+gonetmon_export_consecutive_failures 0
+# HELP gonetmon_polls_total Total polls.
+# TYPE gonetmon_polls_total counter
+gonetmon_polls_total{device="pdu-03",status="success"} 647

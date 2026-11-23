@@ -1,0 +1,113 @@
+# go-netmon SNMP poller — native systemd unit.
+#
+# Installed to /etc/systemd/system/go-netmon.service by `make deploy`. The
+# binary runs directly on the host: there is no container runtime on a
+# monitoring appliance, so systemd is the only supervisor and Restart=always
+# below is what actually keeps the poller alive.
+#
+# The paths this unit exports are the ones the code otherwise defaults to
+# container mount points (/app/data, /app/dashboards). A native install has no
+# /app, so every one of them is set explicitly rather than left to a default
+# that only makes sense inside an image.
+
+[Unit]
+Description=go-netmon SNMP poller
+Documentation=https://github.com/jeremyhahn/go-netmon
+# The poller reads its device list over the network and writes samples to the
+# metrics backend, so it wants a configured interface rather than merely a
+# running network stack.
+After=network-online.target
+Wants=network-online.target
+# The device list lives in the web UI's store and the poller fetches it at
+# startup. Wants, not Requires: if the web UI is genuinely broken the poller
+# should still come up and serve its API rather than be held down with it.
+Wants=go-netmon-webui.service
+After=go-netmon-webui.service
+
+# Never stop retrying. The appliance is unattended, and a poller that gives up
+# leaves the network unmonitored until somebody happens to look.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=go-netmon
+Group=go-netmon
+
+Environment=CONFIG_PATH=/etc/go-netmon/config.yaml
+# The MIB tree and the poller's Pebble catalog. Shared with the web UI, which
+# reads the same directory — Pebble admits one writer, and the poller is it.
+Environment=MIB_UPLOADED_PATH=/var/lib/go-netmon/poller/uploaded
+# Generated Grafana dashboards. Kept out of the Pebble directories so a
+# dashboard write can never disturb a store.
+Environment=DASHBOARD_PATH=/var/lib/go-netmon/dashboards
+# Device configuration is owned by the web UI and pulled from it at startup.
+# Loopback: the two services are always co-located on the appliance.
+Environment=WEBUI_URL=http://127.0.0.1:8080
+# Sized for a four-core appliance that also runs the web UI and Prometheus.
+Environment=GOMAXPROCS=4
+
+# WAIT FOR THE DEVICE LIST, do not race it. The poller's own config sync gives
+# up after five attempts spanning about 30 seconds and then continues with the
+# local config — which lists no devices — so losing that race does not fail
+# loudly, it silently monitors nothing.
+#
+# After= is now enough to win that race, and it was not before. The web UI unit
+# is Type=notify (see deploy/go-netmon-webui.service), so systemd does not
+# consider it started until it has bound :8080 and said so; ordering after it
+# therefore means ordering after it can answer. This unit used to poll that
+# port itself in an ExecStartPre loop, purely because a Type=simple web UI
+# counted as started the moment it forked. That workaround is gone with the
+# defect it worked around.
+#
+# Wants= rather than Requires= is unchanged: a web UI that genuinely fails to
+# start releases this unit to come up and serve its own API rather than holding
+# it down alongside.
+ExecStart=/usr/local/bin/go-netmon
+Restart=always
+RestartSec=5s
+
+# RUNAWAY GUARD. Sized for a 4 GB box shared with the web UI and Prometheus.
+# A MIB parse over a large module set is the memory-hungry path, and
+# without a ceiling it is the poller that takes the host down with it. Killed
+# and restarted beats a system-wide OOM that also takes out the metrics store.
+MemoryMax=768M
+MemoryHigh=640M
+# Locked memory for the sealed SNMP credentials, sized as in
+# docker-compose.yml: one open locks at most 24 KiB, so 16 MiB holds a
+# 256-device fleet polling at once with better than 2x headroom. systemd
+# before 253 defaults to 64 KiB, which holds two. See docs/deployment/user.md.
+LimitMEMLOCK=16M
+
+# Hardening. The service needs to read /etc/go-netmon, write its own data
+# directory, and talk SNMP and HTTP. Nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/go-netmon
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# SNMP is UDP and the metrics backend is HTTP over TCP; both are AF_INET.
+# AF_UNIX stays for the resolver and journal socket. No raw sockets: device
+# reachability is decided by whether the SNMP request answers, not by ping.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

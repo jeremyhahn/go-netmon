@@ -1,0 +1,93 @@
+# Prometheus — native systemd unit, deployed as part of the go-netmon appliance.
+#
+# WHY THIS UNIT EXISTS — read this before deciding the appliance would be
+# simpler without it.
+#
+# REMOVE THIS UNIT AND go-netmon REFUSES TO START AT ALL, because
+# config.Validate rejects an empty prometheus.remote_write_url outright
+# (internal/config/types.go:124) — and every sample ever collected, which lives
+# only here, is orphaned with it.
+#
+# go-netmon is a remote-write PRODUCER, not a store: the poller turns SNMP
+# walks into samples and pushes them to a remote-write endpoint. It keeps no
+# time series of its own. This is therefore not an optional dashboard
+# component — it is the database.
+#
+# Grafana, which this deployment does NOT include, was the dashboard layer.
+#
+# Grafana, by contrast, WAS a dashboard layer over this data and is not
+# deployed: go-netmon serves its own web UI and generates Grafana dashboard
+# JSON on demand for anyone who wants to import it elsewhere.
+#
+# Installed to /etc/systemd/system/prometheus.service by `make deploy`.
+
+[Unit]
+Description=Prometheus time-series database (go-netmon metrics backend)
+Documentation=https://prometheus.io/docs/
+After=network-online.target
+Wants=network-online.target
+
+# Never stop retrying: this is the store, and an appliance without it records
+# nothing at all.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+
+ExecStart=/usr/local/bin/prometheus \
+    --config.file=/etc/go-netmon/prometheus.yml \
+    --storage.tsdb.path=/var/lib/prometheus \
+    --storage.tsdb.retention.time=90d \
+    --web.listen-address=127.0.0.1:9090 \
+    --web.enable-remote-write-receiver \
+    --web.enable-lifecycle
+
+# SIGTERM lets Prometheus checkpoint the head block and close the WAL cleanly.
+# Killing it instead costs a WAL replay on the next start, and on a box this
+# size that replay is minutes, not seconds.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+Restart=always
+RestartSec=10s
+
+# RUNAWAY GUARD, and the largest single allocation on the appliance. Head-block
+# memory scales with active series: this deployment carries roughly 35k, which
+# sits comfortably inside this ceiling with room for query and compaction
+# spikes. Raise it — and only it — if series count grows; the poller and web UI
+# ceilings are not the ones under pressure.
+#
+# Sized against the other two units on a 4 GB box: 1.5 G here, 768 M for the
+# poller, 512 M for the web UI, leaving room for the OS.
+MemoryMax=1536M
+MemoryHigh=1280M
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/prometheus
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

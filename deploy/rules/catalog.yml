@@ -1,0 +1,74 @@
+# Alerts on the metric catalog.
+#
+# The catalog is what tells a dashboard what every metric means. Every panel
+# depends on it, so its failure mode is unusual: the metrics keep arriving and
+# look perfectly healthy while every description disappears at once,
+# fleet-wide. That presents as a UI problem and is a collector one.
+#
+# NOTE: deploy/prometheus.yml ships with `alertmanagers: targets: []`, so these
+# do not page anyone yet. They still evaluate, and a firing rule is visible as
+# an ALERTS series and in Prometheus's own UI, which is enough to diagnose from
+# — but wiring an Alertmanager is what makes them an alert rather than a
+# breadcrumb.
+groups:
+  - name: go-netmon-catalog
+    rules:
+      # The catalog could not be written. Failed batches are put back and
+      # retried on the flush interval, so a single failure is not yet a
+      # problem; sustained failure means the descriptions are about to age out
+      # of Prometheus's staleness window.
+      - alert: MetricCatalogWriteFailing
+        expr: increase(gonetmon_catalog_emissions_total{outcome="error"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "go-netmon cannot write the metric catalog"
+          description: >-
+            The collector has failed to publish the metric catalog for ten
+            minutes. Dashboards lose every metric description once the series
+            fall outside the query lookback. Check remote write to Prometheus.
+
+      # Nothing has been written at all. Either no collector is designated as
+      # the emitter, or the designated one is not running — and the symptom is
+      # identical to a working fleet with a broken UI.
+      # AGGREGATE, do not evaluate per collector. gonetmon_catalog_series is
+      # registered by every process and sits at zero on every non-emitter --
+      # which is the CORRECT state for all but one collector in a sharded
+      # fleet. `gonetmon_catalog_series == 0` therefore returns a firing
+      # element for each correctly-configured non-emitter while the designated
+      # collector is publishing perfectly well: the rule would report the exact
+      # healthy topology this design requires as an outage, continuously.
+      #
+      # max() over the fleet is zero only when NO collector is publishing,
+      # which is the condition worth paging on. absent() stays as a separate
+      # arm because max() of an empty vector is empty, not zero -- so nothing
+      # scraped at all would otherwise fire nothing.
+      - alert: MetricCatalogNotBeingPublished
+        expr: absent(gonetmon_catalog_series) or max(gonetmon_catalog_series) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "no go-netmon collector is publishing the metric catalog"
+          description: >-
+            Either prometheus.emit_metric_catalog is false on every collector,
+            or the designated emitter is down. Exactly one collector must have
+            it enabled. This fires only when NO collector is publishing --
+            non-emitters sitting at zero is normal and does not trigger it.
+
+      # The catalog cannot describe some of what is being published. Not a
+      # fault in itself — a raw-OID metric name has no MIB to describe it — but
+      # it is the honest measure of how much of the fleet a dashboard can
+      # render, and a jump means MIBs stopped resolving.
+      - alert: MetricCatalogCoverageDropped
+        expr: gonetmon_catalog_undescribed_metrics > 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "go-netmon publishes metrics the catalog cannot describe"
+          description: >-
+            {{ $value }} published metric names have no catalog entry, so a
+            dashboard can render no panel for them. Usually a MIB module that
+            is assigned but not resolving.
