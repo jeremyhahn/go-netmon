@@ -218,12 +218,17 @@ for `<ver>` the version without its `v` (`0.2.0`):
 | `go-netmon_<ver>_sbom.cdx.json` | CycloneDX SBOM of the module's dependencies |
 | `SHA256SUMS` | the checksum of every asset above |
 
-`-alpha` and `-rc.N` releases are marked as pre-releases.
+Before 1.0 every release, `-alpha` and `-rc.N` included, is the Latest
+release. From 1.0 on, `-alpha` and `-rc.N` releases are marked as
+pre-releases.
 
 ### Download and verify
 
+The latest release (or set `ver` to the one you want, without its `v`):
+
 ```sh
-ver=0.2.0
+tag=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/jeremyhahn/go-netmon/releases/latest)
+ver=${tag##*/v}
 base=https://github.com/jeremyhahn/go-netmon/releases/download/v$ver
 curl -LO "$base/go-netmon_${ver}_linux_amd64.tar.gz"
 curl -LO "$base/SHA256SUMS"
@@ -256,16 +261,16 @@ Multi-arch (linux/amd64, linux/arm64) images on GHCR, each with build
 provenance attested:
 
 ```sh
-docker pull ghcr.io/jeremyhahn/go-netmon:0.2.0
-docker pull ghcr.io/jeremyhahn/go-netmon-webui:0.2.0
-gh attestation verify oci://ghcr.io/jeremyhahn/go-netmon:0.2.0 --repo jeremyhahn/go-netmon
+docker pull ghcr.io/jeremyhahn/go-netmon:latest
+docker pull ghcr.io/jeremyhahn/go-netmon-webui:latest
+gh attestation verify oci://ghcr.io/jeremyhahn/go-netmon:latest --repo jeremyhahn/go-netmon
 ```
 
 | Tag | Moves |
 |---|---|
 | `X.Y.Z` | never; one per release, pre-releases included |
-| `X.Y` | to each production release of that minor |
-| `latest` | to each production release; never to `-alpha` or `-rc.N` |
+| `X.Y` | to each latest release of that minor |
+| `latest` | to each latest release: before 1.0 every release, `-alpha` and `-rc.N` included; from 1.0 on only a plain `X.Y.Z` |
 
 The FIPS builds carry the same tags with a `-fips` suffix: `0.2.0-fips`,
 `0.2-fips`, `latest-fips`. `docker-compose.prod.yml` runs the poller image:

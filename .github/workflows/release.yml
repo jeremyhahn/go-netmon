@@ -1,11 +1,15 @@
-# Release for go-netmon, on every pushed `v*` tag.
+# Release for go-netmon.
 #
-# `make release-alpha`, `make release-candidate` or `make release` folds
-# changelog.d/ into CHANGELOG.md, writes VERSION, commits, tags and pushes
-# main and the tag; the tag is vX.Y.Z-alpha, vX.Y.Z-rc.N or vX.Y.Z.
-# Everything after that is here, and nothing is created by hand:
+# `make release-alpha`, `make release-candidate` or `make release` prepares a
+# release PR: it folds changelog.d/ into CHANGELOG.md and writes VERSION on a
+# release/vX.Y.Z branch. When that PR merges and CI is green on main,
+# auto-release.yml tags the commit and calls this workflow with the version.
+# A pushed `v*` tag and a manual run (`gh workflow run release.yml -f
+# version=vX.Y.Z`) start it too. Everything after the tag is here, and nothing
+# is created by hand:
 #
-#   verify    the tree carries the release the tag names, on main
+#   verify    the tree carries the release the tag names, on main; decides
+#             once whether the release is "latest"
 #   lint, security, test, build, scripts, fips, integration
 #             the gate: every job ci.yml's "CI Passed" needs, by the same
 #             name and commands, on the tagged commit
@@ -15,9 +19,13 @@
 #             and pushed to GHCR by digest only, after the gate passed
 #   manifest  the multi-arch tags over those digests, with build provenance
 #   publish   the GitHub release: the tag's CHANGELOG section as its body,
-#             every asset attached and attested (provenance and SBOM), a
-#             pre-release for -alpha and -rc.N. Created as a draft and
-#             published only once every asset is attached.
+#             every asset attached and attested (provenance and SBOM), the
+#             Latest release or a pre-release as verify decided. Created as a
+#             draft and published only once every asset is attached.
+#
+# Every job after verify builds and publishes verify's tag, version and
+# commit, never github.ref or github.sha: on a call or a manual run those
+# name main, not the release.
 #
 # Third-party actions are pinned to a full commit SHA: a tag is a mutable
 # pointer, and these jobs hold write tokens.
@@ -29,11 +37,29 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Re-runs a release: the tag must already exist.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tag to release (e.g. v0.2.1)'
+        type: string
+        required: true
+  # auto-release.yml calls this once it has tagged a green main commit. A tag
+  # pushed with GITHUB_TOKEN starts no workflow, so the release is called
+  # rather than started by the tag. The caller grants the permissions the
+  # jobs below ask for.
+  workflow_call:
+    inputs:
+      version:
+        description: 'Tag to release (e.g. v0.2.1)'
+        type: string
+        required: true
 
 # One run per tag, never cancelled: a half-published release is worse than a
-# slow one.
+# slow one. Keyed on the tag itself, so a call, a manual run and a tag push
+# for the same version wait for one another.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 # Read-only unless a job asks for more below.
@@ -55,12 +81,17 @@ jobs:
       sha: ${{ steps.release.outputs.sha }}
       epoch: ${{ steps.release.outputs.epoch }}
       date: ${{ steps.release.outputs.date }}
-      prerelease: ${{ steps.release.outputs.prerelease }}
+      latest: ${{ steps.release.outputs.latest }}
+    # The tag: the input of a call or a manual run, else the pushed tag. It
+    # reaches the shell only through the environment.
+    env:
+      TAG: ${{ inputs.version || github.ref_name }}
     steps:
-      # Full history: the check needs origin/main to prove the tagged commit
-      # is on it.
+      # The tag itself, whatever started the run. Full history: the check
+      # needs origin/main to prove the tagged commit is on it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ inputs.version || github.ref_name }}
           fetch-depth: 0
 
       # VERSION equals the tag unprefixed, CHANGELOG.md has exactly one
@@ -72,28 +103,32 @@ jobs:
       # The tag reaches make ONLY through the environment, never as a make
       # argument or spliced into the script.
       - name: make release-verify
-        env:
-          TAG: ${{ github.ref_name }}
         run: make release-verify
 
       # release-verify has already refused any tag that is not vX.Y.Z,
       # vX.Y.Z-alpha or vX.Y.Z-rc.N, so the values below are safe to hand on.
-      # A version with a hyphen is a pre-release.
+      #
+      # latest is the one decision on whether this release becomes GitHub's
+      # Latest release and moves the images' :X.Y and :latest. Before 1.0
+      # every release does, -alpha included, so the repository and
+      # `docker pull ...:latest` show what is current. From 1.0 on only a
+      # plain vX.Y.Z does, and a pre-release is published as one.
       - name: Record the release
         id: release
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
+          version="${TAG#v}"
+          case "${version}" in
+            0.*) latest=true ;;
+            *-*) latest=false ;;
+            *) latest=true ;;
+          esac
           {
             echo "tag=${TAG}"
-            echo "version=${TAG#v}"
+            echo "version=${version}"
             echo "sha=$(git rev-parse HEAD)"
             echo "epoch=$(git log -1 --format=%ct)"
             echo "date=$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)"
-            case "${TAG}" in
-              *-*) echo "prerelease=true" ;;
-              *) echo "prerelease=false" ;;
-            esac
+            echo "latest=${latest}"
           } >> "$GITHUB_OUTPUT"
 
   # The gate: every job ci.yml's "CI Passed" needs, by the same name and
@@ -101,12 +136,15 @@ jobs:
   # ships what CI would have stopped. scripts/tests/release-tests.sh fails if
   # a job ci.yml gates on is missing here, runs a command this copy does not,
   # or is not in the needs of image and publish. ci.yml carries the reasons
-  # for each step.
+  # for each step. Each checks out verify's commit, so it needs verify.
   lint:
     name: Format, Vet & Lint
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
@@ -177,9 +215,12 @@ jobs:
 
   security:
     name: Security Scan
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
@@ -250,9 +291,12 @@ jobs:
 
   test:
     name: Unit Tests
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
@@ -273,9 +317,12 @@ jobs:
 
   build:
     name: Build All Binaries
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
@@ -286,9 +333,12 @@ jobs:
 
   scripts:
     name: Shell Suites
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
@@ -303,6 +353,7 @@ jobs:
 
   fips:
     name: FIPS
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -310,6 +361,8 @@ jobs:
       GODEBUG: fips140=only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
@@ -321,9 +374,12 @@ jobs:
 
   integration:
     name: Integration Tests
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
@@ -511,8 +567,8 @@ jobs:
           retention-days: 1
 
   # One multi-arch manifest per image and variant. :X.Y.Z always; :X.Y and
-  # :latest only for a release without a hyphen, so a pre-release never moves
-  # them. The FIPS variant carries the same tags with a -fips suffix.
+  # :latest only when verify decided the release is latest. The FIPS variant
+  # carries the same tags with a -fips suffix.
   manifest:
     name: Manifest (${{ matrix.repository }}, ${{ matrix.variant }})
     needs: [verify, image]
@@ -556,16 +612,18 @@ jobs:
         env:
           IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.repository }}
           VERSION: ${{ needs.verify.outputs.version }}
+          LATEST: ${{ needs.verify.outputs.latest }}
           SUFFIX: ${{ matrix.suffix }}
         run: |
           set -euo pipefail
           # GHCR requires a lowercase repository path.
           IMAGE="$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')"
           tags=(-t "${IMAGE}:${VERSION}${SUFFIX}")
-          case "${VERSION}" in
-            *-*) ;;
-            *) tags+=(-t "${IMAGE}:${VERSION%.*}${SUFFIX}" -t "${IMAGE}:latest${SUFFIX}") ;;
-          esac
+          if [ "${LATEST}" = true ]; then
+            # X.Y from the core: 0.3.0-alpha moves :0.3, not :0.3.0-alpha's prefix.
+            core="${VERSION%%-*}"
+            tags+=(-t "${IMAGE}:${core%.*}${SUFFIX}" -t "${IMAGE}:latest${SUFFIX}")
+          fi
           refs=()
           for digest in *; do
             refs+=("${IMAGE}@sha256:${digest}")
@@ -671,7 +729,12 @@ jobs:
           name: go-netmon ${{ needs.verify.outputs.tag }}
           body_path: ${{ runner.temp }}/NOTES.md
           draft: true
-          prerelease: ${{ needs.verify.outputs.prerelease == 'true' }}
+          # verify's one decision: before 1.0 every release is the Latest
+          # release; from 1.0 on a -alpha or -rc.N is a pre-release. `legacy`
+          # lets GitHub pick Latest by date and SemVer, so re-running an older
+          # release never takes Latest from a newer one.
+          prerelease: ${{ needs.verify.outputs.latest != 'true' }}
+          make_latest: ${{ needs.verify.outputs.latest == 'true' && 'legacy' || 'false' }}
           files: |
             dist/go-netmon_*
             dist/SHA256SUMS
@@ -679,14 +742,17 @@ jobs:
 
       # Published only when the draft holds every file in dist/; a run that
       # stopped part way leaves a draft, never a release with missing assets.
+      # GitHub never makes a draft Latest, so the decision is repeated where
+      # the draft is published.
       - name: Publish the draft
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RELEASE_ID: ${{ steps.draft.outputs.id }}
+          MAKE_LATEST: ${{ needs.verify.outputs.latest == 'true' && 'legacy' || 'false' }}
         run: |
           set -euo pipefail
           want="$(find dist -maxdepth 1 -type f | wc -l)"
           have="$(gh api "repos/${REPO}/releases/${RELEASE_ID}" --jq '.assets | length')"
           [ "$have" -eq "$want" ] || { echo "::error::the draft holds ${have} of ${want} assets; not publishing"; exit 1; }
-          gh api --method PATCH "repos/${REPO}/releases/${RELEASE_ID}" -F draft=false --jq '.html_url'
+          gh api --method PATCH "repos/${REPO}/releases/${RELEASE_ID}" -F draft=false -f make_latest="${MAKE_LATEST}" --jq '.html_url'

@@ -8,7 +8,8 @@
 # whatever the intervening releases fixed, and Go's MVS keeps selecting the
 # higher one anyway. So the version must be strictly greater, in SemVer
 # precedence, than the VERSION file and than every release tag in the local
-# repository. The release targets run this before they write anything.
+# repository. The release targets run this before they write anything, and
+# auto-release.yml runs it on the merged commit's parent before it tags.
 #
 # Tags of another form (a v0.0.0-placeholder, a -beta) are not release tags
 # and are not compared.

@@ -31,5 +31,5 @@ they land under:
 
 The release targets (`make release-alpha`, `make release-candidate`,
 `make release`; [docs/operations/releasing.md](../docs/operations/releasing.md))
-fold every fragment into the version's section, grouped by heading, and
-delete them. This README is not a fragment.
+fold every fragment into the version's section on the release branch, grouped
+by heading, and delete them. This README is not a fragment.
