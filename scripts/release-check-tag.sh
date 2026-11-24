@@ -1,23 +1,5 @@
 #!/usr/bin/env bash
-# Check that the tree carries the release a tag names.
-#
-# Usage: scripts/release-check-tag.sh <tag> [main-ref]   (from the repository root)
-#
-# The release targets run this on the assembled tree before they commit,
-# auto-release.yml runs it (through `make release-verify`) on the merged
-# commit before it tags it, and release.yml's verify job on the tagged commit
-# before any gate or publication. The tag need not exist yet. The tag and the tree carry the version in
-# places nothing else reconciles:
-#
-#   - the tag is vX.Y.Z, vX.Y.Z-alpha or vX.Y.Z-rc.N;
-#   - VERSION holds the tag without its v;
-#   - CHANGELOG.md has exactly one non-empty section for it
-#     (scripts/release-notes.sh, which also produces the release body);
-#   - no fragment is left in changelog.d/ and "## [Unreleased]" holds no
-#     entry: the release targets fold both into the version's section, so
-#     either one surviving at a tag is an entry the release leaves out;
-#   - with a main-ref, HEAD is on it: every release kind is a tag on main
-#     and a tag on a branch commit would release code main never got.
+# Check the tree carries the release a tag names: tag form, VERSION, one CHANGELOG section, no pending fragments, HEAD on main-ref. Usage: scripts/release-check-tag.sh <tag> [main-ref]
 
 set -euo pipefail
 

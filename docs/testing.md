@@ -67,10 +67,10 @@ their harness are in `test/integration/`; Playwright browser specs are in
 - **A tolerance is a claim.** Say what the number means and keep it below the
   smallest defect it must catch.
 
-## History (not verified)
+## Cases (not verified)
 
-Incident narratives that motivated the rules above. Test names, counts, rates
-and dates below were not checked against the tree and may be stale or renamed.
+Worked cases behind the rules above. Test names, counts and rates below were
+not checked against the tree and may be stale or renamed.
 
 ## Mutate before you believe a test
 
@@ -406,10 +406,9 @@ A useful smell: if you can describe your fixture as "N things, each with M
 values", it probably cannot distinguish per-thing logic from per-set logic. Give
 one of them a different M.
 
-### Worked example: the author sprang this trap within the hour
+### Worked example: round parity
 
-The section above was written on the afternoon of 2026-09-02. That same evening,
-its author wrote this test for a websocket backoff defect:
+This test was written for a websocket backoff defect:
 
 ```go
 for i := 0; i < SteadyRoundsBeforeBackoff+1; i++ {

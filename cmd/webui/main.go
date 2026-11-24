@@ -46,12 +46,7 @@ var (
 	dbPath         = flag.String("db", "data/webui", "Database path for Web UI storage (PebbleDB directory)")
 	mibStoragePath = flag.String("mib-storage", "data/mibs", "Path to store uploaded MIB files")
 
-	// mibCatalogPath is where the parsed MIB catalog lives: the OID metadata of
-	// every imported module, as opposed to the MIB files themselves, which
-	// -mib-storage governs. It is separate from -db because the catalog is
-	// rebuildable from the records -db holds, and separate from -mib-storage
-	// because that directory is shared with the poller, which keeps a catalog
-	// of its own there and would not tolerate a second writer.
+	// mibCatalogPath is the web UI's own parsed MIB catalog, separate from -db and from the poller's catalog.
 	mibCatalogPath = flag.String("mib-catalog", "data/mib.db",
 		"Path to the parsed MIB catalog (PebbleDB directory)")
 )
@@ -85,10 +80,7 @@ func addressOverrides() config.Overrides {
 // runUntilSignal owns the cancellable context so that main can exit through
 // log.Fatal without stranding a deferred cancel.
 func runUntilSignal() error {
-	// When the process began, so that the line marking the end of startup can
-	// say how long the service was unable to serve. That number is the whole
-	// point: a restart is an outage of the dashboard, and it should be stated
-	// by the service rather than discovered during an incident.
+	// Start time, so the startup-complete log line can state how long the service was unavailable.
 	started := time.Now()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -140,10 +132,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 				AutoLoad: []string{"SNMPv2-MIB", "IF-MIB", "CISCO-BGP4-MIB"},
 			},
 		}
-		// This literal names only the MIB section, so every other section is
-		// still a zero value. Logging in particular cannot be used as-is:
-		// output "" is not a valid output and would fail the service at
-		// startup, which is not much of a fallback.
+		// Only the MIB section is set; logging must not be used from this zero-value config.
 		config.ApplyDefaults(cfg)
 		// The addresses still honor the environment and flags without a
 		// usable file. A file that cannot be parsed is skipped here.
@@ -215,10 +204,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 	pollerClient := client.NewPollerClient(cfg.WebUI.PollerURL, api.PollerRequestTimeout)
 	log.Println("Poller client initialized")
 
-	// The UI's static assets, compiled into this binary. Resolving them here
-	// rather than inside the server keeps the server free of any opinion about
-	// where its assets live, and makes a broken embed a startup error instead
-	// of a UI that answers 404 to everything but /api.
+	// Resolve the embedded assets here so a broken embed fails at startup.
 	staticAssets, err := webui.Static()
 	if err != nil {
 		return fmt.Errorf("failed to open embedded web UI assets: %w", err)
@@ -256,11 +242,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 		// How often every connected browser is pushed a round of updates.
 		StreamInterval: time.Duration(cfg.WebUI.StreamInterval) * time.Second,
 
-		// The conditions the bell reports. They come from the same file the
-		// poller reads, and SIGHUP below re-reads it without a restart --
-		// which matters more here than for anything else in the file, because
-		// restarting this service costs minutes of MIB parsing and an
-		// operator tuning a threshold would do it several times.
+		// Alarm rules come from the poller's config file; SIGHUP re-reads them without a restart.
 		AlarmRules: alarm.RulesFrom(cfg.Alarms),
 	})
 	if err != nil {
@@ -298,11 +280,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 
 	go reloadOnSignal(ctx, server)
 
-	// Bind before announcing anything. Everything above this line — the MIB
-	// catalog above all — happens with nothing listening, and on a cold
-	// catalog that is minutes. Binding is the point at which the service
-	// becomes usable, so it is the point the readiness signal belongs at, and
-	// the point the log line an operator greps for belongs at.
+	// Bind before announcing readiness: the MIB catalog load before this point can take minutes.
 	status(notifier, "binding "+cfg.WebUI.ListenAddress)
 	// listenErr rather than err: the outer err is still live here, and
 	// shadowing it would hide a failure to bind behind a name that already
@@ -319,9 +297,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 		listener.Addr(), time.Since(started).Truncate(time.Millisecond))
 	log.Printf("Open http://localhost%s in your browser", cfg.WebUI.ListenAddress)
 
-	// READY=1 goes out only now. Sending it any earlier is the defect this
-	// replaces: systemd would call the unit active while the port refused
-	// every connection, and a deploy check could not tell that from a wedge.
+	// Send READY=1 only once the listener is bound.
 	if notifyErr := notifier.Ready(); notifyErr != nil {
 		return fmt.Errorf("failed to report readiness to systemd: %w", notifyErr)
 	}
@@ -330,11 +306,7 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 	// Start server in a goroutine
 	errChan := make(chan error, 1)
 	go func() {
-		// A graceful shutdown closes the server and Serve reports that as
-		// ErrServerClosed. That is the expected end of a stop, not a failure:
-		// exiting non-zero on it would make every `systemctl restart` look
-		// like a failed one, which is the class of lie this change exists to
-		// remove.
+		// ErrServerClosed is the normal end of a graceful stop, not a failure.
 		if err := server.Serve(ctx, listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errChan <- err
 		}
@@ -350,24 +322,14 @@ func run(ctx context.Context, notifier *sdnotify.Notifier, started time.Time) er
 	}
 }
 
-// status sets the unit's status line, the one thing a service that has not
-// finished starting can say to somebody looking at it with `systemctl status`.
-// A failure to report is worth a line in the journal and nothing more: it costs
-// visibility, not correctness.
+// status sets the unit's status line; a failure to report is logged and ignored.
 func status(notifier *sdnotify.Notifier, text string) {
 	if err := notifier.Status(text); err != nil {
 		log.Printf("Failed to report startup status to systemd: %v", err)
 	}
 }
 
-// mibProgress builds a reporter that keeps the unit's status line current
-// through a module load that takes minutes.
-//
-// It writes only to the service manager. The journal already carries a line per
-// module, and a second copy of it there would bury the load it describes.
-//
-// The returned reporter is called from the goroutine running the load and is
-// not safe for concurrent use, which is what the load loops do.
+// mibProgress returns a reporter that keeps the unit's status line current during a module load; not safe for concurrent use.
 func mibProgress(notifier *sdnotify.Notifier, phase string) mib.LoadProgress {
 	reporting := true
 	return func(done, total int, module string) {
@@ -383,17 +345,7 @@ func mibProgress(notifier *sdnotify.Notifier, phase string) mib.LoadProgress {
 	}
 }
 
-// reloadOnSignal re-reads the configuration on SIGHUP.
-//
-// Only the alarm rules are re-applied, and that is the honest scope rather than
-// a partial implementation: the MIB catalog, the record store and the listening
-// socket are all bound at startup, and pretending a reload could change them
-// would be worse than saying it cannot. What an operator actually edits between
-// restarts is a threshold.
-//
-// A file that will not parse or will not validate leaves the running rules
-// exactly as they were. A reload that emptied the bell because of a typo would
-// be a monitoring outage caused by the act of configuring monitoring.
+// reloadOnSignal re-applies the alarm rules on SIGHUP; an invalid file leaves the running rules unchanged.
 func reloadOnSignal(ctx context.Context, server *api.Server) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGHUP)
@@ -416,21 +368,7 @@ func reloadOnSignal(ctx context.Context, server *api.Server) {
 	}
 }
 
-// configureMIB settles where the web UI keeps its parsed MIB catalog and where
-// it looks for MIB files.
-//
-// The catalog path always comes from the command line and never from the config
-// file. That file is the poller's: its mib.storage_path names the *poller's*
-// catalog, and Pebble admits one writer, so a web UI that adopted it would
-// either fail to open a store the poller holds or, with the poller down, take
-// the lock and keep the poller out. The two services therefore keep separate
-// catalogs by construction rather than by the accident of the web UI container
-// having no config file in it.
-//
-// mibFilesPath is the directory the web UI writes uploaded MIB files to. It is
-// shared with the poller, so its uploaded/ subdirectory is put on the search
-// path here for the same reason the poller puts it on its own: either service
-// must be able to parse a module the other imported.
+// configureMIB sets the web UI's own catalog path (never the poller's) and adds the shared uploaded/ directory to the search path.
 func configureMIB(mibCfg *config.MIBConfig, catalogPath, mibFilesPath string) {
 	mibCfg.StoragePath = catalogPath
 
@@ -439,12 +377,7 @@ func configureMIB(mibCfg *config.MIBConfig, catalogPath, mibFilesPath string) {
 		known[path] = true
 	}
 
-	// The imported-MIB store, plus whatever the base image ships. The
-	// "/app/mibs/*" entries that used to be here named a directory bind-mounted
-	// from the repository working copy: the deployment could not be moved to a
-	// host without that checkout, and a module resolved from there rather than
-	// from the store looked imported while living nowhere the backup covered.
-	// Imports are copied into the store, so the store is the whole source.
+	// The imported-MIB store plus the modules the base image ships.
 	for _, path := range []string{
 		filepath.Join(mibFilesPath, "uploaded"),
 		"/app/mibs/standard",

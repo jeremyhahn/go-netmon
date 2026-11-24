@@ -7,13 +7,7 @@ services:
     container_name: go-netmon
     hostname: go-netmon
     restart: unless-stopped
-    # Locked memory for the sealed SNMP credentials (go-enclave). A device's
-    # credentials are open only for the length of its request, and one open
-    # locks at most 24 KiB: three secrets, each a 4 KiB plaintext page and its
-    # data key's page. 16 MiB, less the sealer's own 12 KiB of keys, holds
-    # about 680 opens at once: a 256-device fleet polling at the same instant,
-    # with better than 2x headroom. Past that, polls wait their turn instead of
-    # failing. Docker's 64 KiB default holds two. See docs/deployment/user.md.
+    # Locked memory for sealed SNMP credentials: 16 MiB holds about 680 concurrent opens; see docs/deployment/user.md.
     ulimits:
       memlock:
         soft: 16777216
@@ -93,21 +87,10 @@ services:
         soft: 16777216
         hard: 16777216
     ports:
-      # UNAUTHENTICATED. Every endpoint here is open to whoever reaches the
-      # port, and GET /api/devices returns each device's SNMP community string
-      # in clear text. That is accepted because the port is on an internal
-      # network — so do not publish it, forward it, or put it behind a proxy
-      # that is reachable from anywhere less trusted.
-      # See docs/operations/security-posture.md.
+      # Unauthenticated, and GET /api/devices returns community strings: keep the port internal; see docs/operations/security-posture.md.
       - "8082:8080"  # Web UI
     volumes:
-      # The same config the poller reads. Without it the web UI falls back to
-      # the code defaults, and global.default_poll_interval differs between the
-      # two (file 30, code 60) — so the UI reported a device polling every 60s
-      # while the poller polled it every 30s. Sharing the file makes one source
-      # of truth. Safe despite mib.storage_path pointing at the poller's Pebble
-      # store, which is single-writer: configureMIB() in cmd/webui always
-      # overrides StoragePath from -mib-catalog.
+      # The poller's config, so both services agree; the web UI always overrides mib.storage_path from -mib-catalog.
       - ./config.yaml:/app/config/config.yaml:ro
       - webui-data:/app/data/webui     # WebUI records and MIB catalog (Pebble)
       - go-netmon-data:/app/data/mibs  # SHARED MIB storage with go-netmon
@@ -120,11 +103,7 @@ services:
       - "-poller=http://go-netmon:9080"
       - "-db=/app/data/webui/webui.db"
       - "-mib-storage=/app/data/mibs"
-      # The parsed MIB catalog. It must sit on a mounted volume: left at its
-      # default it lands on the container's writable layer and every rebuild
-      # or recreate destroys the whole catalog. It must also stay out of
-      # /app/data/mibs, which is the poller's Pebble store directory and
-      # admits only one writer.
+      # The parsed MIB catalog must be on a volume, and outside the poller's single-writer store.
       - "-mib-catalog=/app/data/webui/mib.db"
     depends_on:
       - prometheus

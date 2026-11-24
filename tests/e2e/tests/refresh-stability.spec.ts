@@ -1,15 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
 
-// Does an open dashboard stay put?
-//
-// The 30-second tick used to tear the dashboard down and rebuild it every time,
-// because it compared a fleet-wide answer with a per-device one. That is fixed,
-// and this watches for whatever is left: any redraw, any refetch of the spec,
-// any DOM replacement, over several ticks.
-//
-// Deliberately no route interception. The point is what the deployed container
-// serves, which is what the operator's browser runs -- an earlier check of the
-// working tree would have missed a stale image entirely.
+// An open dashboard is not redrawn, refetched or replaced across refresh ticks, against the deployed container.
 
 import { BASE } from '../target';
 import { deviceByName } from '../stack';
@@ -46,12 +37,7 @@ test('an open dashboard is not redrawn while it sits there', async ({ page, requ
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#fleetOverview')).toBeVisible({ timeout: 30000 });
 
-  // The fleet overview first: it is the landing surface, and its refresh
-  // re-renders on every tick.
-  //
-  // The search is typed and allowed to settle *before* the rows are stamped:
-  // filtering is supposed to redraw, and stamping first would measure that
-  // rather than the tick.
+  // Fleet overview first; let the search settle before stamping rows.
   const search = page.locator('#fleetDeviceList input').first();
   await search.fill('snmpsim').catch(() => {});
   await page.waitForTimeout(2000);

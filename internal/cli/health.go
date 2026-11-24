@@ -12,19 +12,14 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// The services a working go-netmon depends on, named as an operator would name
-// them in an incident channel.
+// The services a working go-netmon depends on.
 const (
 	managementAPIService = "management-api"
 	pollerService        = "poller"
 	prometheusService    = "prometheus"
 )
 
-// serviceState is the outcome of one readiness probe.
-//
-// Unknown is a third state on purpose: an install with no devices gives the
-// poller check nothing to ask about, and calling that "down" would make a fresh
-// install look broken.
+// serviceState is the outcome of one readiness probe; unknown means nothing to ask.
 type serviceState string
 
 const (
@@ -126,12 +121,7 @@ func checkHealth(ctx context.Context, api *client.Client) []healthCheck {
 	}
 }
 
-// checkPoller probes the poller through the only route the management API
-// proxies to it: a device's polling status. That route answers 503 when the
-// poller cannot be reached, which is exactly the distinction being reported.
-//
-// With no devices configured there is nothing to ask about, so the state is
-// unknown rather than down.
+// checkPoller probes the poller through a device's polling status (503 when unreachable); no devices means unknown.
 func checkPoller(ctx context.Context, api *client.Client, devices []client.Device) healthCheck {
 	check := healthCheck{Service: pollerService}
 	if len(devices) == 0 {

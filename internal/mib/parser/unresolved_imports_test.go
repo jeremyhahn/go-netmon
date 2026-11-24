@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// degradedModule takes its OIDs from SNMPv2-SMI, which is always present, and
-// one type from TEST-ABSENT-TC-MIB, which exists nowhere. Every object
-// resolves to an OID; testStatus cannot resolve its type.
+// degradedModule imports one type from a module that does not exist; testStatus stays untyped.
 const degradedModule = `TEST-DEGRADED-MIB DEFINITIONS ::= BEGIN
 IMPORTS
     OBJECT-TYPE, enterprises FROM SNMPv2-SMI
@@ -33,9 +31,7 @@ testReading OBJECT-TYPE
 END
 `
 
-// A module whose IMPORTS name an absent module still loads, but says so: the
-// report names the missing module and the objects it left untyped, and the
-// caller can tell by type.
+// A module with a missing import loads and reports the missing module and the objects left untyped.
 func TestAModuleWithAnAbsentImportReportsIt(t *testing.T) {
 	dir := t.TempDir()
 	p := New(standardMIBs(t), dir)

@@ -288,13 +288,7 @@ func (c *PollerClient) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
 	return response.Devices, nil
 }
 
-// deviceToRequest converts a storage.Device to a PollerDeviceRequest.
-//
-// The poll interval is the device's own, or 0 when the device has none. 0 is
-// what the poller's control API reads as "use global.default_poll_interval", so
-// a device that inherits arrives at the poller still inheriting: the default it
-// gets is the poller's current one, not a copy of it taken when the device was
-// last pushed.
+// deviceToRequest converts a storage.Device to a PollerDeviceRequest; interval 0 means inherit the poller default.
 func (c *PollerClient) deviceToRequest(
 	device *storage.Device, mibNames []string, filters map[string]config.ModuleFilter,
 ) PollerDeviceRequest {

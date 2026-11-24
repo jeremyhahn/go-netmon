@@ -12,16 +12,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// Walking a device's OID tree from the command line.
-//
-// This is the answer to "what does this box actually expose?", and it is asked
-// constantly: before importing a MIB, because a module the device does not
-// implement produces nothing; and after polling comes back empty, because a
-// device answering NoSuchObject looks exactly like the poller not asking.
-//
-// The walk runs on the server, which already holds the device's credentials.
-// That matters most for SNMPv3, where a user, two protocols and two passphrases
-// have to agree, and re-entering them to troubleshoot is how they drift.
+// Walks a device's OID tree on the server, which holds the device's credentials.
 
 func newDeviceWalkCommand(env *Env) *cobra.Command {
 	var (
@@ -90,11 +81,7 @@ func newDeviceWalkCommand(env *Env) *cobra.Command {
 	return cmd
 }
 
-// onlyNamed keeps the objects an imported MIB describes.
-//
-// The counts are left as the device reported them: a walk that answered 600
-// objects of which 40 are named has to keep saying 600, or --named would read as
-// the device exposing far less than it does.
+// onlyNamed keeps the objects an imported MIB describes; counts stay as the device reported them.
 func onlyNamed(result *client.SNMPWalkResponse) *client.SNMPWalkResponse {
 	filtered := *result
 	filtered.Varbinds = make([]client.SNMPWalkVarbind, 0, len(result.Varbinds))

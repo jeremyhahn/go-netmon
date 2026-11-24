@@ -14,21 +14,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib/parser"
 )
 
-// "netmon mib validate" answers one question: would this directory work as the
-// only MIB source a deployment has?
-//
-// It is deliberately local. Every other command here is an HTTP client of the
-// web UI, but this one has to run against a directory before anything is
-// deployed - checking a tree destined for a fresh host, or proving that the
-// internal store is self-sufficient before a bind mount is removed - and a
-// running server is exactly what it must not need.
-//
-// The check that matters is not "did it parse". gosmi resolves a module's
-// IMPORTS against the search path and, when it cannot find one, reports
-// success and returns a module with no nodes. A deployment then runs with a
-// module that resolves nothing, and the first sign is metrics that never
-// appear. So a module that loads but contributes no objects is a failure here,
-// reported separately from one that could not be read at all.
+// "netmon mib validate" checks locally that a directory works as a deployment's only MIB source; a module that loads with no objects fails.
 
 // mibExtensions are the file names this walks. MIB files have no single
 // convention; these are the four in use across the vendors here.
@@ -36,9 +22,7 @@ var mibExtensions = map[string]bool{
 	".mib": true, ".my": true, ".txt": true, ".smi": true,
 }
 
-// moduleHeader matches the DEFINITIONS line that names a module. A file's name
-// is not authoritative: mibs/asr1001/EVENT-MIB.my declares DISMAN-EVENT-MIB,
-// and gosmi resolves by declared name.
+// moduleHeader matches the DEFINITIONS line that names a module; file names are not authoritative.
 var moduleHeader = regexp.MustCompile(`(?m)^\s*([A-Za-z0-9-]+)\s+DEFINITIONS\s*::=\s*BEGIN`)
 
 // validation is the outcome for one module.
@@ -50,9 +34,7 @@ type validation struct {
 	// empty marks a module that loaded but contributed no objects, which means
 	// its imports did not resolve.
 	empty bool
-	// degraded is set when the module loaded but some of its IMPORTS did not
-	// resolve, leaving objects without a type. It is a warning: the
-	// module is usable, just not whole.
+	// degraded: the module loaded but some IMPORTS did not resolve.
 	degraded error
 	// skipped marks a file that is not a MIB module at all. A directory of MIBs
 	// routinely holds a README or a notes file, and calling those failures
@@ -154,13 +136,7 @@ func collectMIBFiles(dirs []string) ([]string, error) {
 	return files, nil
 }
 
-// validateModule loads and parses one file, recovering panics.
-//
-// A malformed construct can panic inside the parser rather than returning an
-// error - an unintended participle bump made every module with an empty
-// bit-string DEFVAL do exactly that. A validator that dies on the first such
-// file cannot report the other two hundred, which is the moment its report is
-// most wanted.
+// validateModule loads and parses one file, recovering parser panics.
 func validateModule(p *parser.Parser, file string) (result validation) {
 	result = validation{file: file, module: declaredModule(file)}
 
@@ -175,11 +151,7 @@ func validateModule(p *parser.Parser, file string) (result validation) {
 		return result
 	}
 
-	// Loaded by path, which is what the importer does. Loading by declared name
-	// would be wrong: gosmi finds a module by FILE name, and the two differ
-	// often enough to matter - mibs/asr1001/EVENT-MIB.my declares
-	// DISMAN-EVENT-MIB. Asking for the declared name reports four working
-	// modules as unloadable.
+	// Load by path, as the importer does; gosmi finds modules by file name.
 	info, err := p.LoadModuleFromFile(file)
 	if err != nil {
 		result.err = err
@@ -201,14 +173,7 @@ func validateModule(p *parser.Parser, file string) (result validation) {
 	return result
 }
 
-// definesObjects reports whether a module's source declares anything that
-// should become an object.
-//
-// Contributing no objects is the signature of an IMPORTS clause that did not
-// resolve - but it is also correct for a module that defines only textual
-// conventions or compliance statements. SNMPv2-TC and SNMPv2-CONF are both in
-// the standard set and both legitimately produce nothing, so flagging every
-// empty module would cry wolf on two of the most common files there are.
+// definesObjects reports whether a module's source declares any object; TC-only modules declare none.
 func definesObjects(path string) bool {
 	content, err := os.ReadFile(path) // #nosec G304 -- an operator-supplied path is the argument of this command
 	if err != nil {
@@ -219,25 +184,14 @@ func definesObjects(path string) bool {
 	return objectDefinition.Match(stripMIBComments(content))
 }
 
-// objectDefinition matches the constructs that produce a node with an OID. Each
-// is anchored to the identifier being defined, so the words alone - which occur
-// throughout ordinary prose in a DESCRIPTION - do not match.
+// objectDefinition matches constructs that produce an OID node, anchored to the identifier.
 var objectDefinition = regexp.MustCompile(
 	`(?m)^\s*[a-zA-Z][a-zA-Z0-9-]*\s+(OBJECT-TYPE|OBJECT-IDENTITY|OBJECT\s+IDENTIFIER\s*::=)`)
 
 // mibComment matches an ASN.1 comment: "--" to the end of the line.
 var mibComment = regexp.MustCompile(`--[^\n]*`)
 
-// stripMIBComments removes comments so a construct named in prose is not
-// mistaken for a definition.
-//
-// SNMPv2-CONF defines only compliance macros and correctly produces no objects,
-// but it explains itself with the line
-//
-//	-- or if not, in object's OBJECT-TYPE macro
-//
-// which is enough for an unanchored search to conclude it should have had some,
-// and to report a perfectly good standard module as broken.
+// stripMIBComments removes MIB comments so prose is not mistaken for a definition.
 func stripMIBComments(content []byte) []byte {
 	return mibComment.ReplaceAll(content, nil)
 }

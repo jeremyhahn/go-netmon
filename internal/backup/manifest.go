@@ -167,9 +167,6 @@ func (m *Manifest) Image(service string) (ImageInfo, bool) {
 }
 
 // decodeManifest parses and checks a manifest read from an archive.
-//
-// The checks are the ones a restore depends on being true before it reasons
-// about the archive at all; everything finer is a member check.
 func decodeManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {

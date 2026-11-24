@@ -14,15 +14,7 @@ import (
 	ws "github.com/jeremyhahn/go-netmon/internal/webui/websocket"
 )
 
-// The upgrade handshake, which only exists in a non-FIPS build.
-//
-// It is here rather than in server_lifecycle_test.go because the test performs
-// a real RFC 6455 handshake, and that handshake is a SHA-1 digest
-// (Sec-WebSocket-Accept). Under GODEBUG=fips140=only the runtime refuses the
-// operation and the dial fails -- so this is not a test that happens to be
-// awkward under FIPS, it is a test of a capability the FIPS build does not
-// have. Its counterpart is TestWebSocketRouteDeclaresItselfUnavailable in
-// websocket_fips_test.go.
+// The upgrade handshake test, non-FIPS only; see TestWebSocketRouteDeclaresItselfUnavailable.
 
 // TestWebSocketUpgrade covers the upgrade handler: a browser that connects
 // reaches the hub and receives what the hub streams.

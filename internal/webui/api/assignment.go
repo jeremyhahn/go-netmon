@@ -39,12 +39,7 @@ type deviceAssignments struct {
 	profiles map[int64][]storage.MIBAssignment
 }
 
-// effective resolves how a MIB is polled for the device.
-//
-// A direct assignment wins outright: attaching a MIB to the device itself is
-// the more specific statement of intent, so it decides both whether the module
-// is polled and how it is narrowed. Failing that, the profiles that contribute
-// the MIB are merged.
+// effective resolves how a MIB is polled for the device: a direct assignment wins, else the profiles merge.
 func (d deviceAssignments) effective(mibID int64) storage.MIBAssignment {
 	if direct, ok := d.direct[mibID]; ok {
 		return direct
@@ -61,15 +56,7 @@ func (d deviceAssignments) directAssignment(mibID int64) storage.MIBAssignment {
 	return storage.DefaultMIBAssignment()
 }
 
-// mergeProfileAssignments combines the assignments a MIB has across the
-// profiles a device uses.
-//
-// The MIB is polled if any profile enables it, and the enabling profiles'
-// filters are unioned — their patterns are concatenated and the tightest
-// non-zero cap wins. A profile that has the MIB disabled contributes nothing,
-// so pausing a MIB in one profile cannot widen or narrow what another profile
-// asked for. An empty list means no profile mentions the MIB, which is the
-// legacy "poll it all" default rather than a decision to stop polling.
+// mergeProfileAssignments merges a MIB's profile assignments: polled if any enables it, filters unioned, tightest cap wins; empty means poll it all.
 func mergeProfileAssignments(assignments []storage.MIBAssignment) storage.MIBAssignment {
 	if len(assignments) == 0 {
 		return storage.DefaultMIBAssignment()
@@ -125,11 +112,7 @@ func (s *Server) loadDeviceAssignments(ctx context.Context, deviceID int64) (dev
 	return deviceAssignments{direct: direct, profiles: byMIB}, nil
 }
 
-// resolveDeviceModules returns the modules a device actually polls.
-//
-// A MIB whose effective assignment is disabled is left out entirely — that is
-// what stops the poller fetching it — and a MIB that carries filters brings
-// them along so the poller can narrow the module.
+// resolveDeviceModules returns the modules a device polls, with their filters; disabled MIBs are left out.
 func (s *Server) resolveDeviceModules(ctx context.Context, deviceID int64) (moduleSelection, error) {
 	mibs, err := s.storage.GetDeviceMIBs(ctx, deviceID)
 	if err != nil {
@@ -161,10 +144,7 @@ func (s *Server) resolveDeviceModules(ctx context.Context, deviceID int64) (modu
 	return selection, nil
 }
 
-// source names where a MIB's effective assignment came from, which is what an
-// operator needs before editing it: a rule inherited from a profile is shared
-// with every other device using that profile, and changing it there is a very
-// different act from changing it here.
+// source names where a MIB's effective assignment came from.
 func (d deviceAssignments) source(mibID int64) string {
 	if _, ok := d.direct[mibID]; ok {
 		return "device"
@@ -185,13 +165,7 @@ func mibAssignmentViews(mibs []storage.MIB, assignmentOf func(mibID int64) stora
 	return views
 }
 
-// validateAssignment reports the first thing in an assignment the poller could
-// not act on.
-//
-// The verdict comes from storage.ValidateMIBAssignment, which is also what the
-// configuration importer applies, so a filter this endpoint accepts is one an
-// import accepts and vice versa. Only the presentation is this layer's: the
-// error it returns is the one the API has always reported.
+// validateAssignment reports the first problem storage.ValidateMIBAssignment finds.
 func validateAssignment(a storage.MIBAssignment) error {
 	err := storage.ValidateMIBAssignment(a)
 	if err == nil {
@@ -209,8 +183,7 @@ func validateAssignment(a storage.MIBAssignment) error {
 	return err
 }
 
-// assignmentIDs parses the owner and MIB IDs from the request path, answering
-// the client itself when either is malformed.
+// assignmentIDs parses the owner and MIB IDs from the path, answering the client when either is malformed.
 func assignmentIDs(w http.ResponseWriter, r *http.Request, ownerField string) (ownerID, mibID int64, ok bool) {
 	vars := mux.Vars(r)
 

@@ -2,20 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Leaving a device must actually let go of it.
-//
-// Subscriptions are keyed `${deviceId}-${mibName}`, and the teardown recovered
-// the MIB name from that key with split('-')[1]. MIB names carry hyphens --
-// HOST-RESOURCES-MIB, IF-MIB, CISCO-PROCESS-MIB -- so the key "14-HOST-RESOURCES-MIB"
-// yielded "HOST", the lookup for "14-HOST" missed, and nothing was released.
-//
-// Every MIB with a hyphen in its name therefore leaked on every device switch,
-// which is nearly all of them. Walking nine devices in one session left the
-// later dashboards starved: bmc-02 showed 84 cards still waiting for data
-// at the end of a run, and 1 when it was opened on its own.
-//
-// This walks a few devices and checks that nothing belonging to a device the
-// reader has left is still subscribed.
+// Leaving a device releases all its subscriptions, including hyphenated MIB names.
 
 import { BASE } from '../target';
 import { deviceByName, SEEDED_DEVICES } from '../stack';
@@ -62,15 +49,7 @@ async function serveWorkingTree(page: Page) {
   });
 }
 
-// The seeded devices carry the same hyphenated MIB names (HOST-RESOURCES-MIB,
-// IF-MIB, SNMPv2-MIB) -- exactly the case the teardown mishandled.
-//
-// The walk STARTS on the simulated router deliberately, and returns to it: it
-// has more rows than the second device (three storage areas, two processors
-// against one of each), so leaving it puts more frames in flight -- and it is
-// those in-flight frames, arriving after the teardown, that the orphan check
-// below is looking for. Going back and forth makes every device both left and
-// revisited, so a leak shows as growth across the walk.
+// Walk back and forth between devices with hyphenated MIB names, starting on the busier simulated router.
 const WALK: string[] = [
   SEEDED_DEVICES[0], SEEDED_DEVICES[1], SEEDED_DEVICES[0], SEEDED_DEVICES[1], SEEDED_DEVICES[0],
 ];
@@ -98,14 +77,7 @@ test('leaving a device releases its subscriptions', async ({ page, request }) =>
       Array.from((window as any).app.activeSubscriptions.keys()));
     seen.push({ device: name, keys });
 
-    // The readings this browser holds must not outlive the subscriptions that
-    // asked for them.
-    //
-    // A frame for the device just left can arrive after the teardown -- the
-    // server had already queued it -- and recording it puts back an entry
-    // nothing will remove again. Measured walking nine devices before this was
-    // guarded: 628 readings held against 185 live queries, growing with every
-    // device visited for the life of the session.
+    // Held readings must not outlive their subscriptions.
     const held = await page.evaluate(() => {
       const app = (window as any).app;
       let live = 0;
@@ -303,9 +275,7 @@ test('a departed device cannot paint its status banner over the current one', as
   test.setTimeout(180_000);
   await liveQuery(page);
 
-  // The status is forced to one that DOES paint. A healthy device hides the
-  // banner, so asserting it stayed hidden against a healthy fleet asserts
-  // nothing -- verified by removing the guard and watching the test pass.
+  // Force a status that paints the banner, so its absence is meaningful.
   await page.route(/\/api\/devices\/\d+\/status$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',

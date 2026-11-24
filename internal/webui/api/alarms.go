@@ -7,12 +7,8 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/alarm"
 )
 
-// The bell.
-//
-// Everything the UI said about a fault used to be a toast: shown once, for a
-// few seconds, and then gone. A reader who was not watching the screen at that
-// moment had no way to find out afterwards, and there was nowhere on the page
-// that answered "is anything wrong right now". This is that place.
+// The bell: the place on the page that answers "is anything wrong right now",
+// keeping faults visible after their toast is gone.
 
 // AlarmsResponse is what the bell reads.
 type AlarmsResponse struct {

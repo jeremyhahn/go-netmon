@@ -13,14 +13,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// profileMIBDirs is the search path these tests parse with.
-//
-// The standard directory is complete for the modules loaded below: IF-MIB's and
-// SNMPv2-MIB's imports all resolve within it. That matters because an
-// incomplete search path is not an error — it silently yields fewer objects,
-// most of them with no OID and no type (see
-// internal/mib/parser/parser_searchpath_test.go). The assertions on OID and
-// type below are what would catch it if this path ever stopped being complete.
+// profileMIBDirs is the search path these tests parse with; IF-MIB and SNMPv2-MIB imports all resolve within it.
 func profileMIBDirs() []string {
 	return testsupport.MIBDirs("standard")
 }
@@ -53,14 +46,7 @@ func newProfileLoader(t testing.TB) *loader.Loader {
 	return mibLoader
 }
 
-// TestPoller_WithMIBProfiles is the end-to-end check that a device's profile
-// reaches the wire: the OIDs the profile selects are the OIDs the worker asks
-// its device for.
-//
-// The devices poll in-process SNMPv2c agents (see testsupport's SNMPAgent), so
-// what is verified is the whole path — profile selection, the scalar/table
-// split, chunked GETs and the walk of every table the profile named — rather
-// than only that Start returned no error.
+// TestPoller_WithMIBProfiles checks a profile's OIDs are the ones the worker requests from an in-process agent.
 func TestPoller_WithMIBProfiles(t *testing.T) {
 	mibLoader := newProfileLoader(t)
 
@@ -301,14 +287,7 @@ const (
 	ifDescrOID  = "1.3.6.1.2.1.2.2.1.2"
 )
 
-// TestPoller_ModuleSelection_WalksTheModulesTables covers the other half of OID
-// selection: a device that names MIB modules explicitly rather than a profile.
-//
-// That path reads the module's objects out of the MIB store, splits them into
-// scalars to GET and tables to walk, and it is the path the WebUI's device
-// editor and the config sync both produce. The assertion is that a row of the
-// module's table actually comes back, which is what distinguishes a walk that
-// ran from a walk that was never issued.
+// TestPoller_ModuleSelection_WalksTheModulesTables checks explicit module selection walks the module's tables.
 func TestPoller_ModuleSelection_WalksTheModulesTables(t *testing.T) {
 	mibLoader := newProfileLoader(t)
 	agent := ifTableAgent(t, "module-device")

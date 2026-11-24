@@ -24,9 +24,7 @@ type promStub struct {
 	mu         sync.Mutex
 	lastPath   string
 	lastParams string
-	// allParams records EVERY query. lastParams alone cannot express "the
-	// device-scoped question named the device" once more than one query is
-	// issued -- it silently becomes an assertion about whichever ran last.
+	// allParams records every query issued.
 	allParams []string
 }
 
@@ -174,10 +172,7 @@ func TestPrometheusQueryLabelValues(t *testing.T) {
 		t.Errorf("params = %q, want the matcher", stub.lastParams)
 	}
 
-	// Every lookup is windowed. Without start and end the label API answers
-	// across the whole retention period, so a metric that stopped being
-	// collected hours ago still reads as present -- which had the dashboard
-	// offering panels for objects a device no longer reports.
+	// Every lookup is windowed with start and end.
 	for _, bound := range []string{"start=", "end="} {
 		if !strings.Contains(stub.lastParams, bound) {
 			t.Errorf("params = %q, want a %s bound", stub.lastParams, bound)
@@ -371,18 +366,7 @@ func TestGetSNMPTypeName(t *testing.T) {
 	}
 }
 
-// TestANonFiniteValueNeverReachesTheEncoder is a bug the wire found rather than
-// a test.
-//
-// Prometheus encodes an undefined result as the string "NaN", and returns one
-// for ordinary expressions -- a division, a counter reset. strconv.ParseFloat
-// accepts it, and then encoding/json refuses to marshal the float: "json:
-// unsupported value: NaN".
-//
-// The failure lands nowhere useful. A metric frame that cannot be marshaled is
-// never sent while its sequence has already advanced, so the panel stops
-// updating for as long as the NaN persists, with nothing on screen saying why.
-// One NaN in an alarm's value would take the entire bell response with it.
+// TestANonFiniteValueNeverReachesTheEncoder checks NaN samples are dropped before JSON encoding.
 func TestANonFiniteValueNeverReachesTheEncoder(t *testing.T) {
 	stub := &promStub{body: `{"status":"success","data":{"resultType":"vector","result":[
 		{"metric":{"device":"core-01","ifindex":"1"},"value":[1788324945.253,"NaN"]},

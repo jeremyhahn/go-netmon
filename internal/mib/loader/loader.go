@@ -25,11 +25,7 @@ type Loader struct {
 	parser         *parser.Parser
 	profileManager *profiles.Manager
 
-	// revision counts the changes this loader has made to the store's
-	// contents. It is what lets a consumer of the store -- the metrics
-	// exporter's MIB index above all -- tell "nothing has been loaded since I
-	// last looked" from "seventeen modules have", without polling the store
-	// or being handed a notification per module.
+	// revision counts changes this loader made to the store, so consumers can skip rebuilding when unchanged.
 	revision atomic.Uint64
 
 	// progress, when set, is told after each module of a bulk load. It is
@@ -37,12 +33,7 @@ type Loader struct {
 	// it needs no synchronization of its own.
 	progress mib.LoadProgress
 
-	// loadMu serializes parsing. The parser is a facade over gosmi, which
-	// keeps its loaded modules in package-global state, so two callers loading
-	// two *different* modules at once corrupt that state just as surely as two
-	// loading the same one. It is held for the parse and the store write
-	// together, so a module is never visible half-written to a reader that is
-	// about to decide it need not be loaded.
+	// loadMu serializes parsing and the store write: gosmi keeps global state.
 	loadMu sync.Mutex
 }
 
@@ -105,10 +96,7 @@ func (l *Loader) Load() error {
 	}
 	log.Printf("Loaded %d built-in profiles", len(l.profileManager.ListProfiles()))
 
-	// EnsureModuleCurrent rather than LoadModule. Load runs once, at startup,
-	// which is the one point at which asking whether a file has changed since
-	// it was parsed gives a trustworthy answer, and on a warm store the answer
-	// is no for every module.
+	// At startup a changed file can be detected reliably, so reparse only changed modules.
 	for i, moduleName := range l.config.AutoLoad {
 		if err := l.EnsureModuleCurrent(moduleName); err != nil {
 			log.Printf("Warning: failed to load module %s: %v", moduleName, err)
@@ -182,26 +170,17 @@ func (l *Loader) EnsureModule(moduleName string) error {
 }
 
 // EnsureModuleCurrent loads moduleName unless the store already holds a copy at
-// least as new as the file it was parsed from. IT IS A STARTUP OPERATION and
-// must be called before this process has parsed anything else; see below.
+// least as new as the file it was parsed from. It is a startup operation and
+// must be called before this process has parsed anything else.
 //
-// The store outlives the process. Every module a service has ever imported is
-// still in it after a restart, so reparsing them all is work with no result:
-// the same files produce the same objects. That reparse is the whole of the web
-// UI's cold start — 203 seconds on monitor-01 across 176 modules, all of it with
-// nothing listening. Skipping what has not changed reduces a restart to opening
-// the store.
+// The store outlives the process, so unchanged modules are not reparsed on
+// restart. A MIB file edited on disk still takes effect on the next start: a
+// file written since the parse that produced the stored copy is parsed again.
 //
-// A MIB file edited on disk still takes effect on the next start, which is what
-// the unconditional reparse bought and what this has to keep: a file written
-// since the parse that produced the stored copy is parsed again.
-//
-// The precondition is gosmi's, not this package's. Loading a module caches its
-// outcome for the life of the process — that is what Parser.Reload exists to
-// undo — so once anything has been parsed, "the file changed" no longer implies
-// "a reparse will read the file". At startup the cache is empty and everything
-// that enters it comes from the files as they are now, so the check is sound
-// exactly there.
+// The precondition is gosmi's: loading a module caches its outcome for the life
+// of the process (Parser.Reload undoes that), so once anything has been parsed
+// a changed file does not imply a reparse reads it. At startup the cache is
+// empty, so the check is sound there.
 func (l *Loader) EnsureModuleCurrent(moduleName string) error {
 	if l.moduleIsCurrent(moduleName) {
 		return nil
@@ -227,10 +206,7 @@ func (l *Loader) moduleIsCurrent(moduleName string) bool {
 	return !moduleFileIsNewer(info)
 }
 
-// storedModule finds the stored record for a requested name. The store is
-// keyed by the declared module name, but a request can name the file instead
-// (iDRAC-SMIv2 for IDRAC-MIB-SMIv2); without the fallback such a module is
-// never found and is parsed again on every start.
+// storedModule finds the stored record by declared module name, falling back to the file name.
 func (l *Loader) storedModule(moduleName string) *mib.ModuleInfo {
 	if info, err := l.storage.GetModule(moduleName); err == nil {
 		return info
@@ -249,16 +225,7 @@ func (l *Loader) storedModule(moduleName string) *mib.ModuleInfo {
 	return nil
 }
 
-// moduleFileIsNewer reports whether the file a stored module was parsed from
-// has been written since that parse.
-//
-// Anything it cannot answer counts as not newer, and both cases are deliberate.
-// A module with no recorded path was not read from a file this process can
-// find. A path that will not stat is a file that has been moved or removed, so
-// reparsing it could only fail — and because loadModule parses before it
-// writes, a failure would leave the store exactly as it is. The stored copy is
-// then the best answer available, and returning it beats logging a failure per
-// module on every start.
+// moduleFileIsNewer reports whether a module's file was written since it was parsed; unknown path or stat failure counts as not newer.
 func moduleFileIsNewer(info *mib.ModuleInfo) bool {
 	if info.Path == "" {
 		return false
@@ -288,12 +255,7 @@ type parsedModule struct {
 	tables []*mib.TableInfo
 }
 
-// loadModule is LoadModule with l.loadMu already held.
-//
-// The parse happens before anything is deleted. Deleting first — as this once
-// did — means a module that fails to parse is erased from the store by the
-// attempt to refresh it, so a reload that goes wrong costs the operator the
-// good copy they already had. Parsing first degrades that to "no change".
+// loadModule is LoadModule with l.loadMu held; it parses before deleting, so a failed parse leaves the store unchanged.
 func (l *Loader) loadModule(moduleName string) error {
 	parsed, err := l.parseModule(moduleName)
 	if err != nil {
@@ -331,9 +293,7 @@ func (l *Loader) parseModule(moduleName string) (*parsedModule, error) {
 		return nil, &ModuleLoadError{Module: moduleName, Op: "parse", Err: err}
 	}
 
-	// A module whose IMPORTS did not all resolve still loads, but its objects
-	// typed by a missing module have no type, units, hint or enum. That is
-	// worth knowing and not worth refusing the module over.
+	// Unresolved IMPORTS leave some objects untyped; the module still loads.
 	if degraded := report.Err(); degraded != nil {
 		log.Printf("Warning: %v", degraded)
 	}

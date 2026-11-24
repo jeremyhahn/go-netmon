@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
-# Tests for run-tests.sh's compose namespacing and teardown.
-#
-# The behaviour under test is destructive and concurrent, which is exactly the
-# combination CI cannot exercise: the integration job runs the script once, so a
-# regression back to a shared project name would look green until two runs
-# landed on one host again and one deleted the other's stack. That is how the
-# original defect reached main.
-#
-# So these run the real script against a stub `docker` placed first on PATH,
-# recording every invocation. No daemon, no containers, no possibility of
-# touching a live stack.
-#
-# Usage: harness-tests.sh [test-name-substring]
+# Tests for run-tests.sh's compose namespacing and teardown, against a stub docker on PATH. Usage: harness-tests.sh [test-name-substring]
 
 set -euo pipefail
 
@@ -25,10 +13,7 @@ FAILED_TESTS=()
 
 # --- stub docker ----------------------------------------------------------
 
-# make_fake_docker writes a stub CLI that appends each invocation to $1/log and
-# succeeds. run-tests.sh calls docker directly rather than through a $DOCKER
-# variable, so it is injected by PATH rather than by environment -- which also
-# means the test covers the real command lines, not a rewritten form of them.
+# make_fake_docker writes a stub CLI that logs each invocation to $1/log and succeeds.
 make_fake_docker() {
     local bin="$1" log="$2"
     mkdir -p "$bin"
@@ -82,14 +67,7 @@ fail() {
 
 # --- stub docker for clean.sh --------------------------------------------
 
-# make_container_docker writes a stub that MODELS CONTAINERS, for the recovery
-# tests. clean.sh selects projects from container labels, so a stub replaying a
-# fixed answer could not tell a safe selection from one that picks the
-# deployment.
-#
-# State, one container per line of $root/containers:  <id> <project> <config_files>
-# Optional: $root/ps-status (force docker ps to fail), $root/down-status
-# (force compose down to fail).
+# make_container_docker writes a stub modelling containers in $root/containers (<id> <project> <config_files>); $root/ps-status and down-status force failures.
 make_container_docker() {
     local bin="$1" root="$2"
     mkdir -p "$bin" "$root"
@@ -112,14 +90,7 @@ case "\$1" in
                     want_project="\${a#label=com.docker.compose.project=}" ;;
             esac
         done
-        # The race window. clean.sh discovers candidates by config_files and
-        # then asks, per project, who its members are. Between those calls the
-        # host keeps running: containers exit, and a name can be taken by
-        # something else. The mutation is applied to the MEMBERSHIP query
-        # specifically, because that is the answer the ownership proof rests
-        # on -- and because discovery's own "docker inspect" already fails
-        # closed if the container it just listed has gone, so a state change
-        # before that point never reaches the check under test.
+        # Apply the mutation to the membership query, the one the ownership proof rests on.
         if [ -n "\$want_project" ]; then
             if [ -f "$root/vanish-before-membership" ]; then
                 : >"$root/containers"
@@ -204,11 +175,7 @@ test_concurrent_runs_use_distinct_projects() {
     pa="$(projects_in "$a")"
     pb="$(projects_in "$b")"
 
-    # A PREFIX match, because the run id is no longer the whole suffix: the
-    # PID follows it, so that two jobs of the SAME workflow run -- which share
-    # GITHUB_RUN_ID, as do two attempts of it -- still get separate projects.
-    # Asserting the exact string here would have forced that fix to weaken the
-    # test rather than the test to check the property.
+    # A prefix match: the PID follows the run id.
     case "$pa" in go-netmon-integration-aaa111-*) ;; *) fail "run A used projects: $pa"; return 1 ;; esac
     case "$pb" in go-netmon-integration-bbb222-*) ;; *) fail "run B used projects: $pb"; return 1 ;; esac
     [ "$pa" != "$pb" ] || fail "two runs shared the project $pa" || return 1
@@ -223,11 +190,7 @@ test_concurrent_runs_use_distinct_projects() {
     fi
 }
 
-# GITHUB_RUN_ID is shared by every job in a workflow run and by every re-run
-# attempt of it, so it cannot be the whole suffix. Two runs carrying the SAME
-# run id -- a matrix leg, a second integration job, or a re-run overlapping a
-# still-running first attempt -- must still land in separate projects, or the
-# 2026-08-21 adopt-and-tear-down collision reproduces inside one workflow run.
+# Runs sharing GITHUB_RUN_ID (matrix legs, other jobs, re-runs) must still get separate projects.
 test_same_run_id_still_yields_distinct_projects() {
     local a="$TMP/same-a.log" b="$TMP/same-b.log"
     run_harness "$a" shared999
@@ -323,11 +286,7 @@ run_harness_with() {
     rm -rf "$bin"
 }
 
-# The helper image must be BUILT here and LOADED into the sibling daemon, never
-# pulled from a registry inside it. dind starts with an empty image store on
-# every run, so a registry-hosted helper is a fresh third-party pull every time
-# -- and once a TLS handshake timeout to auth.docker.io failed the suite for a
-# reason unrelated to the code under test.
+# The helper image is built here and loaded into dind, never pulled inside it.
 test_the_helper_image_is_built_and_loaded_into_the_sibling_daemon() {
     local log="$TMP/seed.log"
     run_harness "$log" hhh888
@@ -372,18 +331,11 @@ test_a_daemon_that_cannot_be_seeded_is_not_offered_to_the_tests() {
 # go_test_command prints the "go test" command line the runner handed to
 # compose run, which is the only place the suite's scope is decided.
 go_test_command() {
-    # -m1, not "| head -1": a log with many matches would SIGPIPE grep and
-    # pipefail would fail the function on exactly the line it found.
+    # -m1, not head -1, so pipefail does not trip on SIGPIPE.
     grep -m1 -oE 'go test .*' "$1"
 }
 
-# tagged_dirs prints every directory holding a file behind //go:build
-# integration.
-#
-# Derived here independently of tagged-packages.sh -- a different traversal, not
-# a call to the code under test -- because a test that asks the implementation
-# what the answer is agrees with it by construction, including when both are
-# wrong.
+# tagged_dirs prints every directory holding a //go:build integration file, derived independently of tagged-packages.sh.
 tagged_dirs() {
     local root file
     root="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -452,10 +404,7 @@ test_every_compose_call_names_the_project() {
 
 # --- recovery cleanup -----------------------------------------------------
 
-# The case Codex named: make integration-up can put test services inside the
-# project compose infers from the directory -- "go-netmon", the DEPLOYMENT's
-# project. Selecting on "holds a container of ours" alone returns it, and
-# down -v over it deletes the deployment's volumes.
+# A project holding one of our containers may still be the deployment's (go-netmon); it must not be selected.
 test_clean_never_tears_down_the_deployment_project() {
     local rows
     rows="$(printf '%s %s %s\n' aaa1 go-netmon "$COMPOSE_FILE"; \
@@ -530,11 +479,7 @@ test_clean_refuses_a_project_that_emptied_after_discovery() {
     esac
 }
 
-# The name-reuse case, which condition 1 alone does not catch: the project is
-# not empty, and everything in it does come from our compose file -- but it is
-# a DIFFERENT container. The project discovery looked at is gone and this one
-# merely inherited its name, so the ownership that was established does not
-# transfer to it.
+# Name reuse: a different container of ours under the discovered project's name is refused.
 test_clean_refuses_a_project_whose_discovered_container_is_gone() {
     run_clean "$(printf '%s %s %s\n' ggg1 go-netmon-integration-8 "$COMPOSE_FILE")" \
         "swap-before-membership=ggg2 go-netmon-integration-8 $COMPOSE_FILE" || true

@@ -220,10 +220,7 @@ func (s *Server) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, seriesData)
 }
 
-// logSampleMetric traces the shape of one raw Prometheus result.
-//
-// Callers must check that debug logging is on first: reading the nested maps
-// is work this does not want to pay for when the records are dropped.
+// logSampleMetric traces one raw Prometheus result; check debug logging is on first.
 func (s *Server) logSampleMetric(ctx context.Context, metric interface{}) {
 	metricMap, ok := metric.(map[string]interface{})
 	if !ok {
@@ -260,10 +257,7 @@ func calculateStep(duration time.Duration) time.Duration {
 	}
 }
 
-// convertToTimeSeries converts MetricValue array to time series format.
-//
-// logger traces the payload shapes it had to fall back on; a nil logger
-// discards them.
+// convertToTimeSeries converts MetricValue array to time series format; a nil logger discards fallbacks.
 func convertToTimeSeries(metrics []interface{}, logger *slog.Logger) []TimeSeriesData {
 	logger = logging.OrDiscard(logger)
 	ctx := context.Background()
@@ -354,10 +348,7 @@ func convertToTimeSeries(metrics []interface{}, logger *slog.Logger) []TimeSerie
 		}
 	}
 
-	// Convert map to slice, in the order of the label strings the series were
-	// grouped under. Emitting them in map order gives the chart a different
-	// series order — and so different colors and a different legend — on every
-	// identical query.
+	// Emit series in label-string order so colors and legend are stable.
 	result := make([]TimeSeriesData, 0, len(seriesMap))
 	for _, labelStr := range slices.Sorted(maps.Keys(seriesMap)) {
 		result = append(result, *seriesMap[labelStr])
@@ -375,13 +366,7 @@ func getKeys(m map[string]interface{}) []string {
 	return keys
 }
 
-// labelsToStringFromMap renders a label set as the key its series is grouped
-// under.
-//
-// The labels are emitted in name order. Ranging over the map instead makes the
-// key depend on Go's randomized map iteration, so two samples carrying the same
-// labels can produce two different keys and one series is silently split in
-// two — intermittently, and only for series with more than one label.
+// labelsToStringFromMap renders a label set, sorted by name, as its series grouping key.
 func labelsToStringFromMap(labels map[string]string, metricName string) string {
 	result := fmt.Sprintf("__name__=%s,", metricName)
 	for _, k := range slices.Sorted(maps.Keys(labels)) {

@@ -162,7 +162,7 @@ func TestLoadStoredMIBsWithErrors(t *testing.T) {
 		}
 	}
 
-	// Create mock MIB loader that fails on BROKEN-MIB
+	// Create a mock MIB loader that fails on BROKEN-MIB.
 	mockLoader := &mockMIBLoaderWithTracking{
 		loadedModules: []string{},
 		loadErrors: map[string]error{

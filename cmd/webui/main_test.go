@@ -8,13 +8,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/config"
 )
 
-// The web UI's parsed MIB catalog is a Pebble store, and where it lives decides
-// whether the operator's imported MIBs survive a redeploy. It used to be a
-// literal buried in the "no config file found" branch, which put it on the
-// container's writable layer: a catalog of 169 modules was destroyed twice in
-// one session by an ordinary `docker compose build`. These tests pin the two
-// properties that keep that from recurring — the path is whatever the operator
-// passed, and it is never inherited from the poller's config file.
+// The web UI's MIB catalog path is whatever the operator passed and never inherited from the poller's config.
 
 func TestConfigureMIBUsesTheCatalogPathItWasGiven(t *testing.T) {
 	mibCfg := &config.MIBConfig{}
@@ -58,12 +52,7 @@ func TestConfigureMIBAddsTheSearchPaths(t *testing.T) {
 		}
 	}
 
-	// /app/mibs/standard is the IETF base set baked into the image so a fresh
-	// deployment can bootstrap from an empty volume. The device-specific trees
-	// are a different matter: they used to arrive as a bind mount of the
-	// repository working copy, and a module resolved from one of them looked
-	// imported while living in a place no backup covered and no other host had.
-	// They come from an import or a restore now, and must not reappear here.
+	// Only the IETF base set is baked in; device MIB trees must not appear on the search path.
 	for _, path := range mibCfg.Paths {
 		for _, banned := range []string{"asr1001", "cisco", "r640", "vendor"} {
 			if strings.HasPrefix(path, "/app/mibs/"+banned) {

@@ -33,16 +33,7 @@ func sample(i int, at time.Time) *Sample {
 	}
 }
 
-// TestOnlyOneRequestIsInFlightAtATime is the property the sender exists for.
-//
-// Before it, every poll worker that filled the buffer wrote inline and the
-// background flusher wrote on a tick, so two requests could be on the wire with
-// nothing deciding which arrived first. A batch taken later could land first and
-// leave the earlier one permanently unacceptable to Prometheus -- the same
-// failure as a malformed request, reached without one.
-//
-// The handler below holds each request open long enough that an overlap would
-// be certain if one were possible.
+// TestOnlyOneRequestIsInFlightAtATime holds each request open so any overlap would be seen.
 func TestOnlyOneRequestIsInFlightAtATime(t *testing.T) {
 	var inFlight atomic.Int32
 	var maxInFlight atomic.Int32
@@ -96,13 +87,7 @@ func TestOnlyOneRequestIsInFlightAtATime(t *testing.T) {
 	}
 }
 
-// TestASampleTooOldToLandIsDroppedRatherThanRetriedForever is the age-out half
-// of the queue's overflow policy.
-//
-// A sample the endpoint has already moved past cannot be accepted however many
-// times it is offered, and retrying it holds up everything behind it. Waiting
-// longer than the horizon is the proxy for that: newer samples for the same
-// series have almost certainly landed in the meantime.
+// TestASampleTooOldToLandIsDroppedRatherThanRetriedForever covers the age-out bound.
 func TestASampleTooOldToLandIsDroppedRatherThanRetriedForever(t *testing.T) {
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -190,12 +175,7 @@ func TestAFreshSampleIsNotAgedOut(t *testing.T) {
 	}
 }
 
-// TestARefusalTheEndpointWillRepeatIsNotRetried is one half of the retry rule.
-//
-// Prometheus Remote-Write 1.0: "Senders MUST NOT retry on HTTP 4xx responses
-// other than 429". A 400 is a refusal the endpoint will repeat forever -- a
-// malformed request, a sample older than what it holds, a label set it will not
-// take -- so retrying it only delays everything behind it.
+// TestARefusalTheEndpointWillRepeatIsNotRetried: a 4xx other than 429 is not retried.
 func TestARefusalTheEndpointWillRepeatIsNotRetried(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -235,13 +215,7 @@ func TestARefusalTheEndpointWillRepeatIsNotRetried(t *testing.T) {
 	}
 }
 
-// TestAnOutageIsRetriedUntilItRecovers is the other half, and the case the old
-// count-based rule got wrong.
-//
-// A Prometheus restart lasting longer than a few flushes is routine. Giving up
-// after N refusals discarded fresh samples that would have been accepted
-// seconds later -- an outage-triggered drop dressed up as a memory bound. Age
-// and depth are the bounds on memory; the error class decides retrying.
+// TestAnOutageIsRetriedUntilItRecovers: retryable failures are retried until the endpoint returns.
 func TestAnOutageIsRetriedUntilItRecovers(t *testing.T) {
 	var requests atomic.Int32
 	var failing atomic.Bool
@@ -292,12 +266,7 @@ func TestAnOutageIsRetriedUntilItRecovers(t *testing.T) {
 	t.Errorf("%d samples still queued after the endpoint recovered", exporter.BufferedSamples())
 }
 
-// TestAQueuedBatchIsRetriedWithoutNewSamples is the retry cadence.
-//
-// A refused batch stays in the queue and the sender sleeps. Only the flush tick
-// goes back for it -- enqueue wakes the sender when NEW samples arrive, and an
-// exporter whose devices had gone quiet would otherwise hold a failed batch
-// until something else happened to produce one.
+// TestAQueuedBatchIsRetriedWithoutNewSamples: the flush tick retries a refused batch.
 func TestAQueuedBatchIsRetriedWithoutNewSamples(t *testing.T) {
 	var requests atomic.Int32
 	var failing atomic.Bool
@@ -344,13 +313,7 @@ func TestAQueuedBatchIsRetriedWithoutNewSamples(t *testing.T) {
 		"new samples arriving to wake the sender", exporter.BufferedSamples())
 }
 
-// TestASampleOlderThanOneAlreadyWrittenIsCounted is the detection that would
-// have named this fault on the day it started.
-//
-// For fifteen hours the exporter dropped a million samples an hour while every
-// signal it published said "buffered and failing to flush" -- which is a
-// different problem with a different fix. A counter above zero says which one
-// it is.
+// TestASampleOlderThanOneAlreadyWrittenIsCounted checks the out-of-order counter.
 func TestASampleOlderThanOneAlreadyWrittenIsCounted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -396,9 +359,7 @@ func TestASampleOlderThanOneAlreadyWrittenIsCounted(t *testing.T) {
 		t.Errorf("counted %v dropped as superseded, want 1", got)
 	}
 
-	// The same series again, ASCENDING. That is the ordinary case -- every
-	// series is written repeatedly -- and counting it would make the counter
-	// report the poll rate rather than a fault.
+	// The same series again, ascending: not counted.
 	if err := exporter.Export(context.Background(), []*Sample{sample(1, at.Add(time.Minute))}); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -434,7 +395,7 @@ func TestAnotherSeriesIsNotAnOrderingViolation(t *testing.T) {
 	if err := exporter.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	// A DIFFERENT series, stamped earlier. Nothing is wrong with that.
+	// A different series, stamped earlier: not counted.
 	if err := exporter.Export(context.Background(), []*Sample{sample(2, at.Add(-time.Minute))}); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -447,32 +408,14 @@ func TestAnotherSeriesIsNotAnOrderingViolation(t *testing.T) {
 	}
 }
 
-// TestExportQueuesWithoutReleasingTheBuffer closes the gap between detaching a
-// batch and queueing it.
-//
-// Export took the buffer under bufferLock, released it, and only then took
-// queueMu to enqueue. Two callers could therefore detach in one order and queue
-// in the other, putting the older batch behind the newer one -- the disorder
-// the sender exists to prevent, reintroduced one lock earlier.
-//
-// Which order two concurrent Exports "should" be in is not observable from
-// outside: it is decided by which one wins bufferLock, and a test cannot
-// control that without removing the race it is testing. So this asserts the
-// structural property instead. With queueMu held, an Export that must enqueue
-// blocks -- and while it is blocked it must STILL hold bufferLock, which a
-// second Export proves by blocking too. If the two steps were separate, the
-// first would have released the buffer before reaching for the queue and the
-// second would sail past.
+// TestExportQueuesWithoutReleasingTheBuffer checks Export still holds bufferLock while blocked on queueMu.
 func TestExportQueuesWithoutReleasingTheBuffer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	// A batch size the SECOND export will not reach, so it needs the buffer and
-	// nothing else. With a batch size of one it would enqueue too, block on the
-	// same lock, and prove nothing either way -- which is how the first version
-	// of this test passed against the code it was written to catch.
+	// A batch size the second export will not reach, so it needs only the buffer.
 	const batchSize = 100
 	exporter, err := NewPrometheusExporter(server.URL, batchSize, time.Hour, nil)
 	if err != nil {
@@ -524,12 +467,7 @@ func TestExportQueuesWithoutReleasingTheBuffer(t *testing.T) {
 	<-second
 }
 
-// TestDepthEvictionDoesNotDiscardAFlushWaiter guards the barrier through the
-// other overflow path.
-//
-// A barrier carries no samples, so evicting one makes no progress towards the
-// bound -- and completing it with a DroppedError tells a Flush its work was
-// discarded when everything ahead of it may have been written.
+// TestDepthEvictionDoesNotDiscardAFlushWaiter checks depth eviction steps over barriers.
 func TestDepthEvictionDoesNotDiscardAFlushWaiter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -572,17 +510,7 @@ func TestDepthEvictionDoesNotDiscardAFlushWaiter(t *testing.T) {
 	}
 }
 
-// TestAnAbandonedFlushTakesItsBarrierWithIt bounds the queue's other half.
-//
-// A barrier carries no samples, so it counts towards no sample bound and
-// nothing else would ever account for it. A Flush whose context expires stops
-// waiting, and without this its barrier would sit in the queue for the life of
-// the process -- one per abandoned flush, against an endpoint that is by
-// definition already stalled.
-//
-// Identity is what makes taking it back safe: if it is still queued the sender
-// has not reached it, and if it is not, the sender owns it and completes it
-// into a buffered channel nobody reads.
+// TestAnAbandonedFlushTakesItsBarrierWithIt checks an expired Flush removes its barrier from the queue.
 func TestAnAbandonedFlushTakesItsBarrierWithIt(t *testing.T) {
 	// A handler that does not answer until the test lets it, so the sender is
 	// stuck on the first batch and every barrier behind it waits.
@@ -598,9 +526,7 @@ func TestAnAbandonedFlushTakesItsBarrierWithIt(t *testing.T) {
 	}
 	defer func() { _ = exporter.Close() }()
 
-	// Registered LAST so it runs FIRST: Close waits for the sender, and the
-	// sender is inside that handler. Releasing it afterwards deadlocks the
-	// shutdown until the request's own timeout expires.
+	// Registered last so it runs first: Close waits on the sender inside this handler.
 	defer close(block)
 
 	// Something for the sender to get stuck on.
@@ -634,13 +560,7 @@ func TestAnAbandonedFlushTakesItsBarrierWithIt(t *testing.T) {
 	}
 }
 
-// watermark reports the newest timestamp recorded as WRITTEN for a series, and
-// whether anything has been.
-//
-// Read directly rather than through the out-of-order counter. The counter can
-// be correct for the wrong reason -- a sample the age horizon discarded never
-// reaches the check at all -- and this metric has now been wrong twice, so the
-// assertion is on the state itself.
+// watermark reports the newest timestamp recorded as written for a series, and whether any was.
 func watermark(e *PrometheusExporter, s *Sample) (int64, bool) {
 	e.sentMu.Lock()
 	defer e.sentMu.Unlock()
@@ -648,16 +568,7 @@ func watermark(e *PrometheusExporter, s *Sample) (int64, bool) {
 	return head.at, ok
 }
 
-// TestAFailedWriteDoesNotCountAsWritten keeps the ordering check honest across
-// a batch that never landed.
-//
-// What the endpoint has accepted is only known once it has accepted it.
-// Recording a batch as written when it was merely OFFERED makes the counter
-// fire hardest while a fault is being recovered from -- so the metric that
-// names this class of bug would argue against the mechanism fixing it.
-//
-// The endpoint refuses with 400, which is not retryable, so the batch is
-// discarded rather than retried: nothing is ever written for the series.
+// TestAFailedWriteDoesNotCountAsWritten checks a refused batch never advances the written watermark.
 func TestAFailedWriteDoesNotCountAsWritten(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -701,18 +612,7 @@ func TestAFailedWriteDoesNotCountAsWritten(t *testing.T) {
 	}
 }
 
-// TestDisorderInsideOneBatchIsRepairedNotRefused separates the two facts this
-// counter kept confusing.
-//
-// Two overlapping polls of one device put both readings in the same batch, in
-// completion order. That is worth knowing -- it says something upstream is
-// producing a series' readings out of order -- but the encoder sorts each
-// series before building the request, so the write SUCCEEDS. Counting it as
-// "the endpoint will refuse this" raised an ERROR on traffic that was about to
-// be delivered correctly.
-//
-// The endpoint is checked too: it must actually accept the request, or the
-// premise of the whole distinction is wrong.
+// TestDisorderInsideOneBatchIsRepairedNotRefused checks in-batch disorder is sorted, accepted and counted as repaired.
 func TestDisorderInsideOneBatchIsRepairedNotRefused(t *testing.T) {
 	var accepted atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -790,20 +690,7 @@ func TestABatchInOrderWithinItselfIsNotCounted(t *testing.T) {
 	}
 }
 
-// TestShutdownIsBounded stops the sender from holding the process open.
-//
-// Close's own deadline bounds only the Flush that precedes it. The drain after
-// it then starts a fresh sendTimeout for every batch, and -- the part that
-// survived the first version of this test -- a request ALREADY in flight has
-// its own 30-second context that no deadline set later can reach. The bound has
-// to be something the request itself observes.
-//
-// The handler blocks until its request context is canceled, so the only way
-// this returns is a cancellation the sender actually propagates. An earlier
-// version used a 200ms handler and asserted a 30-second ceiling -- which is the
-// length of the unbounded stall, so it passed whether or not the bound worked.
-// A bound test whose threshold equals the behavior it is bounding measures
-// nothing.
+// TestShutdownIsBounded checks Close cancels an in-flight request that never answers.
 func TestShutdownIsBounded(t *testing.T) {
 	served := make(chan struct{})
 	release := make(chan struct{})
@@ -817,11 +704,7 @@ func TestShutdownIsBounded(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Registered after server.Close so it runs BEFORE it. A server the client
-	// has abandoned does not necessarily notice: net/http cancels the request
-	// context when the connection closes, and a handler that is merely not
-	// answering may never be told. Without this the teardown hangs even when
-	// the thing under test works -- which is what it did.
+	// Registered after server.Close so it runs before it and releases the blocked handler.
 	defer close(release)
 
 	exporter, err := NewPrometheusExporter(server.URL, 1, time.Hour, nil)
@@ -875,18 +758,7 @@ func TestShutdownIsBounded(t *testing.T) {
 	}
 }
 
-// privateCounters gives one exporter counters nobody else touches.
-//
-// The counters an exporter increments are process-global in production, which
-// is what /metrics has to publish. In a test that makes every assertion on them
-// a measurement shared with the whole package: a sender still running from an
-// earlier test lands an increment inside this one's window, and it fails for a
-// reason that has nothing to do with what it checks. Order-dependent, seed
-// dependent, and impossible to read from the failure message.
-//
-// With private counters the assertions can be absolute rather than deltas,
-// which is the other half of the same problem: a delta only means anything if
-// you know nothing else is writing.
+// privateCounters gives one exporter its own counters, so assertions are absolute and isolated.
 func privateCounters(e *PrometheusExporter) *counters {
 	own := &counters{
 		exports: prometheus.NewCounterVec(
@@ -902,17 +774,7 @@ func privateCounters(e *PrometheusExporter) *counters {
 	return own
 }
 
-// TestTheBacklogGaugeCountsEveryUndeliveredSample pins the quantity, not one
-// writer of it.
-//
-// Undelivered samples live in three places: still accumulating towards a batch,
-// queued for the sender, and the one batch being written. This has been wrong
-// three times, each time because a writer reported its own slice as the total
-// -- the batch on the wire left out entirely, then a refactor adding a third
-// home while two writers kept reporting two.
-//
-// So the assertion is on the sum with all three non-empty at once, which is the
-// state every point-fix agreed about locally and got wrong together.
+// TestTheBacklogGaugeCountsEveryUndeliveredSample checks the sum of buffered, queued and in-flight samples.
 func TestTheBacklogGaugeCountsEveryUndeliveredSample(t *testing.T) {
 	inFlight := make(chan struct{})
 	release := make(chan struct{})
@@ -972,13 +834,7 @@ func TestTheBacklogGaugeCountsEveryUndeliveredSample(t *testing.T) {
 	}
 }
 
-// TestExportAfterCloseIsRefusedNotQueued closes the last hole in "nothing
-// leaves without something observable saying so".
-//
-// Export used to write, so a call after Close failed loudly of its own accord.
-// It queues now, and a queue whose sender has stopped is a place samples go to
-// be forgotten: Export returned nil while the data could never be delivered.
-// The async refactor turned a synchronous failure into permanent silent loss.
+// TestExportAfterCloseIsRefusedNotQueued checks Export after Close returns an error.
 func TestExportAfterCloseIsRefusedNotQueued(t *testing.T) {
 	var received atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1045,19 +901,7 @@ func TestCloseStillFlushesWhatWasAlreadyBuffered(t *testing.T) {
 	}
 }
 
-// TestCloseReportsWhatAnUnendingOutageLeftUnwritten is the other way shutdown
-// gives up.
-//
-// TestShutdownIsBounded covers a request canceled in flight. This covers the
-// endpoint answering promptly and retryably forever: the batch is requeued each
-// time -- correctly, since 503 is retryable and the samples are still young --
-// until the shutdown deadline stops the loop. Whatever is queued then can never
-// be delivered, because the sender is the only thing that could have delivered
-// it and it is about to return.
-//
-// Both paths end at the same place, and both must tell the caller. A log line
-// is not a return value: the process is exiting, and the only code that can act
-// on "we lost 40,000 samples" is the code that called Close.
+// TestCloseReportsWhatAnUnendingOutageLeftUnwritten checks Close reports a batch still queued at the deadline.
 func TestCloseReportsWhatAnUnendingOutageLeftUnwritten(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1104,16 +948,7 @@ func TestCloseReportsWhatAnUnendingOutageLeftUnwritten(t *testing.T) {
 	}
 }
 
-// TestOneStaleSampleDoesNotCostTheWholeBatch is the amplification this
-// partition exists to remove.
-//
-// Prometheus refuses per REQUEST, not per sample: the whole write is rejected
-// on the first unacceptable one. And a 400 is not retryable, so the batch is
-// then discarded -- correctly, and reported as reason="rejected" perfectly
-// accurately, about a loss that never needed to happen.
-//
-// The exporter already knew which sample was the problem. Sending the batch
-// anyway turned one bad reading into a thousand lost ones.
+// TestOneStaleSampleDoesNotCostTheWholeBatch checks only the stale sample is dropped.
 func TestOneStaleSampleDoesNotCostTheWholeBatch(t *testing.T) {
 	var delivered atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1188,13 +1023,7 @@ func TestOneStaleSampleDoesNotCostTheWholeBatch(t *testing.T) {
 	}
 }
 
-// TestTwoReadingsInOneMillisecondWithDifferentValues is the other way a sample
-// is unacceptable, and the one a timestamp comparison alone misses.
-//
-// Two reads inside one millisecond is ordinary on a fast poller. Prometheus
-// takes the same timestamp twice only if the value matches; if it differs the
-// write is refused as a duplicate, with the same whole-batch cost. A guard
-// testing only "older than" lets it straight through.
+// TestTwoReadingsInOneMillisecondWithDifferentValues checks a same-timestamp conflict is caught.
 func TestTwoReadingsInOneMillisecondWithDifferentValues(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -1233,7 +1062,7 @@ func TestTwoReadingsInOneMillisecondWithDifferentValues(t *testing.T) {
 		t.Errorf("dropped %v as superseded, want 1", got)
 	}
 
-	// The SAME reading offered twice is not a conflict and must go through.
+	// The same reading offered twice is not a conflict.
 	again := &Sample{Name: "snmp_dup", Labels: map[string]string{"d": "1"}, Value: 1, Timestamp: at}
 	if err := exporter.Export(context.Background(), []*Sample{again}); err != nil {
 		t.Fatalf("Export: %v", err)
@@ -1247,18 +1076,7 @@ func TestTwoReadingsInOneMillisecondWithDifferentValues(t *testing.T) {
 	}
 }
 
-// TestTwoConflictingReadingsInOneBatchAreNotCollapsedAwaySilently covers the
-// duplicate that arrives inside a SINGLE Export rather than across two.
-//
-// Both readings reach the encoder together, so the cross-batch check against
-// what the endpoint has already accepted never sees them -- nothing had been
-// accepted yet. The encoder used to collapse the pair and keep one, and the
-// batch was then reported fully sent: no dropped counter moved, the flush
-// returned nil, and a reading was gone. That is the same fail-open shape as a
-// 4xx swallowed during shutdown, arriving one layer up.
-//
-// The first reading must be delivered, the second must be named as a discard,
-// and the flush must say so.
+// TestTwoConflictingReadingsInOneBatchAreNotCollapsedAwaySilently: the first is delivered, the second discarded and reported.
 func TestTwoConflictingReadingsInOneBatchAreNotCollapsedAwaySilently(t *testing.T) {
 	var delivered atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1328,21 +1146,7 @@ func TestTwoConflictingReadingsInOneBatchAreNotCollapsedAwaySilently(t *testing.
 	}
 }
 
-// TestTwoReadingsAreTheSameReadingOnlyIfTheEndpointSaysSo covers the two float
-// values where Go's == and Prometheus's duplicate check disagree.
-//
-// Prometheus compares math.Float64bits. Comparing the float instead is wrong in
-// both directions, and only one of the two is loud:
-//
-//   - +0 and -0 are == but have different bits. Judged "the same reading", the
-//     pair is passed through and collapsed at encode time -- and Prometheus
-//     would have refused the request as a duplicate. One reading gone, flush
-//     reported successful. The silent loss again, from a sign bit.
-//   - Two NaNs with the same bits are != but are the same reading to
-//     Prometheus. Judged a conflict, one is discarded for no reason.
-//
-// A test using ordinary values cannot tell the two comparisons apart, which is
-// why these two live here rather than as another case in the batch above.
+// TestTwoReadingsAreTheSameReadingOnlyIfTheEndpointSaysSo covers +0/-0 and identical NaNs (Float64bits identity).
 func TestTwoReadingsAreTheSameReadingOnlyIfTheEndpointSaysSo(t *testing.T) {
 	deliver := func(t *testing.T, batch []*Sample) (*PrometheusExporter, *counters, int64, error) {
 		t.Helper()
@@ -1378,10 +1182,7 @@ func TestTwoReadingsAreTheSameReadingOnlyIfTheEndpointSaysSo(t *testing.T) {
 		t.Cleanup(func() { _ = exporter.Close() })
 		exporter.maxSampleAge = time.Hour
 
-		// Installed BEFORE anything is exported: privateCounters swaps the
-		// exporter's counter set, so reading it afterwards would read a set
-		// nothing had ever written to and every count would be a zero that
-		// cannot fail.
+		// Installed before anything is exported, since privateCounters swaps the counter set.
 		own := privateCounters(exporter)
 
 		if err := exporter.Export(context.Background(), batch); err != nil {
@@ -1433,20 +1234,7 @@ func TestTwoReadingsAreTheSameReadingOnlyIfTheEndpointSaysSo(t *testing.T) {
 	})
 }
 
-// TestCloseReportsAFinal4xxThatThrewSamplesAway is the fifth instance of an
-// operation reporting success while discarding, and the one that survived the
-// structural fix.
-//
-// A discard carries three obligations: name the reason, charge the barrier, and
-// tell Close. The first two were brought inside discardLocked and that closed
-// four instances. The third was fed by a separate accumulator updated by hand,
-// so a non-retryable refusal during the final drain went through the single
-// path correctly, was counted correctly, and was still invisible to Close --
-// which returned nil, so the DATA LOSS line never fired either.
-//
-// The endpoint answers 400, which is not retryable, so the batch is discarded
-// as "rejected" rather than as "shutdown". That is the point: the reason is not
-// what makes it Close's business, having happened during shutdown is.
+// TestCloseReportsAFinal4xxThatThrewSamplesAway checks Close reports a non-retryable refusal during the final drain.
 func TestCloseReportsAFinal4xxThatThrewSamplesAway(t *testing.T) {
 	var refused atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1485,29 +1273,7 @@ func TestCloseReportsAFinal4xxThatThrewSamplesAway(t *testing.T) {
 	}
 }
 
-// TestEveryLabelledExportCounterPublishesZeroBeforeAnythingHappens is the
-// regression for a counter that does not exist yet reading as a fact.
-//
-// A CounterVec child is created by the first WithLabelValues that touches it,
-// so a freshly started process published no
-// gonetmon_export_dropped_samples_total{reason="aged"} at all until something
-// was dropped for that reason. Absent is not zero, and the difference bit in
-// two places at once:
-//
-//   - An alert on the drop counters could not fire on a fresh process. rate()
-//     over a series that does not exist returns an EMPTY result, not 0, and an
-//     empty result satisfies no comparison -- so the alarm stayed silent until
-//     the first drop created the series it was meant to warn about.
-//   - scripts/measure-export-health.sh treats absence as "the old build is
-//     running", which is the check that catches a deploy that copied a binary
-//     without restarting it. On monitor-01 it aborted for that reason while the
-//     binary hash proved the new build WAS running: two of its own signals
-//     contradicting each other, because absence had two possible causes.
-//
-// The assertion is on the SET, so a reason missing from dropReasons and a
-// reason present that nothing publishes both fail. A new drop reason that is
-// not added to the list puts its series back in the absent state, which is the
-// whole defect returning quietly.
+// TestEveryLabelledExportCounterPublishesZeroBeforeAnythingHappens checks every reason and status child exists at zero.
 func TestEveryLabelledExportCounterPublishesZeroBeforeAnythingHappens(t *testing.T) {
 	// A private registry, not the package's: the shared counters have had
 	// children created by every other test in this package, so asserting on
@@ -1538,12 +1304,7 @@ func TestEveryLabelledExportCounterPublishesZeroBeforeAnythingHappens(t *testing
 		published[family.GetName()] = values
 	}
 
-	// Spelled out rather than taken from dropReasons and exportOutcomes. Those
-	// are the thing under test: comparing them with themselves moves both sides
-	// of the assertion together, so dropping a reason from the list would pass.
-	// This is the second, independent statement of the set, and a new reason has
-	// to be added here deliberately -- which is correct, because the set is an
-	// alerting contract and not an implementation detail.
+	// Spelled out independently of dropReasons and exportOutcomes, the set under test.
 	for name, want := range map[string][]string{
 		"zero_children_dropped_total": {"aged", "depth", "rejected", "superseded", "shutdown"},
 		"zero_children_exports_total": {"success", "error"},
@@ -1571,21 +1332,7 @@ func TestEveryLabelledExportCounterPublishesZeroBeforeAnythingHappens(t *testing
 // zeroChildrenChildEnv marks the re-executed copy of the test below.
 const zeroChildrenChildEnv = "GONETMON_ZERO_CHILDREN_CHILD"
 
-// TestRegistrationItselfPublishesTheChildren covers the half of the fix that
-// the test above cannot: that something actually CALLS publishZeroChildren for
-// the counters /metrics serves.
-//
-// The obvious version of this test asserts on the shared counters from an
-// ordinary test function, and it cannot fail. Every drop reason and every
-// export status is exercised somewhere in this package, so by the time such a
-// test runs the children usually exist whether registration created them or a
-// previous test did -- and with -shuffle=on whether it can fail at all depends
-// on the seed. That is a test whose measurement is shared with the rest of the
-// suite, which this repository has now been bitten by twice.
-//
-// So the assertion runs in a process where nothing else has: the test re-execs
-// the test binary for this one test. In the child, the only thing that has
-// touched the counters is package initialisation, which is exactly the claim.
+// TestRegistrationItselfPublishesTheChildren re-execs the test binary so only package init has touched the counters.
 func TestRegistrationItselfPublishesTheChildren(t *testing.T) {
 	if os.Getenv(zeroChildrenChildEnv) == "1" {
 		assertSharedChildrenPublished(t)

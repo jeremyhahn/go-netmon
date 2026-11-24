@@ -7,12 +7,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// The polling defaults the web UI assumes when it was not told the poller's.
-//
-// They are the same numbers internal/config applies to a configuration that
-// omits them, so a web UI started without its polling settings wired reports
-// what the poller would actually do rather than a number of its own invention.
-// TestPollingDefaultsMatchConfigDefaults fails the build if the two drift.
+// Polling defaults matching internal/config; TestPollingDefaultsMatchConfigDefaults keeps them equal.
 const (
 	DefaultPollInterval = 60
 	DefaultSNMPTimeout  = 10

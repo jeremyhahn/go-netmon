@@ -15,22 +15,9 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
-// These tests cover the defect that made a working on-demand MIB loader look
-// broken. The poller now parses a device's assigned modules into the MIB store
-// when the device's worker starts, but the exporter's MIB-derived index was
-// built once, in NewPrometheusExporter, from whatever the store held at that
-// moment -- the three auto-loaded modules. Every object of the fourteen modules
-// loaded afterwards therefore matched no MIB definition, and its samples fell
-// back to a raw-OID metric name with no index labels: on the live install, 121
-// friendly names and 22,162 raw-OID fallbacks where there had been 120 and 0.
-//
-// The fallback is the designed behavior for an OID no loaded MIB describes.
-// The defect was that the index never learned the MIBs had been loaded.
+// The exporter's MIB index must learn modules loaded after construction.
 
-// lateModuleObjects is CISCO-MEMORY-POOL-MIB's ciscoMemoryPoolTable, standing
-// for any of the fourteen modules the poller loads on demand: a table with one
-// integer index, one numeric column and one status column, which is everything
-// naming and labeling have to get right.
+// lateModuleObjects is CISCO-MEMORY-POOL-MIB's ciscoMemoryPoolTable, a module loaded on demand.
 func lateModuleObjects() []*mib.OIDMetadata {
 	const entryOID = "1.3.6.1.4.1.9.9.48.1.1.1"
 
@@ -100,15 +87,7 @@ func convertOne(cache *TableIndexCache, deviceName, oid string) *Sample {
 	return samples[0]
 }
 
-// TestRefreshNamesObjectsOfAModuleLoadedAfterConstruction is the regression
-// test. It states the whole defect in three assertions: before the module is
-// loaded the sample is named after its raw OID, after it is loaded but before
-// the index is rebuilt it is *still* named after its raw OID, and only the
-// rebuild restores the MIB name.
-//
-// The middle assertion is the one that matters: it is the live symptom, and it
-// is what a fix that only reruns the sweep at construction would leave in
-// place.
+// TestRefreshNamesObjectsOfAModuleLoadedAfterConstruction checks only an index rebuild restores the MIB name.
 func TestRefreshNamesObjectsOfAModuleLoadedAfterConstruction(t *testing.T) {
 	store := newNamingTestStore(t)
 	cache := NewTableIndexCache(store)
@@ -298,14 +277,7 @@ func TestRefreshTracksIndexSizeMetrics(t *testing.T) {
 	}
 }
 
-// TestConcurrentPollAndRefreshIsRaceFree is the test that decides whether the
-// design is sound: a rebuild happens while devices are polling, because that is
-// exactly when modules are loaded on demand. Under -race this fails if the
-// published index is ever mutated in place instead of replaced.
-//
-// It exercises every reader of the index at once -- naming, index labels,
-// friendly-name caching, info metrics and the OID learner's export -- against a
-// writer that republishes continuously.
+// TestConcurrentPollAndRefreshIsRaceFree exercises every index reader against a continuous rebuild under -race.
 func TestConcurrentPollAndRefreshIsRaceFree(t *testing.T) {
 	store := newNamingTestStore(t)
 	cache := NewTableIndexCache(store)
@@ -569,10 +541,7 @@ func TestTableSetRejectsDuplicates(t *testing.T) {
 	}
 }
 
-// BenchmarkTableIndexCacheRefresh measures a rebuild. It matters because the
-// rebuild is no longer a startup cost: it runs whenever a device's modules are
-// loaded on demand, so its shape in the size of the catalog is what decides
-// whether hydrating a device is felt.
+// BenchmarkTableIndexCacheRefresh measures a rebuild, which runs whenever modules load on demand.
 func BenchmarkTableIndexCacheRefresh(b *testing.B) {
 	store, err := storage.New(b.TempDir() + "/bench.db")
 	if err != nil {

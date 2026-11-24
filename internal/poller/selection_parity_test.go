@@ -12,13 +12,7 @@ import (
 	webuistorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// This file exists to make one class of bug impossible: the poller polling one
-// set of objects while the web UI tells the operator it is polling another.
-//
-// Both go through internal/mib/selector — the poller via selector.Polled, the
-// API via selector.Plan — so there is only ever one rule. These tests fail if
-// anyone reintroduces a second copy of it on either side, which is why the test
-// on the API side lives here, in the package whose behavior must not drift.
+// The poller (selector.Polled) and the API (selector.Plan) must select the same objects.
 
 // selectionScenario is one device configuration to compare the two sides on.
 type selectionScenario struct {
@@ -115,14 +109,7 @@ func TestSelectModuleOIDsIsTheSelectorsPlan(t *testing.T) {
 	}
 }
 
-// TestSelectModuleOIDsMatchesTheAPIObjectPlan is the anti-divergence test that
-// spans the two sides: whatever GET /api/devices/{id}/mibs/{mibId}/objects
-// reports as polled must be exactly what the poller fetches.
-//
-// It compares per module because the API answers about one MIB at a time, which
-// is also why the comparison is meaningful: a module's tables, columns and cap
-// are self-contained, so asking about one module in isolation has to give the
-// same answer as asking about it alongside the others.
+// TestSelectModuleOIDsMatchesTheAPIObjectPlan checks, per module, the API's polled objects equal the poller's.
 func TestSelectModuleOIDsMatchesTheAPIObjectPlan(t *testing.T) {
 	for _, tt := range selectionScenarios() {
 		t.Run(tt.name, func(t *testing.T) {
@@ -341,13 +328,7 @@ func moduleNames(shapes []moduleShape) []string {
 	return names
 }
 
-// TestSelectModuleOIDsOnACoreRouterCatalog pins the count for a realistic
-// seventeen-module profile: one walk per table plus every pollable scalar, and
-// nothing else. 77 tables and 78 scalars make 155.
-//
-// The columns matter here even though none is selected. There are 631 of them,
-// so a regression that stopped covering columns with their table's walk would
-// turn 155 requests per poll into hundreds, and this count is what catches it.
+// TestSelectModuleOIDsOnACoreRouterCatalog pins 155 requests for seventeen modules: 77 table walks plus 78 scalars.
 func TestSelectModuleOIDsOnACoreRouterCatalog(t *testing.T) {
 	shapes := coreRouterShapes()
 	objects := catalog(shapes)
@@ -390,15 +371,7 @@ func TestSelectModuleOIDsOnACoreRouterCatalog(t *testing.T) {
 	}
 }
 
-// TestSelectModuleOIDsIgnoresModulesTheStoreDoesNotHold reproduces a live
-// incident. A device was assigned seventeen modules and the poller reported
-// selecting 38 objects rather than 155, which looked like a selection bug. It
-// was not: the poller's MIB metadata store held only three of the seventeen
-// modules, and a module with no stored objects can contribute nothing.
-//
-// The rule is therefore that assignment alone does not produce polling — the
-// metadata has to be there too — and this test states that in code so the next
-// person to see a short count looks at the store rather than at the rule.
+// TestSelectModuleOIDsIgnoresModulesTheStoreDoesNotHold: an assigned module not in the store contributes nothing.
 func TestSelectModuleOIDsIgnoresModulesTheStoreDoesNotHold(t *testing.T) {
 	shapes := coreRouterShapes()
 

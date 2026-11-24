@@ -2,25 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Every word on the dashboard, measured against what is painted behind it.
-//
-// WCAG AA asks 4.5:1 of body text. The palette was chosen for charts, where the
-// bar is 3:1, and then used for words -- so amber measured 1.83:1 on white and
-// was being used as text. A colour that reads as a stroke does not read as a
-// word, and one token cannot be the nearest answer to both bars.
-//
-// Two things about HOW this measures, both of which produce a plausible wrong
-// answer if you get them wrong:
-//
-//   - Read the colour back from a CANVAS, not from a regex over
-//     getComputedStyle. Modern CSS resolves colours as oklch(), and a
-//     three-number parser turns oklch(0.76 0.177 163.223) into r=0.76 g=0.177
-//     b=163.223 and reports a ratio that looks like a real failure.
-//   - Composite the WHOLE ancestor stack. Taking the first non-transparent
-//     background and painting it over white is wrong wherever a layer is
-//     semi-transparent: the selected module in the rail is a 14%-alpha accent
-//     over a dark card, and measuring it over white reported 2.89:1 for
-//     something that is actually 4.57:1.
+// WCAG AA contrast of dashboard text, read back from a canvas and composited over the whole ancestor stack.
 
 import { BASE } from '../target';
 import { SEEDED_DEVICE } from '../stack';
@@ -88,15 +70,7 @@ const TEXT = [
   '.chart-empty-detail',
 ];
 
-// The same words on the library surfaces. These carry the accent as TEXT --
-// the one place a graphic-tier colour keeps being reached for -- and none of
-// them is on a dashboard, so the walk above never measured them.
-//
-// .pager-page.is-current is the accent worn on its own tint, and .danger-btn is
-// red on the plain surface -- the two tightest of the eight places a
-// graphic-tier colour was being used as a word. The sort headers use the same
-// accent token but render only in a MIB's object table, which this surface does
-// not reach, so they are not claimed as measured here.
+// Contrast of the library surfaces that carry the accent as text, including .pager-page.is-current and .danger-btn.
 const LIBRARY_TEXT = [
   '.pager-page.is-current',
   '.pager-status',
@@ -122,11 +96,7 @@ async function measure(page: Page, selectors: string[]) {
       return (Math.max(a, c) + 0.05) / (Math.min(a, c) + 0.05);
     };
 
-    // The page keeps every view in the DOM and shows one, so querySelector
-    // hands back whichever match comes first in document order -- which is
-    // routinely inside a hidden view, painted in whatever the palette was when
-    // it was last built. Only the matches that are actually RENDERED are ones a
-    // person can read, and only those are worth a ratio.
+    // Measure only rendered matches; hidden views stay in the DOM.
     const rendered = (el: HTMLElement) =>
       el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
 
@@ -140,10 +110,7 @@ async function measure(page: Page, selectors: string[]) {
     };
 
     return sels.map(sel => {
-      // EVERY rendered match, reported at its worst. One selector can name
-      // elements sitting on different backgrounds -- the danger buttons are on
-      // several surfaces -- and taking the first in document order measures
-      // whichever the markup happened to emit first.
+      // Report every rendered match at its worst.
       const all = ([...document.querySelectorAll(sel)] as HTMLElement[]).filter(rendered);
       if (all.length === 0) return { sel, ratio: null as number | null, count: 0 };
 

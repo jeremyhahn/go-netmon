@@ -289,8 +289,7 @@ func TestDecodeMIBAssignmentBadInput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Every unreadable value must fall back to the safe default rather
-			// than silently disabling a MIB that was previously polling.
+			// Unreadable values fall back to the default, never disabling a MIB.
 			got := decodeMIBAssignment(tt.value)
 			if !got.Enabled {
 				t.Errorf("decodeMIBAssignment(%q) disabled polling; want the enabled default", tt.value)

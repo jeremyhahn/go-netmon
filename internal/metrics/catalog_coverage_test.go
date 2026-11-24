@@ -39,14 +39,14 @@ func coverageMIB() []*mib.OIDMetadata {
 			Description: "Octets received.",
 			ObjectClass: mib.ObjectClassMetricColumn, EntryOID: ".1.3.6.1.2.1.2.2.1",
 		},
-		// A text status column: published ONLY as an info metric.
+		// A text status column: published only as an info metric.
 		{
 			OID: ".1.3.6.1.2.1.2.2.1.2", Name: "ifDescr", Module: "IF-MIB", Parent: ".1.3.6.1.2.1.2.2.1",
 			Type: "DisplayString", Access: "read-only", IsColumn: true,
 			Description: "The textual name of the interface.",
 			ObjectClass: mib.ObjectClassStatusColumn, EntryOID: ".1.3.6.1.2.1.2.2.1",
 		},
-		// A numeric status column: published BOTH ways.
+		// A numeric status column: published both ways.
 		{
 			OID: ".1.3.6.1.2.1.2.2.1.8", Name: "ifOperStatus", Module: "IF-MIB", Parent: ".1.3.6.1.2.1.2.2.1",
 			Type: "Integer32", Access: "read-only", IsColumn: true,
@@ -75,20 +75,7 @@ func coverageResults() []*snmp.Result {
 	}
 }
 
-// TestCatalogDescribesEveryPublishedFamily is the assertion that would have
-// caught the catalog missing an entire category of metric.
-//
-// It converts real SNMP results of every shape the exporter treats
-// differently -- a numeric column, a numeric status column, a text status
-// column and a text scalar -- records what was actually emitted, and requires
-// exactly one catalog row per emitted family.
-//
-// The catalog used to be keyed on snmp_<Name> only. Text scalars and status
-// columns are published as snmp_<name>_info, so every one of them entered the
-// published set, matched nothing and was silently counted as undescribed --
-// while entries sat under names nothing publishes. The catalog looked complete
-// and was systematically missing a whole category, which is precisely the
-// failure this work exists to eliminate.
+// TestCatalogDescribesEveryPublishedFamily requires exactly one catalog row per family the exporter emits, for every result shape.
 func TestCatalogDescribesEveryPublishedFamily(t *testing.T) {
 	objects := coverageMIB()
 
@@ -156,22 +143,11 @@ func TestCatalogDescribesEveryPublishedFamily(t *testing.T) {
 			t.Errorf("%s has %d catalog rows, want exactly one", name, described[name])
 		}
 	}
-	// NOTE: the converse is deliberately NOT asserted. The catalog describes
-	// every family the loaded MIBs can describe, including ones this process
-	// has never published, because a designated emitter writes the fleet's
-	// catalog and the fleet's other shards poll devices this one does not. A
-	// row for an absent family costs a row; a missing row for a present family
-	// costs a blank dashboard, and nothing reports it.
+	// The converse is not asserted: the catalog also describes families other shards publish.
 	_ = exporter
 }
 
-// TestCatalogKindMatchesHowTheFamilyIsPublished checks that an info family is
-// described as a string whatever its object's underlying type.
-//
-// snmp_ifoperstatus_info is a constant 1 carrying "up" in a label. Describing
-// it with the object's enum kind would have a renderer plot a line through the
-// constant, and its unit and enumeration belong to the numeric family that
-// carries the actual number.
+// TestCatalogKindMatchesHowTheFamilyIsPublished checks an info family is described as a string.
 func TestCatalogKindMatchesHowTheFamilyIsPublished(t *testing.T) {
 	objects := coverageMIB()
 	index := newCatalogIndex(objects, newTableSet(), nil)
@@ -244,24 +220,7 @@ func TestCatalogDescribesTheIdentityMetricItPointsAt(t *testing.T) {
 var _ = strings.ToLower
 var _ = context.Background
 
-// TestCatalogAfterReloadWritesOnlyTheCurrentRow is the stale-row case: a MIB reload
-// that changes an object's metadata must not leave two live descriptions of
-// one metric.
-//
-// Module, description, unit and identity are all labels, so changing any of
-// them makes a different series. The superseded row stays queryable for as
-// long as the consumer's lookback, which is how a consumer could see two rows
-// with the same metric= and conflicting contracts.
-//
-// The producer's half of the contract is what this asserts: after a reload the
-// emitter writes the new row and STOPS WRITING the old one. That is the whole
-// basis of the consumer's half -- read the current rows with a plain selector
-// and lay them over the wide window, so the row still being written wins --
-// which is documented in docs/metrics/metric-catalog.md. Both halves are needed
-// together: the lookback that buys resilience against a missed emission is the
-// same lookback that keeps a superseded row visible. (The consumer cannot do it
-// by comparing sample timestamps; a last_over_time read stamps every row with
-// the query's evaluation time. See the same document.)
+// TestCatalogAfterReloadWritesOnlyTheCurrentRow checks a reload writes the new row and stops writing the superseded one.
 func TestCatalogAfterReloadWritesOnlyTheCurrentRow(t *testing.T) {
 	before := []*mib.OIDMetadata{{
 		OID: ".1.3.6.1.2.1.2.2.1.10", Name: "ifInOctets", Module: "IF-MIB",
@@ -316,9 +275,7 @@ func TestCatalogAfterReloadWritesOnlyTheCurrentRow(t *testing.T) {
 		t.Fatalf("the emission carries %d rows for snmp_ifInOctets, want exactly 1", rows)
 	}
 
-	// And the superseded label set is genuinely no longer written, which is
-	// what drops it out of the consumer's current read and lets that read
-	// decide.
+	// The superseded label set is no longer written.
 	for _, sample := range second {
 		if sample.Labels[labelCatalogModule] == "IF-MIB" {
 			t.Error("the emission still writes the superseded row; the consumer's current read would not converge")
@@ -326,26 +283,7 @@ func TestCatalogAfterReloadWritesOnlyTheCurrentRow(t *testing.T) {
 	}
 }
 
-// TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches is the drift gate the
-// dashboard's identity join stands on.
-//
-// A panel of forty interfaces has to put a name on each line. The name is not
-// on the series -- a table column carries only its index labels -- so the
-// dashboard joins the info metric the catalog names, matching on the index
-// labels the catalog declares:
-//
-//	snmp_ifInOctets{...} * on(device,ifindex) group_left(value) snmp_ifname_info{...}
-//
-// If those declared labels are not the labels the exporter actually attaches,
-// the join matches nothing. Every line keeps its data and loses its name, which
-// is exactly the class of failure that is invisible from either side alone: the
-// catalog is self-consistent, the samples are self-consistent, and the panel is
-// wrong.
-//
-// This replaces the two dashboard cases in internal/promname/contract_test.go.
-// They generated a specification from a MIB store and checked its widgets named
-// metrics the exporter emits; a panel's metric name now comes from Prometheus
-// itself, so that drift cannot occur, while this one can.
+// TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches checks declared index labels match exported ones, so identity joins match.
 func TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches(t *testing.T) {
 	objects := coverageMIB()
 
@@ -404,12 +342,7 @@ func TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches(t *testing.T) {
 			checked++
 		}
 
-		// And the label the identity info metric's name derives to has to be
-		// one the exporter really puts on the reading. promname.IdentityLabel
-		// is the derivation consumers use; it cannot be called from here
-		// because promname imports this package, so the rule is repeated below
-		// and TestIdentityLabelMatchesTheLabelTheExporterAttaches in
-		// internal/promname pins the two together against real samples.
+		// Repeats promname.IdentityLabel's rule (import cycle); internal/promname tests pin the two together.
 		if identity := identityLabelOf(entry.IdentityInfoMetric); identity != "" {
 			// Only for the readings of the table, not for the info family
 			// itself -- an info metric does not carry its own name twice.
@@ -443,16 +376,7 @@ func identityLabelOf(infoMetric string) string {
 	return trimmed
 }
 
-// TestTheDeviceIdentityFamilyIsDescribed covers the other family this collector
-// derives rather than reads.
-//
-// snmp_system_info collapses the whole system group into one series whose
-// labels are sysDescr, sysContact and the rest, so no MIB object is published
-// under that name and nothing derived from a sweep of the MIB store can
-// describe it. Undescribed, a renderer sees an unknown kind and plots a line
-// through the constant 1 -- and because the family carries no module either, it
-// does so on every module tab of every device. Measured on core-01: ten
-// tabs, ten flat lines.
+// TestTheDeviceIdentityFamilyIsDescribed covers the derived snmp_system_info family.
 func TestTheDeviceIdentityFamilyIsDescribed(t *testing.T) {
 	var found *CatalogEntry
 	for _, entry := range derivedCatalogEntries() {

@@ -74,9 +74,7 @@ func Unanswered(err error) bool {
 		return false
 	}
 
-	// ICMP port-unreachable: the host is up and nothing is serving SNMP on it.
-	// From the poller's side that is as unanswered as silence, and unlike
-	// silence it costs nothing to discover.
+	// ICMP port-unreachable: nothing serves SNMP on the host.
 	if errors.Is(err, syscall.ECONNREFUSED) {
 		return true
 	}

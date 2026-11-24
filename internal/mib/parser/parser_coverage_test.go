@@ -32,13 +32,7 @@ func newLoadedParser(t *testing.T, module string, dirs ...string) (*Parser, gosm
 	return p, loaded
 }
 
-// TestGetOIDFromFirstChild covers the fallback that recovers a table row's OID
-// when gosmi renders the row node itself as empty. Without it a row's columns
-// are stored with no parent OID, and the table cannot be assembled at all.
-//
-// The rule is that a column's OID minus its final sub-identifier is the row's,
-// so it is checked against rows whose OID gosmi does render, where the answer
-// is independently known.
+// TestGetOIDFromFirstChild checks a column's OID minus its last sub-identifier is the row's OID.
 func TestGetOIDFromFirstChild(t *testing.T) {
 	p, module := newLoadedParser(t, "IF-MIB", testsupport.MIBDir("standard"))
 
@@ -109,9 +103,7 @@ func TestGetTypeName(t *testing.T) {
 	}
 }
 
-// TestGetAccessString covers the access mapping that IsPollable gates on. An
-// access string this does not produce makes every object of that access
-// unpollable, which is a silent, whole-module outage.
+// TestGetAccessString covers the access mapping IsPollable gates on.
 func TestGetAccessString(t *testing.T) {
 	p := New()
 

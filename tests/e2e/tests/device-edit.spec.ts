@@ -2,16 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Editing a device through its form.
-//
-// Every edit failed with "invalid request body" whatever field was changed. The
-// form read the id back out of FormData, which always yields a string, and
-// storage.Device.ID is an int64 — so the JSON never decoded. It surfaced while
-// changing the SNMP version, which made it look like a problem with the new
-// version rather than with the id.
-//
-// Nothing here writes to the server: the PUT is intercepted, inspected and
-// answered locally, so the assertions are about what the page sends.
+// Editing a device through its form sends a numeric id; the PUT is intercepted and answered locally.
 
 import { BASE } from '../target';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
@@ -115,7 +106,7 @@ test('a device that never said is shown polled, and switching it off sends enabl
   const sent = await captureSave(page);
   await openEditForm(page);
 
-  // DEVICE carries no enabled field, as every device stored before it existed.
+  // DEVICE carries no enabled field.
   const enabled = page.locator('#deviceEnabled');
   await expect(enabled).toBeChecked();
   await enabled.uncheck();

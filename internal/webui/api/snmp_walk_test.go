@@ -9,12 +9,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// Walking a device's OID tree.
-//
-// The parameter handling and the result classification are what a caller sees
-// first, and both have to be right before a packet is worth sending: a walk
-// answering nothing must read as "this device does not implement that", not as a
-// failure, because that answer is the reason to walk in the first place.
+// Walk parameter handling and result classification; an empty walk is not a failure.
 
 // TestWalkDefaultsToTheWholeTree covers the no-argument case: a caller who does
 // not know what to ask for wants everything.
@@ -172,22 +167,13 @@ func TestWalkLimitErrorReads(t *testing.T) {
 	}
 }
 
-// TestARegistrationNodeIsNotAName is the bug a live walk found immediately.
-//
-// A MIB registers names for interior nodes as well as objects, so stripping
-// sub-identifiers off an unrecognized OID eventually reaches 1.3.6.1.4.1 —
-// "enterprises" — which exists. Every one of a device's 68 vendor objects came
-// back labeled "enterprises / SNMPv2-SMI", which reads as though the vendor MIB
-// were understood when none of it was.
+// TestARegistrationNodeIsNotAName checks interior nodes such as enterprises do not name walked objects.
 func TestARegistrationNodeIsNotAName(t *testing.T) {
 	registrations := []*mib.OIDMetadata{
 		{OID: "1.3.6.1.4.1", Name: "enterprises", Module: "SNMPv2-SMI"},
 		{OID: "1.3.6.1.2.1", Name: "mib-2", Module: "SNMPv2-SMI"},
 		{OID: "1.3.6.1.4.1.21317.1", Name: "atenProducts", Module: "ATEN-SMI"},
-		// The parser writes "unknown" rather than an empty access for a
-		// registration, so a check that only asked whether access was set let
-		// every one of these back in: a walk of a BMC attributed
-		// 1317 objects to ATEN-PRODUCTS-MIB, which defines six.
+		// Registration nodes have access "unknown", not empty.
 		{OID: "1.3.6.1.4.1.21317.1.3.1", Name: "kvmoverip", Module: "ATEN-PRODUCTS-MIB",
 			Access: "unknown"},
 		{OID: "1.3.6.1.4.1.21317.1.3", Name: "overip", Module: "ATEN-PRODUCTS-MIB",

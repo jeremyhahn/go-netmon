@@ -167,13 +167,7 @@ func newAlarm(rule Rule, sample Sample) Alarm {
 	}
 }
 
-// alarmID identifies one firing series of one rule, stably.
-//
-// Stability is the whole requirement: the same condition has to produce the
-// same ID on every evaluation or its Since resets every fifteen seconds and
-// nothing can be said about how long anything has been broken. Labels are
-// sorted, and both the name and the value are length-prefixed, so no label
-// value can be arranged to collide with another series' identity.
+// alarmID identifies one firing series of one rule stably, from sorted, length-prefixed labels.
 func alarmID(rule string, labels map[string]string) string {
 	names := make([]string, 0, len(labels))
 	for name := range labels {

@@ -9,14 +9,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib/storage"
 )
 
-// TestIntegration_MIBParsing_NoEmptyOIDs verifies that real MIB files parse to
-// objects that all carry a numeric OID, that the well-known OIDs land where the
-// standards say they do, and that the result survives a round trip through
-// storage.
-//
-// It parses with every MIB directory in the repository. A narrower search path
-// does not fail — it silently yields fewer objects, most of them with an empty
-// OID — so the search path is part of what this test fixes in place.
+// TestIntegration_MIBParsing_NoEmptyOIDs checks real MIBs parse to numeric OIDs at the standard locations and survive storage; uses every MIB directory.
 func TestIntegration_MIBParsing_NoEmptyOIDs(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := storage.New(filepath.Join(tmpDir, "mib.db"))
@@ -51,10 +44,7 @@ func TestIntegration_MIBParsing_NoEmptyOIDs(t *testing.T) {
 			moduleName: "CISCO-BGP4-MIB",
 			expectedOIDs: map[string]string{
 				"ciscoBgp4MIB": "1.3.6.1.4.1.9.9.187",
-				// ciscoBgp4MIBObjects = { ciscoBgp4MIB 1 }, cbgpPeer =
-				// { ciscoBgp4MIBObjects 2 }, cbgpPeerTable = { cbgpPeer 1 }.
-				// This previously read ...1.2.3, which is cbgpPeerAddrFamilyTable;
-				// a skip guard on this case kept the mismatch hidden.
+				// ciscoBgp4MIBObjects = { ciscoBgp4MIB 1 }, cbgpPeer = { ciscoBgp4MIBObjects 2 }, cbgpPeerTable = { cbgpPeer 1 }.
 				"cbgpPeerTable":           "1.3.6.1.4.1.9.9.187.1.2.1",
 				"cbgpPeerAddrFamilyTable": "1.3.6.1.4.1.9.9.187.1.2.3",
 			},
@@ -154,15 +144,7 @@ func TestIntegration_MIBParsing_NoEmptyOIDs(t *testing.T) {
 	}
 }
 
-// TestIntegration_StandardModulesParseCompletely checks the three standard
-// modules the product depends on for interface, IP and system data.
-//
-// Every accessible object must carry both a numeric OID and a resolved type.
-// No exceptions remain: IP-MIB's twelve InetZoneIndex objects used to resolve
-// untyped because INET-ADDRESS-MIB (RFC 4001) was missing from mibs/ even
-// though IP-MIB imports it. The module has since been added, so the expected
-// count is zero everywhere — an untyped readable object now means an import
-// went unresolved again.
+// TestIntegration_StandardModulesParseCompletely checks every accessible object in IF-MIB, IP-MIB and SNMPv2-MIB has an OID and a type.
 func TestIntegration_StandardModulesParseCompletely(t *testing.T) {
 	tests := []struct {
 		module string

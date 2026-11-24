@@ -16,28 +16,13 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// The bundle's fixed layout.
-//
-// One JSON document plus one directory of MIB source files, and nothing else.
-// The document stays readable and diffable on its own — that is what an operator
-// reviews and what a change request carries — while the directory beside it is
-// what makes the archive self-sufficient, so restoring onto an empty instance is
-// not a scavenger hunt for MIB files.
-//
-// The source files travel, not the parsed catalog. The catalog is derived: it is
-// whatever this build's parser makes of these files, so carrying it would pin a
-// restore to the parser that ran at export time and quietly reinstate every
-// parsing bug fixed since. Re-parsing on import costs seconds and produces the
-// catalog the target build would have produced anyway.
+// Bundle layout: one JSON document plus mibs/ holding MIB source files, re-parsed on import.
 const (
 	bundleConfigEntry = "config.json"
 	bundleMIBDir      = "mibs"
 )
 
-// Bundle size limits. They exist so that a malformed or hostile archive is
-// refused rather than decompressed into memory: a few megabytes of MIB text
-// compresses to almost nothing, so the compressed size on its own says nothing
-// about what unpacking it would cost.
+// Bundle size limits on decompressed content.
 const (
 	maxBundleUploadSize = 64 << 20  // compressed bytes accepted from a client
 	maxBundleBytes      = 256 << 20 // total decompressed bytes
@@ -105,11 +90,7 @@ func marshalConfig(doc *storage.Config) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
-// writeConfigBundle writes a gzipped tar archive of the bundle.
-//
-// Entries are written in a fixed order — the document first, then the MIB
-// sources by name — so exporting the same configuration twice produces the same
-// archive layout and a byte comparison means something.
+// writeConfigBundle writes the bundle as a gzipped tar in a fixed order.
 func writeConfigBundle(w io.Writer, bundle *ConfigBundle) error {
 	document, err := marshalConfig(bundle.Config)
 	if err != nil {
@@ -160,12 +141,7 @@ func writeBundleEntry(archive *tar.Writer, name string, content []byte, modified
 	return nil
 }
 
-// parseConfigUpload reads whatever a client sent as a configuration to import.
-//
-// The bytes decide, not the Content-Type: a gzip archive is a bundle and
-// anything else is expected to be a bare document. A client that mislabels its
-// upload is a client whose import still works, and one that sends something
-// else entirely gets told what it sent was not a configuration.
+// parseConfigUpload reads an uploaded configuration: gzip bytes are a bundle, anything else a bare document.
 func parseConfigUpload(data []byte) (*ConfigBundle, error) {
 	if len(data) == 0 {
 		return nil, &BundleFormatError{Reason: "the upload is empty"}
@@ -300,11 +276,7 @@ func (r *bundleReader) bundle() (*ConfigBundle, error) {
 	return &ConfigBundle{Config: &doc, MIBFiles: r.files}, nil
 }
 
-// isSafeBundlePath reports whether a member name is one the layout permits.
-//
-// Only the document and files directly under mibs/ are accepted, which rules out
-// absolute paths and parent-directory escapes without having to reason about
-// what path.Clean left behind.
+// isSafeBundlePath reports whether a member is the document or a file directly under mibs/.
 func isSafeBundlePath(name string) bool {
 	if name == bundleConfigEntry {
 		return true
@@ -313,12 +285,7 @@ func isSafeBundlePath(name string) bool {
 	return dir == bundleMIBDir+"/" && file != "" && file != "." && file != ".."
 }
 
-// verifyBundleSources checks that every module the document says the bundle
-// carries is present and unmodified, and returns the sources by module name.
-//
-// A document entry with no File is a module the target is expected to hold
-// already; it is not an error here, and the importer decides whether the target
-// really does hold it.
+// verifyBundleSources checks every bundled module is present and unmodified and returns sources by module; entries without File are skipped.
 func verifyBundleSources(bundle *ConfigBundle) (map[string]bundleSource, error) {
 	sources := make(map[string]bundleSource, len(bundle.Config.MIBs))
 	for _, m := range bundle.Config.MIBs {

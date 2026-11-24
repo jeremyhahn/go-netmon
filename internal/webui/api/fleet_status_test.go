@@ -40,14 +40,7 @@ func newServerWithPoller(t *testing.T, poller PollerClient) *Server {
 	return server
 }
 
-// tablePoller answers like a poller holding exactly these devices.
-//
-// The fleet view reads the poller's whole listing in one call, so a device is
-// either in that listing or it is not: one in statuses appears with it, one in
-// failures appears without it -- the poller knows the device but has nothing to
-// say about it -- and one in neither is absent, which is what "not registered"
-// means. The per-device accessor answers from the same tables so the two can
-// never disagree.
+// tablePoller answers like a poller holding these devices: statuses listed, failures listed without status, others absent.
 func tablePoller(statuses map[string]*client.DeviceStatus, failures map[string]error) *mockPollerClient {
 	return &mockPollerClient{
 		getDeviceStatusFunc: func(_ context.Context, name string) (*client.DeviceStatus, error) {
@@ -114,13 +107,7 @@ func entryFor(t *testing.T, fleet FleetStatusResponse, name string) FleetDeviceS
 	return FleetDeviceStatus{}
 }
 
-// TestFleetStatusClassifiesEveryConfiguredDevice is the endpoint's central
-// contract: one row per configured device, whatever the poller says about it.
-//
-// The five devices cover every answer the poller can give, including the two
-// that a fleet view must never confuse — a device that has never been polled
-// and a device whose polls fail — and one the poller has no record of at all,
-// which must appear as a row rather than 404 the whole request.
+// TestFleetStatusClassifiesEveryConfiguredDevice checks one row per configured device for every poller answer.
 func TestFleetStatusClassifiesEveryConfiguredDevice(t *testing.T) {
 	polled := time.Date(2026, 8, 10, 4, 5, 26, 0, time.UTC)
 

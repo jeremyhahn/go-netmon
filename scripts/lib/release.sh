@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the release scripts (scripts/release*.sh,
-# scripts/changelog-assemble.sh). Sourced, never run.
-#
-# The version forms: vX.Y.Z (a
-# production release), vX.Y.Z-rc.N (a release candidate, N from 1) and
-# vX.Y.Z-alpha (an internal alpha). Nothing else is a release version here: a
-# -beta, build metadata or a leading zero is refused rather than tagged.
+# Shared helpers for the release scripts, sourced only; versions are vX.Y.Z, vX.Y.Z-rc.N or vX.Y.Z-alpha.
 
 # Byte-wise comparison and sorting: release_sort_key's keys are compared as
 # strings, and a locale's collation may skip the dots in them.
@@ -29,10 +23,7 @@ release_kind_of() {
     esac
 }
 
-# release_sort_key prints a key for a well-formed tag such that the keys of
-# two tags compare as strings in SemVer precedence order: the core numerically,
-# then alpha < rc.1 < rc.2 < ... < the production release of the same core
-# ("alpha" sorts before "rc" as SemVer compares identifiers ASCII-wise).
+# release_sort_key prints a string key ordering tags by SemVer precedence: alpha < rc.N < release.
 release_sort_key() {
     local v="${1#v}" core pre rank=2 n=0
     core="${v%%-*}"

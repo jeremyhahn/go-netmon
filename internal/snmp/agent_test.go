@@ -36,12 +36,7 @@ type testAgent struct {
 	// GETBULK can find a successor the way a real agent does.
 	mib []gosnmp.SnmpPDU
 
-	// maxVarbinds is the largest number of varbinds the agent will answer in
-	// one response. A request naming more is answered with an empty response
-	// carrying the tooBig status, which is what a Cisco ASR1000 does and what
-	// gosnmp reports back to the caller as a *successful* call. Zero means no
-	// limit. It is atomic because the serving goroutine reads it while the
-	// test sets it.
+	// maxVarbinds caps varbinds per response; more gets an empty tooBig response; zero is unlimited; atomic.
 	maxVarbinds atomic.Int64
 
 	// silent makes the agent consume requests without answering, which is how

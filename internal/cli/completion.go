@@ -119,12 +119,7 @@ func (e *Env) completeNamesRepeating(listers ...nameLister) completionFunc {
 	return e.completion(listers, true)
 }
 
-// completion offers the names valid at the argument position being typed.
-//
-// Every failure is silent — an unreachable server, an unusable --server value,
-// a timeout — because a completion writes to the shell's command line, where a
-// diagnostic is noise the user cannot even read properly. An operator who wants
-// the reason can run the command itself.
+// completion offers the names valid at the argument position; every failure is silent.
 func (e *Env) completion(listers []nameLister, repeat bool) completionFunc {
 	return func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		list, ok := listerFor(listers, len(args), repeat)

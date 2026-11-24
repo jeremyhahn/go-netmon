@@ -20,13 +20,7 @@ const (
 	sysNameOID  = "1.3.6.1.2.1.1.5.0"
 )
 
-// getTestConfig returns a poller configuration whose devices point at closed
-// loopback ports. Nothing in this file may send a packet off the machine, so
-// the addresses are reserved-and-released local ports (see
-// unreachableSNMPAddress) rather than plausible-looking LAN addresses, and the
-// SNMP budget is short enough that a worker which does reach for one of them
-// gives up immediately instead of holding the suite open for its full retry
-// budget.
+// getTestConfig returns devices on closed loopback ports with a short SNMP budget.
 func getTestConfig(t testing.TB) *config.Config {
 	t.Helper()
 
@@ -210,16 +204,7 @@ func TestPoller_Start_NoEnabledDevices(t *testing.T) {
 	}
 }
 
-// TestPoller_Start_PollsEveryEnabledDevice is the whole-path check on Start:
-// every enabled device gets a running worker, and every one of those workers
-// reaches its own device and reports what it read back.
-//
-// It replaces a test that was skipped for want of "an actual SNMP server". The
-// server now runs in this process on a loopback socket (see testsupport's
-// SNMPAgent), so the SNMP encoding, the socket and the client's response
-// handling are all exercised for real without a packet leaving the machine.
-// Skipped, the test asserted nothing at all; the worker-per-device count and
-// the routing of a result back to the device that produced it were unguarded.
+// TestPoller_Start_PollsEveryEnabledDevice checks each enabled device gets a worker that reports what its in-process agent answered.
 func TestPoller_Start_PollsEveryEnabledDevice(t *testing.T) {
 	t.Parallel()
 
@@ -744,13 +729,7 @@ func TestWorkerStatus(t *testing.T) {
 	}
 }
 
-// TestPoller_ConcurrentPolling states that the poller keeps its devices apart
-// while polling them at the same time: each of three workers talks to its own
-// agent, and each result carries the sysName of the agent that answered it.
-//
-// This is the guarantee a shared client, a shared connection or a mis-keyed
-// pool entry would break, and it is what the previous "Requires actual SNMP
-// server" skip left completely unchecked.
+// TestPoller_ConcurrentPolling checks concurrent workers each reach their own agent.
 func TestPoller_ConcurrentPolling(t *testing.T) {
 	t.Parallel()
 
@@ -796,13 +775,7 @@ func TestPoller_ConcurrentPolling(t *testing.T) {
 	}
 }
 
-// TestPoller_ContextCancellation is the shutdown guarantee: canceling the
-// context Start was given ends every worker, and Stop afterwards is still safe.
-//
-// Skipped, this test proved nothing — a poller that ignored cancellation
-// entirely would have passed it. Here the agents' own request counters are what
-// prove the polling stopped: they must not move again once the context is
-// canceled.
+// TestPoller_ContextCancellation checks canceling Start's context stops polling and Stop stays safe.
 func TestPoller_ContextCancellation(t *testing.T) {
 	t.Parallel()
 

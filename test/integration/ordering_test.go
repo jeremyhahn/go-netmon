@@ -3,51 +3,7 @@
 
 package integration
 
-// The remote-write ordering disorder, driven deliberately against a real Prometheus.
-//
-// This file exists because a measurement on monitor-01 came back "6 matched, 0
-// unexpected" with the mechanism NOT OBSERVED -- repaired_order_total 0,
-// out_of_order_total 0, nothing dropped. That is a pass and it is not evidence:
-// "no disorder occurred" and "disorder occurred and was repaired" produce the
-// same dashboard, and neither can be told from "the counter is not wired up".
-//
-// So these tests do not wait for disorder. They produce it, in the shape two
-// overlapping polls of one device produce it, and then require the endpoint to
-// take every sample of it.
-//
-// The endpoint is a real Prometheus rather than a handler this repository
-// wrote. That distinction is the whole point of doing this at integration
-// level: internal/metrics already proves the encoder sorts, against a fake that
-// was told what to refuse. A fake cannot be evidence about a contract -- it is
-// the same belief under test, restated as a stub.
-//
-// Asking the real receiver changed the answer. The incident report recorded the chain as
-// "overlapping polls put a request out of order, Prometheus answers 400, the
-// batch is re-queued and the buffer overflows". The first two tests here take
-// that apart:
-//
-//   - disorder INSIDE one request is not refused at all. The request is
-//     accepted, HTTP 200, and the older reading is discarded in silence;
-//   - a reading offered after a newer one for its series has been COMMITTED is
-//     refused, 400. Prometheus 2.45.0 took every other reading in its request
-//     with it; 3.x, which production runs and this stack pins, skips
-//     that one reading and commits the rest.
-//
-// So the intra-request sort is not what prevents a 400 -- it is what prevents
-// SILENT loss, which is worse, because nothing downstream reports it. The 400s
-// measured on monitor-01 came from the second mechanism: a retried batch offered
-// after fresher samples for its series had landed.
-//
-// Both fail without their fix. Measured on this
-// stack when it pinned Prometheus 2.45.0, before the pin moved to 3.14.0: with the per-series sort removed, the overlapping
-// polls test stores 10 of 20 readings for every one of its 64 series -- 640
-// readings gone with every flush reporting success. With the admission check
-// removed, the superseded-poll test turns one late poll into a 400 and 64
-// samples dropped as "rejected" instead of 64 dropped by name for nothing.
-//
-// Nothing here touches monitor-01. The load is generated inside the integration
-// stack on purpose: driving load against a real device needs a hand on it,
-// and this needs none.
+// Remote-write ordering against a real Prometheus: intra-request disorder is dropped silently, a reading behind the committed head is refused with 400.
 
 import (
 	"bytes"
@@ -69,10 +25,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/metrics"
 )
 
-// The reproduction's shape. The reproduction needs a device with more interfaces than
-// pdu-03, a faster cadence than a 30s poll, and a repeated overlap rather
-// than one edit; these are those three, sized so the whole exercise runs in a
-// few seconds.
+// The reproduction's shape: many series, a fast cadence and repeated overlap, sized to run in seconds.
 const (
 	// orderingSeries is how many series one simulated poll produces. It is the
 	// "more interfaces" half: one poll has to be big enough that two of them
@@ -89,9 +42,7 @@ const (
 	// would.
 	orderingPeriod = 2 * time.Second
 
-	// orderingPollSpread is how long one poll takes to collect its readings.
-	// It is longer than orderingLateSpread on purpose: the poll that STARTS
-	// first FINISHES second, which is the entire mechanism.
+	// orderingPollSpread exceeds orderingLateSpread so the poll that starts first finishes second.
 	orderingPollSpread = 1200 * time.Millisecond
 
 	// orderingLateSpread is how long the overtaking poll takes. Shorter, so it
@@ -141,13 +92,7 @@ func (e *RemoteWriteTransportError) Error() string {
 
 func (e *RemoteWriteTransportError) Unwrap() error { return e.Err }
 
-// CounterMissingError reports a self-instrumentation counter that is not
-// published at all.
-//
-// Absence is the failure this whole exercise is about. A counter that does not
-// exist reads as zero to anything that squints, and "the mechanism did not
-// happen" then becomes indistinguishable from "the build cannot say whether it
-// happened" -- which is exactly how the incident stayed invisible for fifteen hours.
+// CounterMissingError reports a self-instrumentation counter that is not published at all.
 type CounterMissingError struct {
 	Name   string
 	Labels map[string]string
@@ -169,28 +114,7 @@ func (e *GatherError) Error() string { return fmt.Sprintf("gathering process met
 
 func (e *GatherError) Unwrap() error { return e.Err }
 
-// TestDisorderInsideOneRequestIsDiscardedWithoutASound is the first half of the
-// instrument, and it corrects the chain the incident report wrote down.
-//
-// The incident report says the disorder two overlapping polls produce is what Prometheus
-// answers "400: out of order sample" to. Asked directly, this receiver does
-// not. A request whose samples DESCEND WITHIN A SERIES is accepted -- HTTP 200
-// -- and the older reading is thrown away without appearing in the answer at
-// all. Only prometheus_tsdb_out_of_order_samples_total, on the receiver, says
-// anything happened.
-//
-// The reason is in the receive path: samples of one request are staged in a
-// single appender and each is checked against the series' COMMITTED head, which
-// does not move until the request commits. Two readings staged together are
-// therefore both acceptable when checked; the loser is dropped at commit, and
-// commit does not fail.
-//
-// This matters twice over. It reclassifies the intra-request repair -- sorting
-// each series before encoding is not what stops a 400, it is what stops SILENT
-// LOSS, which is the worse of the two because nothing downstream reports it.
-// And it means the 400s measured on monitor-01 came from somewhere else: from a
-// reading offered AFTER a newer one for its series had already been committed,
-// which is the next test.
+// TestDisorderInsideOneRequestIsDiscardedWithoutASound checks Prometheus accepts a request with descending samples in a series and drops the older one.
 func TestDisorderInsideOneRequestIsDiscardedWithoutASound(t *testing.T) {
 	prometheusURL := prometheusTarget()
 
@@ -238,27 +162,7 @@ func TestDisorderInsideOneRequestIsDiscardedWithoutASound(t *testing.T) {
 	}
 }
 
-// TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost is the other half of
-// the instrument, and it is the mechanism the incident actually measured.
-//
-// A reading offered after a newer one for its series has been COMMITTED cannot
-// be staged at all: the check has something to compare it against. What the
-// receiver does next is a property of its version, recorded per version
-// in refusalCommitsTheRest. Prometheus 2.45.0 returned on the first failure and
-// rolled the whole appender back, so one such reading cost every other reading
-// in its request -- the incident's headline, "one out-of-order sample rejects a whole
-// remote-write batch". Prometheus 3.14.0, which production runs and this stack
-// pins, does the same: measured in CI on 2026-10-21, 200 of 200 good series in the
-// refused request were lost with it.
-//
-// So against the deployed receiver a refusal still costs the whole request,
-// and the incident's cost arithmetic holds. That is why the exporter holds back a
-// reading the endpoint has moved past (partition, reason="superseded") rather
-// than offering it in a request it would sink.
-//
-// The collateral count is asserted rather than assumed, because it is a
-// property of the RECEIVER: the assertion is keyed on the running version, and
-// an image bump that changes it, or a version nobody has measured, fails here.
+// TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost checks a reading behind the committed head is refused, with the per-version collateral in refusalCommitsTheRest.
 func TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost(t *testing.T) {
 	prometheusURL := prometheusTarget()
 
@@ -352,39 +256,15 @@ func TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost(t *testing.T) {
 	}
 }
 
-// refusalCommitsTheRest records, per receiver version, whether a remote-write
-// request refused for one reading behind its series' committed head commits
-// its other readings (true) or is rolled back whole (false).
-//
-// It is a measurement, keyed on the version, so that a pin change which moves
-// the behaviour fails TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost
-// instead of silently changing what a 400 costs. A version absent from the map
-// fails too: its cost has not been measured.
+// refusalCommitsTheRest records per Prometheus version whether a refused request commits its other readings; unknown versions fail.
 var refusalCommitsTheRest = map[string]bool{
-	// The incident's receiver, measured on the integration stack 2026-09-06.
+	// Prometheus 2.45.0.
 	"2.45.0": false,
-	// The current pin (test/integration/Dockerfile.prometheus). Measured by
-	// CI on 2026-10-21: refused with 400 "out of order sample", and 200
-	// of 200 good series in the request lost with it.
+	// The current pin (test/integration/Dockerfile.prometheus): the whole request is lost.
 	"3.14.0": false,
 }
 
-// TestOverlappingPollsAreRepairedAndNothingIsLost is the reproduction, and its
-// success criterion is: repaired_order
-// _total rising, out_of_order_total flat, nothing dropped.
-//
-// The disorder is produced the way the poller produces it. snmp.Client stamps
-// each varbind as it arrives rather than stamping the poll, and samples reach
-// the exporter in whole-poll batches at poll COMPLETION -- so a poll that
-// starts earlier and finishes later hands over older readings after a newer
-// poll's. Two polls of one device overlap whenever the device is reconfigured,
-// because replacing a worker does not wait for the poll already running.
-//
-// That is modeled here rather than provoked, deliberately. Racing a real
-// reconfiguration reproduces the disorder only sometimes, and a reproduction
-// that sometimes reproduces is not one -- it cannot distinguish "the fix works"
-// from "the race did not fire". The timestamps below are what the race
-// PRODUCES, stated directly, so every run drives the same disorder.
+// TestOverlappingPollsAreRepairedAndNothingIsLost checks overlapping polls are reordered: repaired_order_total rises, nothing out of order or dropped.
 func TestOverlappingPollsAreRepairedAndNothingIsLost(t *testing.T) {
 	prometheusURL := prometheusTarget()
 
@@ -423,9 +303,7 @@ func TestOverlappingPollsAreRepairedAndNothingIsLost(t *testing.T) {
 		// replacement worker, or simply a faster cycle.
 		overtaking := poll(run, base.Add(orderingOverlap), orderingLateSpread)
 
-		// Exported in COMPLETION order, which is the inversion. Both land in one
-		// buffer and therefore in one request, which is the case orderedSamples
-		// repairs.
+		// Exported in completion order, in one request, which orderedSamples repairs.
 		if err := exporter.Export(ctx, overtaking); err != nil {
 			t.Fatalf("round %d: exporting the overtaking poll: %v", round, err)
 		}
@@ -489,19 +367,7 @@ func TestOverlappingPollsAreRepairedAndNothingIsLost(t *testing.T) {
 		len(stored), wantSamples, orderingRounds)
 }
 
-// TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever is the other half
-// of the out-of-order incident, and the half that turned one bad request into fifteen hours.
-//
-// Ordering within a request is repairable. Ordering ACROSS requests is not: once
-// the endpoint has accepted a newer reading for a series, an older one for that
-// series can never be accepted, however many times it is offered. The old
-// exporter offered it forever -- re-queued at the front, refused, re-queued --
-// while the buffer overflowed and evicted the oldest 290 samples a second.
-//
-// So the requirement is not that the late poll lands. It is that giving up on
-// it is immediate, counted, and free of collateral: no flush fails, no
-// consecutive-failure count accumulates, no backlog remains, and the samples
-// that CAN land still do.
+// TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever checks a superseded poll is dropped immediately and counted, with no collateral.
 func TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever(t *testing.T) {
 	prometheusURL := prometheusTarget()
 
@@ -541,10 +407,7 @@ func TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever(t *testing.T) {
 		t.Fatalf("exporting the older poll: %v", err)
 	}
 
-	// Flush reports what happened to the work it was responsible for. A batch
-	// discarded is not a batch flushed, and reporting it as one is the silent
-	// loss the exporter is built to refuse -- so an error here is the CORRECT
-	// outcome, and it must name the discard rather than a timeout or a refusal.
+	// Flush must return an error naming the discard.
 	flushErr := exporter.Flush(ctx)
 	if flushErr == nil {
 		t.Error("Flush reported success for a batch every sample of which the endpoint had " +
@@ -563,9 +426,7 @@ func TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever(t *testing.T) {
 		t.Errorf("gonetmon_export_out_of_order_total rose by %v, want %d", got, len(older))
 	}
 
-	// The collateral, which is the part that cost monitor-01 a million samples an
-	// hour: an unlandable batch must not make a request, must not fail a flush
-	// on the endpoint's behalf, and must not stay in the queue.
+	// An unlandable batch must not make a request, fail a flush or stay in the queue.
 	if got := after.errors - before.errors; got != 0 {
 		t.Errorf("%v flush(es) failed, want 0: the unlandable readings were OFFERED to the endpoint "+
 			"rather than dropped before the request, which is what makes the retry loop possible", got)
@@ -621,16 +482,7 @@ func poll(run string, start time.Time, spread time.Duration) []*metrics.Sample {
 // orderingDevice is the device label this file's series carry.
 const orderingDevice = "ordering-test-router"
 
-// dropReasons is every reason a sample can be discarded for, and the set this
-// file sums to get "how much was thrown away".
-//
-// Spelled out rather than read from the package under test, which these tests
-// cannot import anyway: this is the second, independent statement of an
-// alerting contract, and a reason added to the exporter without being added
-// here is a reason this file's totals quietly stop counting. That failure is
-// the same shape as the one the whole exercise is about, so it is worth the
-// duplication -- see counterValue on why an absent counter is an error here
-// and never a zero.
+// dropReasons lists every sample drop reason, stated independently of the exporter.
 var dropReasons = []string{"aged", "depth", "rejected", "superseded", "shutdown"}
 
 // exportCounts is the exporter's self-instrumentation at one instant. Read
@@ -645,24 +497,7 @@ type exportCounts struct {
 	errors       float64
 }
 
-// exportCounters reads the exporter's counters from the process registry --
-// the same numbers /metrics publishes, which is what an operator would look at.
-//
-// The dropped total is SUMMED from gonetmon_export_dropped_samples_total's
-// reasons rather than read from gonetmon_exports_total{status="dropped"}.
-//
-// That child no longer exists, and its removal was deliberate: it counted
-// SAMPLES while its two siblings count FLUSHES, so anything summed or divided
-// across that metric was nonsense -- rate(...{dropped})/rate(...{success}),
-// which is how anyone asks "what fraction are we losing", divided samples by
-// flushes. The per-reason counter carries exactly what it held, in samples, and
-// says which fault as well.
-//
-// This file read the old child because it was written on a branch cut before
-// that one landed, and the two were merged without ever being run together.
-// Nothing was weakened in fixing it: the total means the same thing, and the
-// assertion that actually fails when the per-series sort is removed is the
-// stored-sample count read back out of Prometheus, not this.
+// exportCounters reads the exporter's counters from the process registry; dropped is summed over gonetmon_export_dropped_samples_total reasons.
 func exportCounters(t *testing.T) exportCounts {
 	t.Helper()
 
@@ -695,12 +530,7 @@ func exportCounters(t *testing.T) exportCounts {
 	return counts
 }
 
-// counterValue reads one counter, by name and by the labels that identify its
-// child, from the process's default registry.
-//
-// A missing counter is an error rather than a zero. Reading absence as zero is
-// how a build that cannot report a fault passes a test asserting the fault did
-// not happen.
+// counterValue reads one counter child from the default registry; a missing counter is an error.
 func counterValue(name string, labels map[string]string) (float64, error) {
 	families, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
@@ -784,12 +614,7 @@ func probeSeries(run, index string, samples []prompb.Sample) prompb.TimeSeries {
 	}
 }
 
-// storedSeries returns how many samples the endpoint holds for each series of
-// one run, keyed by its ifindex label.
-//
-// It retries, because a query issued the instant after a write can see nothing
-// for a reason that is not "nothing was written" -- and those two answers are
-// exactly the ones this file must never conflate.
+// storedSeries returns the samples Prometheus holds per series of one run, keyed by ifindex, retrying an empty answer.
 func storedSeries(ctx context.Context, prometheusURL, run string) (map[string]float64, error) {
 	query := fmt.Sprintf("count_over_time(%s{run=%q}[%s])", orderingMetric, run, queryWindow)
 	client := &http.Client{Timeout: 10 * time.Second}

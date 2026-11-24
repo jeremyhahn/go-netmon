@@ -11,12 +11,6 @@ import (
 // failing in a way that looked like something else.
 
 // TestConfigFilesLabelIsTheOneComposeSets pins the label name.
-//
-// Compose writes "com.docker.compose.project.config_files". The tool asked for
-// "com.docker.compose.config-files", which does not exist; docker answers an
-// absent label with an empty string rather than an error, so every container in
-// the project reported no compose file and the ownership check was deciding on
-// data it never actually had.
 func TestConfigFilesLabelIsTheOneComposeSets(t *testing.T) {
 	t.Parallel()
 
@@ -29,13 +23,7 @@ func TestConfigFilesLabelIsTheOneComposeSets(t *testing.T) {
 	}
 }
 
-// TestRowsKeepsAnEmptyTrailingField covers the parse that turned a container
-// with no config-files label into unparseable output.
-//
-// docker prints "name\t" for a row whose last field is empty. lines trims each
-// line, which removes that tab, and the two-field split then failed with
-// "cannot interpret the output of docker ps" on output that was perfectly well
-// formed.
+// TestRowsKeepsAnEmptyTrailingField checks a row ending in an empty field parses.
 func TestRowsKeepsAnEmptyTrailingField(t *testing.T) {
 	t.Parallel()
 

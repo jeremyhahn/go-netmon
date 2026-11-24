@@ -212,9 +212,7 @@ func TestTestSNMPDirectRejectsBadInput(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			// "v4" does not exist. This case used to be "v3", which the tester
-			// refused — leaving no way to check a v3 device's credentials from
-			// either interface, which is the case that most needs one.
+			// "v4" does not exist.
 			name:       "unsupported version",
 			body:       `{"address":"127.0.0.1","snmp_version":"v4"}`,
 			wantStatus: http.StatusBadRequest,
@@ -419,9 +417,7 @@ func TestProbeErrorMessagesNameTheirSubject(t *testing.T) {
 // itoa keeps the URL building in these tests readable.
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 
-// TestRefusedDeviceIsABadGatewayNotATimeout separates a box that is silent from
-// one that actively refuses: on a closed UDP port the kernel answers ICMP
-// unreachable, which surfaces as a refused connection rather than a deadline.
+// TestRefusedDeviceIsABadGatewayNotATimeout: an ICMP-unreachable port is a refusal, not a timeout.
 func TestRefusedDeviceIsABadGatewayNotATimeout(t *testing.T) {
 	t.Parallel()
 

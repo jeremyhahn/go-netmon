@@ -196,9 +196,7 @@ func TestResolveNotFoundAfterRelist(t *testing.T) {
 	}
 }
 
-// TestInvalidateForcesRelist covers the case a miss cannot: a name still in the
-// cache but no longer on the server. Only invalidation can catch that, which is
-// why the CLI invalidates after a create or a delete.
+// TestInvalidateForcesRelist checks invalidation drops a cached name deleted on the server.
 func TestInvalidateForcesRelist(t *testing.T) {
 	cat := newCatalog()
 	cat.mibs = []MIB{{ID: 1, Name: "IF-MIB"}}

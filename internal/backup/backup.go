@@ -64,9 +64,8 @@ type volumeTarget struct {
 // was running.
 //
 // Everything that can fail is proved first: the compose project's ownership,
-// every volume's label, and the MIB source tree's location and contents. A
-// backup that discovers a problem after taking the stack down has caused an
-// outage for nothing.
+// every volume's label, and the MIB source tree's location and contents, so a
+// problem never takes the stack down for nothing.
 func (s *Service) Backup(ctx context.Context, opts Options) (*Result, error) {
 	plan, err := s.planBackup(ctx, opts)
 	if err != nil {
@@ -169,16 +168,7 @@ func (s *Service) planBackup(ctx context.Context, opts Options) (*backupPlan, er
 			s.info("mib tree:   %s (%d files, %s)", loc.Dir, state.Files, loc.Origin)
 
 		case isTreeNotMounted(resolveErr):
-			// A deployment that mounts no MIB tree keeps its modules inside the
-			// volume the poller writes them to, and that volume is already
-			// backed up as a volume. There is nothing separate to copy, so the
-			// component is dropped rather than treated as a missing dependency
-			// — which is what it was before imports were stored internally.
-			//
-			// An ambiguous mount stays fatal: two services naming different
-			// host directories at the same target means the deployment does not
-			// agree with itself about where its MIBs are, and guessing would
-			// pick one of them to empty on a restore.
+			// No MIB mount: the modules are in a volume already backed up; an ambiguous mount stays fatal.
 			s.info("mib tree:   not mounted; MIB sources live in the %s volume and are covered by it",
 				ComponentPoller.Volume())
 			components = withoutComponent(components, ComponentMIBs)
@@ -208,11 +198,7 @@ func (s *Service) planBackup(ctx context.Context, opts Options) (*backupPlan, er
 	return plan, nil
 }
 
-// runBackup performs the stopped-window work and returns the manifest.
-//
-// The stack is returned to exactly the set of services that were running, on
-// every exit path: an error, a panic, or a canceled context. A backup must
-// never be the reason monitoring stayed down.
+// runBackup does the stopped-window work and restores the running services on every exit path.
 func (s *Service) runBackup(ctx context.Context, plan *backupPlan, dst *Root, keepStopped bool) (*Manifest, time.Duration, error) {
 	running, err := s.cfg.Docker.RunningServices(ctx)
 	if err != nil {
@@ -309,11 +295,7 @@ func (s *Service) copyAll(ctx context.Context, plan *backupPlan, dst *Root) (*Ma
 	return manifest, nil
 }
 
-// copyVolume streams one Docker volume into the backup as a compressed member.
-//
-// Members are named after the component rather than the compose volume: a
-// filename that cannot be told apart from an object the tooling refuses to touch
-// is a filename waiting to be misread during a recovery.
+// copyVolume streams one Docker volume into the backup as a compressed member named after its component.
 func (s *Service) copyVolume(ctx context.Context, dst *Root, target volumeTarget) (VolumeInfo, error) {
 	member := "volumes/" + string(target.component) + ".tar.gz"
 	s.info("archiving %s -> %s", target.docker, member)
@@ -341,12 +323,7 @@ func (s *Service) copyVolume(ctx context.Context, dst *Root, target volumeTarget
 	}, nil
 }
 
-// copyTree streams the MIB source tree into the backup.
-//
-// It is archived exactly like a volume - own member, own entry count, own
-// checksum - because it restores like one: as a whole directory, replaced
-// outright. It is recorded in trees[] rather than volumes[] so that nothing can
-// mistake a host path for a Docker volume during a recovery.
+// copyTree streams the MIB source tree into the backup as its own member, recorded in trees[].
 func (s *Service) copyTree(dst *Root, plan *backupPlan) (TreeInfo, error) {
 	src, base, err := treeRoot(*plan.tree)
 	if err != nil {
@@ -396,11 +373,7 @@ func (s *Service) copyTree(dst *Root, plan *backupPlan) (TreeInfo, error) {
 	}, nil
 }
 
-// copyConfigFiles copies the bind-mounted repository files into the backup.
-//
-// Reference files are recorded for provenance and compatibility checking only.
-// Overwriting a deployment definition beneath a running deployment is a
-// deployment action, not a data restore, so they are never restorable.
+// copyConfigFiles copies the bind-mounted repository files; reference files are never restorable.
 func (s *Service) copyConfigFiles(dst *Root, restorable bool) ([]ConfigInfo, error) {
 	src, err := Open("repository config", s.cfg.RepoRoot)
 	if err != nil {

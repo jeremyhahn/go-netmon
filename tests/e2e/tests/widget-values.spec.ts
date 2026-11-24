@@ -2,12 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// A card that draws is not the same as a card that is right.
-//
-// The render audit proves every card resolves. This checks the three ways a
-// resolved card can still be wrong: the widget type does not suit the value, a
-// number is shown without the unit its MIB declares, or an enumeration is shown
-// as the integer on the wire rather than the name the MIB gives it.
+// Cards use a fitting widget, show declared units and show enumerations by name.
 
 import { BASE } from '../target';
 import { deviceByName, SEEDED_DEVICES } from '../stack';
@@ -64,11 +59,7 @@ async function openDevice(page: Page, deviceId: number, mib: string) {
 
   await openDeviceById(page, deviceId);
 
-  // Wait for the tab to EXIST rather than for a fixed number of seconds. The
-  // rail is built from one request now, so it appears quickly -- but the
-  // panels behind it fill on the streaming tick, and a fixed 15s was short
-  // enough that these read "Waiting for data" and reported a product failure
-  // that was a fixture impatience.
+  // Wait for the tab to exist rather than a fixed time.
   const tab = page.locator('#mibTabList .tab-button', { hasText: mib }).first();
   await expect(tab, `no ${mib} tab for device ${deviceId}`).toBeVisible({ timeout: 60000 });
   await tab.click();
@@ -138,12 +129,7 @@ test('a counter is charted as a rate, with per-second units', async ({ page, req
 test('an enumerated value is shown by name, not by its number', async ({ page, request }) => {
   await openDevice(page, (await deviceByName(request)).id, 'IF-MIB');
 
-  // The readings themselves, not the tile's textContent.
-  //
-  // A tile is a list of rows and textContent runs them together with no
-  // separator -- "Port-channel1.1000upGigabitEthernet0up" -- so a word-boundary
-  // match for "up" finds nothing however correct the decode is. Reading the
-  // value cells is both more precise and what the assertion is actually about.
+  // Read the value cells, not the tile's textContent.
   const statuses = await page.evaluate(() => {
     const pane = document.querySelector('#mibTabContent .tab-pane.active');
     const rows = Array.from(pane?.querySelectorAll('.panel-row-value') || [])
@@ -165,9 +151,7 @@ test('an enumerated value is shown by name, not by its number', async ({ page, r
 });
 
 test('a value with a declared unit carries it into the axis', async ({ page, request }) => {
-  // HOST-RESOURCES-MIB declares KBytes on hrMemorySize and Bytes on
-  // hrStorageAllocationUnits, and the simulator answers both. A number with no
-  // unit is not a reading, it is a number.
+  // HOST-RESOURCES-MIB declares KBytes on hrMemorySize and Bytes on hrStorageAllocationUnits.
   await openDevice(page, (await deviceByName(request)).id, 'HOST-RESOURCES-MIB');
 
   const units = await page.evaluate(() => {

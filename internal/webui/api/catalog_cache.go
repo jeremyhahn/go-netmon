@@ -32,12 +32,7 @@ import (
 // pending.
 const CatalogRefreshInterval = 5 * time.Minute
 
-// catalogCache holds the metric catalog between reads.
-//
-// Readers take a read lock and get whatever is currently held; they never wait
-// on Prometheus except once, on a cache that has never been filled. That is
-// the property that matters: a dashboard load must not be behind a five-second
-// query, and a slow Prometheus must slow the refresh rather than the page.
+// catalogCache holds the metric catalog; readers wait on Prometheus only for the first fill.
 type catalogCache struct {
 	// read is what fills the cache. Injected so the cache can be tested
 	// without a Prometheus.
@@ -109,10 +104,7 @@ func (c *catalogCache) fill(ctx context.Context) metricCatalogResult {
 	primed, held := c.primed, c.held
 	c.mu.RUnlock()
 
-	// An unreadable catalog is not an empty one. Keeping what is held is the
-	// same rule the two-read strategy follows one layer down, for the same
-	// reason: losing every description because a query failed is worse than
-	// serving descriptions that are a few minutes old.
+	// An unreadable catalog is not an empty one: keep what is held.
 	if !fresh.readable && primed {
 		log.Printf("WARNING: the metric catalog could not be re-read; keeping %d entries",
 			len(held.entries))

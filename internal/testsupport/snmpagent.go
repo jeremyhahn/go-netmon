@@ -11,14 +11,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// This file provides a real SNMPv2c agent that runs inside the test process on
-// a loopback UDP socket. Tests built on it exercise the whole client path — BER
-// encoding, the socket, decoding and gosnmp's own walk state machine — instead
-// of substituting a stand-in for the parts that actually break in production.
-// Nothing leaves the machine and nothing on the host is touched.
-//
-// It lives here rather than beside one package's tests because more than one
-// package needs it: the SNMP client, and the poller that drives the client.
+// A real SNMPv2c agent on a loopback UDP socket, for tests of the SNMP client and poller.
 
 // agentMaxDatagram bounds a single SNMP message. Real agents advertise a
 // max-message-size in the same range.
@@ -34,29 +27,17 @@ type SNMPAgent struct {
 	// GETBULK can find a successor the way a real agent does.
 	mib []gosnmp.SnmpPDU
 
-	// maxVarbinds is the largest number of varbinds the agent will answer in
-	// one response. A request naming more is answered with an empty response
-	// carrying the tooBig status, which is what a Cisco ASR1000 does and what
-	// gosnmp reports back to the caller as a *successful* call. Zero means no
-	// limit. It is atomic because the serving goroutine reads it while the
-	// test sets it.
+	// maxVarbinds caps varbinds per response; larger requests get an empty tooBig response. Zero means no limit.
 	maxVarbinds atomic.Int64
 
 	// silent makes the agent consume requests without answering, which is how
 	// an unreachable device behaves from the client's point of view.
 	silent atomic.Bool
 
-	// silentSubtree, when set, makes the agent consume without answering only
-	// those requests that reach into one subtree, answering everything else
-	// normally. That is the shape of a device which is up and talking but has
-	// one branch of its MIB wedged -- the case that must never be mistaken for
-	// an unreachable device.
+	// silentSubtree, when set, leaves requests into one subtree unanswered while answering everything else.
 	silentSubtree atomic.Pointer[string]
 
-	// hollow makes the agent answer every request with a successful but empty
-	// response. Some agents do this for objects they half-implement, and it is
-	// the shape that turns an unguarded index into the varbind list into a
-	// panic.
+	// hollow makes the agent answer every request with a successful but empty response.
 	hollow atomic.Bool
 
 	// requests counts the datagrams the agent has accepted.
@@ -307,10 +288,7 @@ func (a *SNMPAgent) getNext(requested []gosnmp.SnmpPDU) []gosnmp.SnmpPDU {
 	return out
 }
 
-// getBulk answers a GETBULKREQUEST, which is what gosnmp's BulkWalk drives.
-// The first NonRepeaters varbinds get one successor each; every remaining
-// varbind gets up to MaxRepetitions successors, interleaved as RFC 3416
-// specifies.
+// getBulk answers a GETBULKREQUEST with NonRepeaters and MaxRepetitions interleaved per RFC 3416.
 func (a *SNMPAgent) getBulk(request *gosnmp.SnmpPacket) []gosnmp.SnmpPDU {
 	nonRepeaters := int(request.NonRepeaters)
 	if nonRepeaters > len(request.Variables) {

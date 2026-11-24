@@ -12,16 +12,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// seriesConfirmThreshold is the projected series count above which an enable
-// refuses to act without --yes.
-//
-// A module's object count understates its cost badly: every pollable column
-// becomes one series per table row, so a few hundred objects routinely turn
-// into tens of thousands of series. That is enough extra SNMP work to melt a
-// modestly powered agent and enough cardinality to hurt Prometheus, and it is
-// created by a command that otherwise looks trivial. 5000 sits above what any
-// ordinary module costs and below what a runaway table costs, so the guard is
-// silent in normal use and loud exactly when it matters.
+// seriesConfirmThreshold is the projected series count above which enable needs --yes.
 const seriesConfirmThreshold = 5000
 
 // SeriesBudgetError reports an enable refused because its projected series cost
@@ -55,12 +46,7 @@ type assignmentScope struct {
 	// depends on.
 	estimate func(context.Context, *client.Client, int64, int64) (*client.MIBSeriesEstimate, error)
 
-	// objects explains what is polled from a MIB, object by object. Like
-	// estimate it is device-only: a profile does not poll anything itself, so
-	// there is no "right now" for it to report.
-	//
-	// The query narrows the plan on the server, which is the only place that
-	// can page it without losing the poller's order.
+	// objects lists what is polled from a MIB on a device, paged by the server.
 	objects func(
 		context.Context, *client.Client, int64, int64, client.PlanQuery,
 	) (*client.MIBObjectPlan, error)
@@ -172,10 +158,7 @@ func newMIBDisableCommand(env *Env, scope assignmentScope) *cobra.Command {
 	}
 }
 
-// setMIBsEnabled turns a set of MIBs on or off, preserving their filters.
-//
-// Every MIB is resolved and, when enabling, priced before the first write, so a
-// command that the guard refuses has changed nothing at all.
+// setMIBsEnabled enables or disables MIBs, keeping filters; all are priced before the first write.
 func (e *Env) setMIBsEnabled(
 	scope assignmentScope,
 	ownerRef string,
@@ -235,11 +218,7 @@ func (e *Env) setMIBsEnabled(
 	return nil
 }
 
-// previewSeriesCost prints what each MIB would cost and refuses a total above
-// the guard.
-//
-// An estimate the server cannot produce is reported and skipped: not knowing
-// the price is not a reason to block a change the operator is entitled to make.
+// previewSeriesCost prints each MIB's cost and refuses a total above the guard.
 func (e *Env) previewSeriesCost(
 	ctx context.Context,
 	api *client.Client,
@@ -272,11 +251,7 @@ func (e *Env) previewSeriesCost(
 	return nil
 }
 
-// formatSeriesCost renders one line of the cost preview, for example
-//
-//	IF-MIB: ~960 series (estimated from a median of 24 instances across 3 tables)
-//
-// A count Prometheus confirmed drops the tilde, because it is not a guess.
+// formatSeriesCost renders one cost preview line; a confirmed count has no tilde.
 func formatSeriesCost(ref string, estimate *client.MIBSeriesEstimate) string {
 	approx := "~"
 	if estimate.Exact {
@@ -314,10 +289,7 @@ func newMIBFilterCommand(env *Env, scope assignmentScope) *cobra.Command {
 		},
 	}
 
-	// These take regular expressions, so they must be StringArray rather than
-	// StringSlice: StringSlice splits its value on commas, which silently
-	// tears a pattern like "if{2,4}" into two invalid ones. Repeat the flag to
-	// supply several patterns.
+	// StringArray, not StringSlice: commas in regular expressions must not split.
 	f := cmd.Flags()
 	f.StringArrayVar(&flags.IncludeNames, "include-names", nil,
 		"poll only objects whose name matches this regexp (repeat for more)")
@@ -377,11 +349,7 @@ func (e *Env) setMIBFilters(
 	return renderAssignment(e.Out, mibRef, stored)
 }
 
-// applyFilterFlagOverrides copies only explicitly-set flags onto current.
-//
-// A list flag replaces the stored list rather than adding to it, so one command
-// states the whole rule for the fields it names. --clear is applied first, which
-// makes "--clear --include-names X" mean "these filters and nothing else".
+// applyFilterFlagOverrides copies only explicitly-set flags; --clear applies first.
 func applyFilterFlagOverrides(
 	cmd *cobra.Command,
 	current *client.MIBAssignment,

@@ -1,36 +1,4 @@
-# Release for go-netmon.
-#
-# `make release-alpha`, `make release-candidate` or `make release` prepares a
-# release PR: it folds changelog.d/ into CHANGELOG.md and writes VERSION on a
-# release/vX.Y.Z branch. When that PR merges and CI is green on main,
-# auto-release.yml tags the commit and calls this workflow with the version.
-# A pushed `v*` tag and a manual run (`gh workflow run release.yml -f
-# version=vX.Y.Z`) start it too. Everything after the tag is here, and nothing
-# is created by hand:
-#
-#   verify    the tree carries the release the tag names, on main; decides
-#             once whether the release is "latest"
-#   lint, security, test, build, scripts, fips, integration
-#             the gate: every job ci.yml's "CI Passed" needs, by the same
-#             name and commands, on the tagged commit
-#   binaries  the linux amd64/arm64 archives, standard and FIPS, the SBOM and
-#             SHA256SUMS, built by the Makefile; held as a workflow artifact
-#   image     each image x architecture x variant, built, scanned by trivy,
-#             and pushed to GHCR by digest only, after the gate passed
-#   manifest  the multi-arch tags over those digests, with build provenance
-#   publish   the GitHub release: the tag's CHANGELOG section as its body,
-#             every asset attached and attested (provenance and SBOM), the
-#             Latest release or a pre-release as verify decided. Created as a
-#             draft and published only once every asset is attached.
-#
-# Every job after verify builds and publishes verify's tag, version and
-# commit, never github.ref or github.sha: on a call or a manual run those
-# name main, not the release.
-#
-# Third-party actions are pinned to a full commit SHA: a tag is a mutable
-# pointer, and these jobs hold write tokens.
-#
-# docs/operations/releasing.md is the operator's page.
+# Release: verify the tag, rerun CI's gate on the tagged commit, build binaries and images, publish the GitHub release; see docs/operations/releasing.md.
 
 name: Release
 
@@ -44,10 +12,7 @@ on:
         description: 'Tag to release (e.g. v0.2.1)'
         type: string
         required: true
-  # auto-release.yml calls this once it has tagged a green main commit. A tag
-  # pushed with GITHUB_TOKEN starts no workflow, so the release is called
-  # rather than started by the tag. The caller grants the permissions the
-  # jobs below ask for.
+  # auto-release.yml calls this after tagging: a tag pushed with GITHUB_TOKEN starts no workflow.
   workflow_call:
     inputs:
       version:
@@ -94,25 +59,11 @@ jobs:
           ref: refs/tags/${{ inputs.version || github.ref_name }}
           fetch-depth: 0
 
-      # VERSION equals the tag unprefixed, CHANGELOG.md has exactly one
-      # non-empty section for it, no fragment is waiting in changelog.d/,
-      # [Unreleased] is empty -- the check the release targets run before
-      # they commit -- and the tagged commit is on main: a tag on a branch
-      # commit would release code main never received.
-      #
-      # The tag reaches make ONLY through the environment, never as a make
-      # argument or spliced into the script.
+      # VERSION, CHANGELOG and changelog.d match the tag and the commit is on main; the tag reaches make only through the environment.
       - name: make release-verify
         run: make release-verify
 
-      # release-verify has already refused any tag that is not vX.Y.Z,
-      # vX.Y.Z-alpha or vX.Y.Z-rc.N, so the values below are safe to hand on.
-      #
-      # latest is the one decision on whether this release becomes GitHub's
-      # Latest release and moves the images' :X.Y and :latest. Before 1.0
-      # every release does, -alpha included, so the repository and
-      # `docker pull ...:latest` show what is current. From 1.0 on only a
-      # plain vX.Y.Z does, and a pre-release is published as one.
+      # latest decides GitHub's Latest release and the :X.Y/:latest tags: every release before 1.0, only plain vX.Y.Z after.
       - name: Record the release
         id: release
         run: |
@@ -131,12 +82,7 @@ jobs:
             echo "latest=${latest}"
           } >> "$GITHUB_OUTPUT"
 
-  # The gate: every job ci.yml's "CI Passed" needs, by the same name and
-  # running the same commands, on exactly the tagged commit -- a release never
-  # ships what CI would have stopped. scripts/tests/release-tests.sh fails if
-  # a job ci.yml gates on is missing here, runs a command this copy does not,
-  # or is not in the needs of image and publish. ci.yml carries the reasons
-  # for each step. Each checks out verify's commit, so it needs verify.
+  # The gate: every job ci.yml's "CI Passed" needs, same names and commands, on the tagged commit; scripts/tests/release-tests.sh checks it.
   lint:
     name: Format, Vet & Lint
     needs: verify
@@ -434,11 +380,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Each image, architecture and variant on its own runner: arm64 on a native
-  # ARM runner, so the runtime stage's package steps run without emulation
-  # (the Go build itself cross-compiles either way). Each leg builds, scans
-  # the loaded image, and only then pushes it -- by digest, untagged. The tags
-  # that make it pullable by name are written by manifest.
+  # One runner per image, architecture and variant; each leg builds, scans, then pushes by digest only.
   image:
     name: Image (${{ matrix.repository }}, ${{ matrix.variant }}, ${{ matrix.arch }})
     needs: [verify, lint, security, test, build, scripts, fips, integration]
@@ -484,7 +426,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
-          # moby/buildkit:buildx-stable-1 as of 2026-10-25
+          # moby/buildkit:buildx-stable-1
           driver-opts: image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Build the image for scanning
@@ -597,7 +539,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
-          # moby/buildkit:buildx-stable-1 as of 2026-10-25
+          # moby/buildkit:buildx-stable-1
           driver-opts: image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -729,10 +671,7 @@ jobs:
           name: go-netmon ${{ needs.verify.outputs.tag }}
           body_path: ${{ runner.temp }}/NOTES.md
           draft: true
-          # verify's one decision: before 1.0 every release is the Latest
-          # release; from 1.0 on a -alpha or -rc.N is a pre-release. `legacy`
-          # lets GitHub pick Latest by date and SemVer, so re-running an older
-          # release never takes Latest from a newer one.
+          # legacy lets GitHub pick Latest by date and SemVer, so re-running an older release never takes Latest.
           prerelease: ${{ needs.verify.outputs.latest != 'true' }}
           make_latest: ${{ needs.verify.outputs.latest == 'true' && 'legacy' || 'false' }}
           files: |
@@ -740,10 +679,7 @@ jobs:
             dist/SHA256SUMS
           fail_on_unmatched_files: true
 
-      # Published only when the draft holds every file in dist/; a run that
-      # stopped part way leaves a draft, never a release with missing assets.
-      # GitHub never makes a draft Latest, so the decision is repeated where
-      # the draft is published.
+      # Published only when the draft holds every file in dist/; GitHub never makes a draft Latest.
       - name: Publish the draft
         env:
           GH_TOKEN: ${{ github.token }}

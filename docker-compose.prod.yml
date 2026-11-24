@@ -43,10 +43,7 @@ services:
 
   # go-netmon SNMP collector
   go-netmon:
-    # The published image. NETMON_VERSION is a release without its v
-    # (e.g. 0.2.0) and is required: a production stack runs a version someone
-    # chose, never whatever :latest points at today. NETMON_VARIANT=-fips
-    # selects the FIPS 140-3 build of the same release.
+    # NETMON_VERSION (required) is a release without its v; NETMON_VARIANT=-fips selects the FIPS build.
     image: ghcr.io/jeremyhahn/go-netmon:${NETMON_VERSION:?set NETMON_VERSION to a release, e.g. 0.2.0}${NETMON_VARIANT:-}
     container_name: go-netmon
     network_mode: host  # Use host network to access routers directly
@@ -54,13 +51,7 @@ services:
       - ./config.yaml:/app/config.yaml
       - ./mibs:/app/mibs
     restart: unless-stopped
-    # Locked memory for the sealed SNMP credentials (go-enclave). A device's
-    # credentials are open only for the length of its request, and one open
-    # locks at most 24 KiB: three secrets, each a 4 KiB plaintext page and its
-    # data key's page. 16 MiB, less the sealer's own 12 KiB of keys, holds
-    # about 680 opens at once: a 256-device fleet polling at the same instant,
-    # with better than 2x headroom. Past that, polls wait their turn instead of
-    # failing. Docker's 64 KiB default holds two. See docs/deployment/user.md.
+    # Locked memory for sealed SNMP credentials: 16 MiB holds a 256-device fleet; see docs/deployment/user.md.
     ulimits:
       memlock:
         soft: 16777216

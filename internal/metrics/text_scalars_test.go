@@ -9,13 +9,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
-// A scalar whose value is text used to be polled, answered and then dropped.
-//
-// The conversion offered every non-numeric reading to snmp_system_info, which
-// knows five system-group OIDs, and discarded the rest. Status columns became
-// info metrics; scalars did not. A device that states its condition in
-// DisplayString scalars therefore reported nothing at all -- including, on the
-// KVM this was found with, a power supply saying it had failed.
+// Text-valued scalars are exported, not dropped.
 
 // textResult is one OctetString reading.
 func textResult(oid, value string) *snmp.Result {

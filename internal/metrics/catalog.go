@@ -9,27 +9,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// The metric catalog is how a consumer learns what a series means without
-// knowing anything about MIBs.
-//
-// Remote write cannot carry metric metadata. The v1 protocol this exporter
-// speaks has a Metadata field on the request, but Prometheus's v1 receive path
-// never reads it -- only the v2 path calls UpdateMetadata, and only when the
-// receiver runs the experimental metadata-wal-records feature. monitor-01's
-// Prometheus 3.14.0 runs neither. So HELP and TYPE cannot reach a consumer at
-// all, and everything a renderer needs has to travel as ordinary series.
-//
-// That is what this is: two families of constant-1 info series describing the
-// metrics this collector publishes. A dashboard reads them and nothing else --
-// no MIB files, no parser, no search path, no coupling to how collection
-// works. Which is the point: the UI was reaching into the MIB store to render,
-// and a UI that parses MIBs is a UI that breaks when the MIB store moves.
-//
-// The catalog is deliberately global. It carries no device label, so its size
-// is the number of distinct metric names published across the fleet and not a
-// multiple of the fleet: 20,390 series measured over 198 modules, identical at
-// five devices and at a hundred thousand. A device dimension here would make
-// the description of a metric cost more than the metric.
+// The metric catalog: global constant-1 info series describing every published metric, since remote write v1 carries no metadata.
 
 // Catalog family metric names.
 const (
@@ -147,24 +127,7 @@ type CatalogEntry struct {
 	EnumValues map[int64]string
 }
 
-// classifyKind decides how a renderer should draw an object.
-//
-// The order matters and each step is a fact rather than a guess:
-//
-//   - No resolved type at all means the module's imports did not resolve, and
-//     nothing else about the object is trustworthy either. It is checked first
-//     so that a later rule cannot make something up from the wreckage.
-//   - An enumeration is an enumeration whatever its underlying integer type,
-//     so the presence of enum values decides before the type name does.
-//   - Counter-ness is the project's existing definition (mib.IsCounter), which
-//     includes TimeTicks. Reusing it keeps the catalog from disagreeing with
-//     the rest of the codebase about what a counter is.
-//   - Text is text. The set here is wider than mib.IsString, which covers only
-//     OctetString and DisplayString: a catalog that called SnmpAdminString a
-//     gauge would have a renderer draw a line through a hostname.
-//
-// Everything remaining is a gauge, which is the correct default for a numeric
-// SNMP object and the only one of these branches that is a default at all.
+// classifyKind decides how to draw an object: unresolved, enum, counter (mib.IsCounter), text, else gauge.
 func classifyKind(object *mib.OIDMetadata) MetricKind {
 	if object == nil || object.Type == "" {
 		return MetricKindUnknown
@@ -221,19 +184,11 @@ func (e *CatalogEntry) sortedEnumValues() []int64 {
 	return values
 }
 
-// catalogIndex describes every metric the loaded MIBs could produce, keyed by
-// published metric name.
-//
-// It is built from the same sweep of the MIB store that builds the metric name
-// index, so it costs no extra scan, and it is immutable once built.
+// catalogIndex describes every metric the loaded MIBs could produce, keyed by published name; immutable once built.
 type catalogIndex struct {
 	entries map[string]*CatalogEntry
 
-	// collisions counts objects discarded because an earlier object already
-	// claimed their metric name. 436 of 9,638 objects collide across 198
-	// modules, so this is a routine condition rather than a fault, but a
-	// catalog row describes one of them and an operator reading a
-	// description for the wrong module has no way to tell.
+	// collisions counts objects dropped because an earlier object claimed their metric name.
 	collisions int
 }
 
@@ -249,17 +204,7 @@ func (ix *catalogIndex) entryFor(metric string) (*CatalogEntry, bool) {
 	return entry, found
 }
 
-// newCatalogIndex builds the catalog from the objects a MIB store sweep found.
-//
-// First definition wins, which is not an arbitrary tie-break: objectNameIndex
-// resolves an instance OID to a metric name by the same rule, so a catalog
-// that chose differently would describe a metric under one module's
-// DESCRIPTION while the series was named from another's. The two have to agree
-// or the catalog documents a metric that is not there.
-//
-// Objects that are not instantiable are skipped for the same reason the name
-// index skips them: a table node or a conceptual row is never published, so a
-// catalog row for one describes nothing.
+// newCatalogIndex builds the catalog from a MIB store sweep: first definition wins, as in objectNameIndex; non-instantiable objects are skipped.
 func newCatalogIndex(objects []*mib.OIDMetadata, tables *tableSet, statusColumns map[string][]statusColumnInfo) *catalogIndex {
 	index := &catalogIndex{entries: make(map[string]*CatalogEntry, len(objects))}
 
@@ -288,28 +233,7 @@ type publishedName struct {
 	info bool
 }
 
-// publishedNamesFor returns every metric name an object can be published
-// under, which is not always one and is not always the obvious one.
-//
-// This is the difference between describing a metric and describing a MIB
-// object, and getting it wrong left an entire category undescribed. The
-// exporter publishes:
-//
-//   - a numeric object under snmp_<Name>, preserving case;
-//   - a text object as an info metric under snmp_<name>_info, lowercased,
-//     because its value is a string and cannot be a sample. It never reaches
-//     the numeric path at all, so snmp_ifName is a name nothing ever writes;
-//   - a status column under BOTH, when its value is numeric: the number is
-//     published as a reading and the same column is published again as an info
-//     metric carrying its rendered label, so ifOperStatus is both
-//     snmp_ifOperStatus and snmp_ifoperstatus_info.
-//
-// Keying the catalog on snmp_<Name> alone therefore missed every _info family
-// -- every text scalar and every status column -- while filing entries under
-// names nothing publishes. Those entries were never emitted, because emission
-// is driven by the published set, so the damage was one-directional: the
-// families that exist had no description, and identity_info_metric pointed at
-// a metric the catalog could not describe.
+// publishedNamesFor returns every name an object is published under: snmp_<Name> for numbers, snmp_<name>_info for text, both for numeric status columns.
 func publishedNamesFor(object *mib.OIDMetadata) []publishedName {
 	numeric := publishedName{metric: metricNamePrefix + SanitizeMetricName(object.Name)}
 	info := publishedName{metric: infoMetricName(object.Name), info: true}
@@ -347,15 +271,7 @@ func catalogEntryFor(
 		EnumValues:  object.EnumValues,
 	}
 
-	// An info metric carries its value in a label, so it is a string series
-	// whatever the underlying object's type: a renderer drawing a line
-	// through snmp_ifoperstatus_info would be plotting the constant 1. The
-	// number, where there is one, is the object's other published name.
-	//
-	// Its unit goes with the number for the same reason -- "seconds" on a
-	// series whose value is always 1 describes nothing -- and its
-	// enumeration goes too, because the info metric has already rendered the
-	// enum to text in its value label.
+	// An info metric is a string series; its unit and enumeration belong to the numeric family.
 	if published.info {
 		entry.Kind = MetricKindString
 		entry.Unit = ""
@@ -382,8 +298,7 @@ func catalogEntryFor(
 	return entry
 }
 
-// indexLabelNames returns a table's index labels in INDEX-clause order, named
-// as the exporter labels them.
+// indexLabelNames returns a table's index labels in INDEX-clause order, as the exporter names them.
 func indexLabelNames(table *TableIndexInfo) []string {
 	names := make([]string, 0, len(table.IndexNames))
 	for _, name := range table.IndexNames {
@@ -392,25 +307,7 @@ func indexLabelNames(table *TableIndexInfo) []string {
 	return names
 }
 
-// identityInfoMetric names the family a renderer gets a row's name from.
-//
-// A table's status columns are the candidates -- ifName, ifDescr, ifAlias --
-// and the MIB does not declare which of them names the row. The preference
-// below is a presentation convention and is documented as one: a column whose
-// name ends in "Name" is what an operator calls the thing, a description is the
-// fallback, and an alias is the operator's own label and so the least likely to
-// be populated.
-//
-// ENUMERATED columns are excluded outright, and that is not a preference. An
-// enumeration has a handful of values by construction, so it cannot tell two
-// rows apart -- it is a state, not a name. cbgpPeer2Table has no Name, Descr or
-// Alias column, so the sorted-order fallback elected cbgpPeer2AdminStatus, and
-// on core-01 every row of every panel in that table was labeled "start":
-// eight BGP peers, eight lines, one name between them. An unnamed row falls
-// back to its index, which is the peer's address and tells them apart exactly.
-//
-// Where no candidate survives, the answer is no identity at all rather than a
-// bad one.
+// identityInfoMetric picks the family that names a row: *Name, then description, then alias; enumerated columns never qualify.
 func identityInfoMetric(columns []statusColumnInfo) string {
 	names := make([]string, 0, len(columns))
 	for _, column := range columns {
@@ -432,52 +329,15 @@ func identityInfoMetric(columns []statusColumnInfo) string {
 		}
 	}
 
-	// Nothing declared itself a name, so this table has no identity. There
-	// used to be a fallback here -- the first status column in sorted order --
-	// and it was a guess dressed as an answer. With enumerations excluded it
-	// elected cbgpPeer2LastError on cbgpPeer2Table, so every BGP peer on
-	// core-01's dashboard was called "04:00": the hex rendering of a last
-	// error code, identical across all eight rows.
-	//
-	// Returning nothing sends a renderer to the row's index instead, which for
-	// that table is the peer's address. An index is never friendly and never
-	// wrong, and "never wrong" is the property a label has to have before
-	// "friendly" is worth anything.
+	// No name column: no identity, so a renderer falls back to the row index.
 	return ""
 }
 
-// derivedCatalogEntries describes the metrics this collector produces rather
-// than reads.
-//
-// These are the reason the catalog is keyed on the published name. An entity
-// sensor reading is published as snmp_entity_sensor_dbm, named for the unit it
-// was scaled into, because one metric holding dBm and celsius and volts cannot
-// be aggregated (internal/metrics/entity_sensor.go). There is no MIB object
-// called entity_sensor_dbm, so nothing derived from a sweep of the MIB store
-// can describe it -- and it is precisely the reading this collector exists to
-// produce.
-//
-// They carry no Module or Object, and that is honest rather than incomplete:
-// their provenance is two different MIB objects on two different tables
-// (entPhySensorValue and entSensorValue), and naming either would be wrong on
-// half the devices.
-//
-// Unit and Kind here come from the collector's own semantics, which is the
-// other half of why unit coverage is better than the MIBs' 19%: the MIB
-// declares no UNITS on entSensorValue, and the collector knows the unit
-// exactly because it scaled the reading into it.
+// derivedCatalogEntries describes the metrics this collector produces rather than reads, such as unit-named entity sensor readings.
 func derivedCatalogEntries() []*CatalogEntry {
 	entries := make([]*CatalogEntry, 0, len(sensorUnitSuffixes)+2)
 
-	// The device's own identity. It is derived rather than read: the system
-	// group's objects are collapsed into one info series whose labels are
-	// sysDescr, sysContact and the rest, so no MIB object is published under
-	// this name and a sweep of the store cannot describe it.
-	//
-	// Undescribed, a consumer sees an unknown kind and draws a line through
-	// the constant 1 -- one flat, meaningless panel on every module tab of
-	// every device, because the family carries no module either. Measured on
-	// core-01: ten tabs, ten of them.
+	// The device identity family snmp_system_info is derived, so it is described here.
 	entries = append(entries, &CatalogEntry{
 		Metric: systemInfoMetricName,
 		Kind:   MetricKindString,
@@ -539,9 +399,7 @@ func sensorCatalogUnit(sensorType SensorType) string {
 	return sensorCatalogUnits[sensorType]
 }
 
-// sensorCatalogDescription says what an entity sensor metric holds, in the
-// terms an operator reading a panel would want. There is no MIB DESCRIPTION to
-// carry: the MIB describes entSensorValue, an integer that is not the reading.
+// sensorCatalogDescription says what an entity sensor metric holds.
 func sensorCatalogDescription(sensorType SensorType) string {
 	if unit := sensorCatalogUnits[sensorType]; unit != "" {
 		return "Physical sensor readings in " + unit +
@@ -552,12 +410,7 @@ func sensorCatalogDescription(sensorType SensorType) string {
 		" scaled by the sensor's own scale and precision."
 }
 
-// catalogSamples renders entries as the series a consumer reads.
-//
-// Every sample is a constant 1: an info metric says nothing with its value,
-// and everything it carries is in its labels. The timestamp is the caller's,
-// so one emission writes one timestamp across the whole catalog rather than
-// smearing it across however long the render took.
+// catalogSamples renders entries as constant-1 series stamped with the caller's timestamp.
 func catalogSamples(entries []*CatalogEntry, timestamp time.Time) []*Sample {
 	samples := make([]*Sample, 0, len(entries))
 
@@ -589,10 +442,6 @@ func catalogSamples(entries []*CatalogEntry, timestamp time.Time) []*Sample {
 }
 
 // enumSamples renders one metric's enumeration as one series per value.
-//
-// They are a separate family rather than labels on the catalog row because an
-// enumeration can carry dozens of values, and a row whose label set grows with
-// the MIB is a row that eventually cannot be written.
 func enumSamples(entry *CatalogEntry, timestamp time.Time) []*Sample {
 	if len(entry.EnumValues) == 0 {
 		return nil

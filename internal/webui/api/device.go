@@ -128,10 +128,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// An update that omits enabled keeps the stored value, unlike the rest of
-	// the record: a caller that does not know the field must not switch a
-	// disabled device back on. A missing device is left to UpdateDevice to
-	// report.
+	// An update that omits enabled keeps the stored value.
 	if device.Enabled == nil {
 		if stored, err := s.storage.GetDevice(r.Context(), id); err == nil {
 			device.Enabled = stored.Enabled
@@ -161,11 +158,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, newDeviceView(device, s.polling()))
 }
 
-// writeDeviceWriteError reports a failed device write.
-//
-// A rejected poll interval is the caller's input, not the server's fault, so it
-// answers 400 with the message that names the offending value. Anything else is
-// the storage layer failing and stays a 500.
+// writeDeviceWriteError answers 400 for a rejected poll interval, 500 otherwise.
 func writeDeviceWriteError(w http.ResponseWriter, err error) {
 	var invalidInterval *storage.InvalidPollIntervalError
 	if errors.As(err, &invalidInterval) {
@@ -175,40 +168,7 @@ func writeDeviceWriteError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
-// handleDeleteDevice deletes a device.
-//
-// THE INVARIANT: the poller is the thing that ACTS, and storage is the record
-// of what should be acted on, so A DEVICE IS NOT DELETED UNTIL NOTHING IS
-// POLLING IT. The detach from the poller therefore happens FIRST, and storage
-// is only changed once the poller has confirmed it is no longer polling the
-// device.
-//
-// The two orders fail differently, and that is the whole argument.
-//
-// Storage first -- what this did -- fails into a state the interface cannot
-// represent. The record is gone, the worker is not, and the device is
-// simultaneously deleted and polling: absent from the device list and the fleet
-// view, still generating SNMP traffic, with nothing left on the page to click
-// because the record an operator would act on no longer exists. The only
-// recovery is restarting the poller.
-//
-// Poller first fails into a state that is merely unchanged. The detach failed,
-// so nothing is deleted: the device is still listed, still polling, and still
-// deletable. The operator can see it and try again. Nothing is stranded,
-// because nothing was half-done.
-//
-// The comment this replaces called the old order graceful degradation, on the
-// grounds that "the poller re-reads it on its next configuration sync". There
-// is no such sync. ApplyConfiguration is called exactly once, from
-// cmd/go-netmon/main.go, at poller startup; no periodic reconciliation exists
-// anywhere. So a worker stranded this way ran until the poller process
-// restarted, which is precisely what was reported.
-//
-// The cost, taken deliberately: a delete now FAILS while the poller is
-// unreachable, instead of answering 204 and stranding a worker. Creates and
-// updates stay best-effort, because they fail into something visible and
-// self-correcting -- a device that exists and is under-polled -- whereas a
-// delete the poller misses strands a worker with no way back.
+// handleDeleteDevice detaches the device from the poller first and deletes the record only once the poller confirms; a delete fails while the poller is unreachable.
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -242,23 +202,7 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// detachFromPoller stops the poller polling a device, and reports whether it
-// can be relied on to have stopped.
-//
-// The call is bounded by PollerSyncBudget for the same reason every other push
-// to the poller is: a poller that has stopped answering must not hold a request
-// open until the server's write timeout closes the connection unanswered.
-// Exceeding the budget is itself a detach failure, and is reported as one --
-// the device may still be polled, and only a definite answer says otherwise.
-//
-// A poller with no client configured is not a failure. There is no poller, so
-// nothing is polling the device, and the precondition holds trivially.
-//
-// A poller that reports it does not have the device is not a failure either;
-// that is handled in the client, where a 404 to a remove is a poller stating
-// that it is not polling the device -- which is the condition this exists to
-// establish. Without that, a delete could never be retried to completion after
-// a partial failure.
+// detachFromPoller stops the poller polling a device within PollerSyncBudget; no poller, or a 404 from it, counts as detached.
 func (s *Server) detachFromPoller(ctx context.Context, name string) error {
 	if s.pollerClient == nil {
 		return nil
@@ -273,12 +217,7 @@ func (s *Server) detachFromPoller(ctx context.Context, name string) error {
 	return nil
 }
 
-// handleGetDeviceMIBs returns all MIBs associated with a device.
-//
-// Each MIB carries its assignment so a client can show what is polled without
-// asking per MIB. The direct list reports the device's own assignment, which is
-// what a write to that MIB's assignment edits; the combined list reports the
-// effective one, which is what the poller acts on.
+// handleGetDeviceMIBs returns a device's MIBs with their direct and effective assignments.
 func (s *Server) handleGetDeviceMIBs(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -361,11 +300,7 @@ type MIBAssignmentResult struct {
 	Warning string `json:"warning,omitempty"`
 }
 
-// describeAssignment reports what was just assigned.
-//
-// It runs after the write, so nothing here can fail the assignment: the MIB is
-// attached whether or not it can be described, and a description that cannot be
-// produced leaves the counts at zero rather than reporting a bogus warning.
+// describeAssignment reports what was just assigned; it cannot fail the assignment.
 func (s *Server) describeAssignment(ctx context.Context, deviceID, mibID int64) MIBAssignmentResult {
 	assignment := MIBAssignmentResult{}
 
@@ -424,10 +359,7 @@ func (s *Server) handleGetDeviceProfiles(w http.ResponseWriter, r *http.Request)
 	listByPathID(w, r, "id", "device", "profiles", s.storage.GetDeviceProfiles)
 }
 
-// editDeviceLink applies op to the association between a device and one related
-// record, both named by numeric path variables, and pushes the result to the
-// poller. deviceVar and otherVar name the mux variables, otherLabel names the
-// related record in a 400, and reason labels the poller sync.
+// editDeviceLink applies op to a device's link with one related record and pushes the result to the poller.
 func (s *Server) editDeviceLink(
 	w http.ResponseWriter, r *http.Request,
 	deviceVar, otherVar, otherLabel, reason string,
@@ -479,18 +411,7 @@ func listByPathID[T any](
 	respondJSON(w, http.StatusOK, map[string]interface{}{key: items})
 }
 
-// syncDeviceWithPoller pushes a device's current module set to the poller so
-// that a change takes effect without restarting it.
-//
-// The poller replaces a device's worker on update, and it is that replacement
-// which recomputes the OIDs the device polls — a worker chooses its OIDs once,
-// when it starts. A failure here is logged rather than reported: the change is
-// already durable, and the poller picks it up on its next configuration sync.
-//
-// Because the outcome is never reported, this push must never be what makes a
-// request time out. PollerSyncBudget caps it, retries included, well inside the
-// handler's own budget: the caller waits for a durable write, not for a
-// best-effort notification to a service that may be slow or gone.
+// syncDeviceWithPoller pushes a device's module set to the poller, best effort, within PollerSyncBudget.
 func (s *Server) syncDeviceWithPoller(ctx context.Context, deviceID int64, reason string) {
 	if s.pollerClient == nil {
 		return
@@ -516,14 +437,7 @@ func (s *Server) syncDeviceWithPoller(ctx context.Context, deviceID int64, reaso
 	}
 }
 
-// getDeviceModules returns what a device polls: the modules, and the filters
-// that narrow each one.
-//
-// A MIB whose assignment is disabled is left out, so telling the poller this
-// list is what stops or resumes polling of a module. The filters travel with it
-// because the poller applies them when it builds a worker -- it used to receive
-// only the names, so every filter an operator set was stored, displayed, costed
-// and then ignored by the thing doing the polling.
+// getDeviceModules returns the modules a device polls with their filters; disabled MIBs are left out.
 func (s *Server) getDeviceModules(ctx context.Context, deviceID int64) (moduleSelection, error) {
 	return s.resolveDeviceModules(ctx, deviceID)
 }

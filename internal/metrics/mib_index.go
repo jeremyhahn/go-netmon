@@ -7,17 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Freshness of the MIB-derived index is exported rather than inferred.
-//
-// The index is built from whatever the MIB store held when it was last swept,
-// and an object the sweep did not see cannot be named after its MIB definition
-// -- the sample keeps its raw-OID name and increments
-// gonetmon_metric_name_unresolved_samples_total. That counter says samples are
-// unnamed but not why; these say how much metadata the index actually holds and
-// when it last changed, which is the difference between "the MIBs do not
-// describe these OIDs" and "the index has not been rebuilt since the MIBs were
-// loaded". Diagnosing the latter previously meant diffing metric names on the
-// Prometheus side by hand.
+// Gauges for how much metadata the MIB index holds and when it last changed.
 var (
 	mibIndexObjects = prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -61,21 +51,7 @@ const (
 	rebuildOutcomeError   = "error"
 )
 
-// mibIndex is the complete MIB-derived view a poll is named and labeled
-// against: the metric name of every instantiable object, the index structure of
-// every table, and the status columns that supply friendly-name labels.
-//
-// It is immutable once published. A rebuild produces a whole new value that
-// replaces the old one in a single atomic pointer swap, so a poll in progress
-// keeps reading the view it started with and never observes a half-rebuilt one.
-// That is what lets modules be loaded into the MIB store while devices are
-// polling: the alternative -- taking the cache lock and mutating the maps in
-// place -- would stop every poll for as long as it takes to sweep the store,
-// which at production scale is tens of thousands of objects.
-//
-// Every OID key is normalized (leading dot) so that lookups never have to
-// normalize the stored side, and EntryOID is normalized to match, which keeps
-// the table map, the column map and the status column map mutually consistent.
+// mibIndex is the immutable MIB-derived naming view a poll uses, replaced whole by atomic pointer swap; OID keys carry a leading dot.
 type mibIndex struct {
 	// names resolves an instance OID to a metric name.
 	names *objectNameIndex
@@ -96,13 +72,7 @@ type mibIndex struct {
 	// extra pass over the store.
 	catalog *catalogIndex
 
-	// tableForOID memoizes tableFor. The fallback in tableForUncached is a
-	// prefix scan over every table, run once per SNMP result on every poll of
-	// every device, and OIDs that resolve to no table at all would pay it
-	// forever. The memo lives inside the index rather than beside it so that
-	// publishing a new index discards the answers derived from the old one:
-	// an invalidation that cannot be forgotten, and cannot race with a lookup
-	// that is still writing back a result computed from the previous view.
+	// tableForOID memoizes tableFor inside the index, so a new index discards old answers.
 	tableForOIDMu sync.RWMutex
 	tableForOID   map[string]*TableIndexInfo
 }
@@ -224,14 +194,7 @@ type mibSweep struct {
 	catalog       *catalogIndex
 }
 
-// newMIBIndex merges a MIB store sweep with the tables the OID learner
-// discovered into one immutable index.
-//
-// The sweep wins where both describe a table: a MIB definition carries index
-// column types the learner can only guess at. Learned tables are held apart
-// from the sweep rather than merged into it once, because a rebuild replaces
-// the sweep wholesale and would otherwise drop everything learned since the
-// process started.
+// newMIBIndex merges a MIB store sweep with learned tables; the sweep wins on conflict.
 func newMIBIndex(sweep *mibSweep, learned *tableSet) *mibIndex {
 	index := &mibIndex{
 		tables:        make(map[string]*TableIndexInfo),

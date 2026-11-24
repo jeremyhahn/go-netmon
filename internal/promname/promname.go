@@ -105,10 +105,7 @@ func IsInfoMetric(metric string) bool {
 // this derivation exact rather than a guess, and
 // TestIdentityLabelRoundTripsWithTheExporter pins it.
 func IdentityLabel(infoMetric string) string {
-	// Both ends have to be there. Trimming whichever one is present would turn
-	// snmp_ifInOctets -- a reading, not an info metric -- into "ifInOctets",
-	// and hand a renderer a label no series carries while looking like an
-	// answer.
+	// Both prefix and suffix must be present.
 	if !strings.HasPrefix(infoMetric, Prefix) || !strings.HasSuffix(infoMetric, "_info") {
 		return ""
 	}
@@ -138,14 +135,7 @@ func EntitySensorMetricName(sensorType int32) string {
 	return metrics.SensorType(sensorType).MetricName()
 }
 
-// The labels an entity sensor sample carries beyond DeviceLabel and OIDLabel.
-//
-// EntityIndexLabel and EntityNameLabel follow the index label convention --
-// the MIB object's own name, lowercased -- so they are what IndexLabel would
-// return for entPhysicalIndex and entPhysicalName. SensorTypeLabel does not
-// name a MIB object, because the object is entPhySensorType in
-// ENTITY-SENSOR-MIB and entSensorType in CISCO-ENTITY-SENSOR-MIB and a device
-// may answer either.
+// Labels an entity sensor sample carries beyond DeviceLabel and OIDLabel.
 const (
 	// EntityIndexLabel carries the entPhysicalIndex the reading was read at.
 	EntityIndexLabel = "entphysicalindex"

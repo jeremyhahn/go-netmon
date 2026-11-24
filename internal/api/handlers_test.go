@@ -208,15 +208,7 @@ func TestHandleRegisterDeviceRejectsABodyThatIsNotJSON(t *testing.T) {
 	}
 }
 
-// TestHandleRegisterDeviceRejectsADuplicate covers the poller refusing a device
-// it already runs: the failure belongs in the response, not only in the log.
-//
-// The refusal is unchanged -- the poller does not replace a live worker behind
-// the caller's back -- but it now answers 409 rather than 500. The device
-// existing is a conflict with the state of the resource, not the poller
-// breaking, and the difference is not cosmetic: the web UI's client declines to
-// retry a 4xx and retries a 5xx three times, so the 500 turned every re-
-// registration into three server errors instead of one honest refusal.
+// TestHandleRegisterDeviceRejectsADuplicate checks a duplicate registration answers 409.
 func TestHandleRegisterDeviceRejectsADuplicate(t *testing.T) {
 	t.Parallel()
 

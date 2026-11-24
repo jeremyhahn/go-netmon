@@ -6,9 +6,7 @@ import (
 	"time"
 )
 
-// The stream cadence used to be a literal inside Run, which meant the one
-// number standing between the poller and the dashboard was the only one nobody
-// could state or change. These tests hold it to being a real setting.
+// The stream cadence is a real setting.
 
 func TestNewHub_DefaultsToTheDocumentedInterval(t *testing.T) {
 	h := NewHub(nil, nil)

@@ -24,12 +24,7 @@ func enabledMIB(id int64, name string, objectCount int) client.AssignedMIB {
 	return assignedMIB(id, name, objectCount, client.MIBAssignment{Enabled: true})
 }
 
-// fakeAssignmentAPI serves the routes the assignment commands use, keeping the
-// stored assignments in memory so a read-modify-write round trip is exercised
-// end to end rather than asserted one request at a time.
-//
-// It answers for both devices and profiles, since the two subtrees share an
-// implementation and should be provably interchangeable.
+// fakeAssignmentAPI serves the device and profile assignment routes with in-memory state.
 type fakeAssignmentAPI struct {
 	t *testing.T
 
@@ -448,8 +443,7 @@ func TestMIBAssignmentCommandsRejectBadReferences(t *testing.T) {
 	}
 }
 
-// TestDeviceMIBFilterUnassignedMIB covers filtering a MIB the owner does not
-// carry: the read fails and nothing is written.
+// TestDeviceMIBFilterUnassignedMIB: filtering a MIB the owner does not carry fails and writes nothing.
 func TestDeviceMIBFilterUnassignedMIB(t *testing.T) {
 	api := newFakeAssignmentAPI(t)
 	env, _ := newFakeEnv(t, api.handler())

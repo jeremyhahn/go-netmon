@@ -166,11 +166,7 @@ func (s *Service) RepoRoot() string { return s.cfg.RepoRoot }
 // given.
 func (s *Service) DefaultBackupDir() string { return filepath.Join(s.cfg.RepoRoot, "backups") }
 
-// httpClient reports the client the logical export uses.
-//
-// The default carries a timeout: the export runs against a stack that is still
-// serving traffic, and a wedged web UI must not be able to hold a backup open
-// indefinitely.
+// httpClient returns the logical export's client, which has a timeout.
 func (s *Service) httpClient() *http.Client {
 	if s.cfg.HTTPClient != nil {
 		return s.cfg.HTTPClient
@@ -204,11 +200,7 @@ func (s *Service) announce(r *Root) {
 
 // --- shared preflight -----------------------------------------------------
 
-// assertProjectOwnership refuses to continue if the target compose project holds
-// a container the configured compose file did not create.
-//
-// Acting on such a project would mean stopping, and potentially overwriting the
-// data of, a deployment this repository does not own.
+// assertProjectOwnership refuses a project holding a container the compose file did not create.
 func (s *Service) assertProjectOwnership(ctx context.Context) error {
 	foreign, err := s.cfg.Docker.ForeignContainers(ctx)
 	if err != nil {
@@ -224,13 +216,7 @@ func (s *Service) assertProjectOwnership(ctx context.Context) error {
 	}
 }
 
-// assertVolumeOwned refuses to touch a volume that does not carry the pinned
-// project's compose label.
-//
-// This is the check that keeps the tooling away from an unlabelled look-alike:
-// a stray "go-netmon-data" is a different object from the project's
-// "go-netmon_go-netmon-data", and only the label makes that a checked fact
-// rather than a naming convention.
+// assertVolumeOwned refuses a volume without the pinned project's compose label.
 func (s *Service) assertVolumeOwned(ctx context.Context, volume string) error {
 	project, exists, err := s.cfg.Docker.VolumeProject(ctx, volume)
 	if err != nil {
@@ -245,10 +231,7 @@ func (s *Service) assertVolumeOwned(ctx context.Context, volume string) error {
 	return nil
 }
 
-// reportUnmanagedVolumes names volumes that resemble stack volumes but carry no
-// project label, so an operator knows they exist. Nothing acts on them; they are
-// unreachable by every operation in this package, which addresses volumes only
-// by derived name and only after the label check above.
+// reportUnmanagedVolumes names unlabeled look-alike volumes; nothing acts on them.
 func (s *Service) reportUnmanagedVolumes(ctx context.Context) {
 	names, err := s.cfg.Docker.VolumeNames(ctx)
 	if err != nil {

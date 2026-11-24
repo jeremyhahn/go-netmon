@@ -134,10 +134,7 @@ func NewRootCommand(version, commit, buildDate string) *cobra.Command {
 	return root
 }
 
-// mustMarkRequired marks flags as required on cmd. MarkFlagRequired only fails
-// when the named flag was never declared, which is a wiring mistake in this
-// package rather than anything a user can trigger, so it must not pass
-// silently: the command would otherwise accept input it cannot serve.
+// mustMarkRequired marks flags as required on cmd and panics on an undeclared flag.
 func mustMarkRequired(cmd *cobra.Command, names ...string) {
 	for _, name := range names {
 		if err := cmd.MarkFlagRequired(name); err != nil {

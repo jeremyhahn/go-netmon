@@ -24,10 +24,7 @@ const (
 	MIBActionMissing = "missing" // neither, and the configuration references it
 )
 
-// safetyExportPrefix names the export taken immediately before an import is
-// applied. It follows scripts/restore.sh, whose safety backup is named
-// "pre-restore-<timestamp>" for the same reason: the artifact has to say what it
-// is the state before, and when.
+// safetyExportPrefix names the export taken just before an import is applied.
 const safetyExportPrefix = "pre-import-"
 
 // ImportReport is what an import did, or would do.
@@ -93,13 +90,7 @@ type pollerNotifier interface {
 	syncImportedDevices(ctx context.Context, created, removed []string)
 }
 
-// configService is the configuration export and import use case.
-//
-// It sits between the HTTP handlers and the record store: the handlers deal in
-// status codes and content types, this deals in bundles, plans and the order
-// operations have to happen in, and the store deals in records. Nothing here
-// knows what an HTTP request is, which is what lets the CLI path and the web UI
-// path be the same path.
+// configService is the configuration export and import use case, independent of HTTP.
 type configService struct {
 	store     *storage.Storage
 	modules   moduleImporter
@@ -167,25 +158,7 @@ func (c *configService) plan(ctx context.Context, bundle *ConfigBundle) (*Import
 	return prepared.report(false), nil
 }
 
-// apply imports a bundle, replacing this instance's configuration with it.
-//
-// The order is deliberate and is the whole safety argument:
-//
-//  1. Validate everything — the document's own fields, the bundle's checksums,
-//     and every module the configuration references. Nothing is written yet, so
-//     a document that is going to be rejected has cost nothing.
-//  2. Export the current configuration to a file, so the change is reversible.
-//     If that fails the import stops, exactly as scripts/restore.sh refuses to
-//     overwrite data it could not back up first.
-//  3. Import the MIB source files. This is additive: it creates modules the
-//     instance lacks and refreshes ones it has, and deletes nothing. A failure
-//     here leaves extra modules imported and the configuration untouched, which
-//     changes nothing about what is polled.
-//  4. Replace the configuration in one store batch, all-or-nothing.
-//  5. Push the result to the poller so it matches storage without a restart.
-//
-// The destructive step is last and atomic; every step before it is either
-// read-only or additive and harmless if interrupted.
+// apply imports a bundle: validate everything, write a safety export, import MIB sources additively, replace the configuration in one batch, push to the poller.
 func (c *configService) apply(ctx context.Context, bundle *ConfigBundle) (*ImportReport, error) {
 	prepared, err := c.prepare(ctx, bundle)
 	if err != nil {
@@ -261,13 +234,7 @@ func (c *configService) prepare(ctx context.Context, bundle *ConfigBundle) (*pre
 	return &preparedImport{doc: bundle.Config, sources: sources, mibs: mibs, plan: plan}, nil
 }
 
-// planModules decides what happens to each module and lists the ones this
-// instance cannot supply.
-//
-// Only the modules the configuration actually assigns can be missing. A document
-// may list the whole catalog of the instance it came from as a prerequisite; the
-// ones nothing references are not needed to poll anything and are left alone
-// rather than demanded.
+// planModules decides each module's action and lists the referenced ones this instance cannot supply.
 func planModules(
 	doc *storage.Config, sources map[string]bundleSource, imported map[string]struct{},
 ) (changes []MIBChange, missing []string) {
@@ -339,12 +306,7 @@ func carriedModules(sources map[string]bundleSource) []string {
 	return modules
 }
 
-// importSources imports every MIB source the bundle carries, before any
-// configuration references it.
-//
-// Modules are imported with replace semantics, so one that is already here has
-// its parsed objects refreshed in place and keeps its ID, its tags and every
-// assignment pointing at it.
+// importSources imports every MIB source in the bundle with replace semantics, keeping IDs and assignments.
 func (c *configService) importSources(ctx context.Context, prepared *preparedImport) error {
 	done := make([]string, 0, len(prepared.sources))
 	for _, module := range carriedModules(prepared.sources) {
@@ -369,10 +331,7 @@ func (c *configService) importSources(ctx context.Context, prepared *preparedImp
 	return nil
 }
 
-// writeSafetyExport saves the configuration about to be replaced.
-//
-// It is a whole bundle rather than a note, so recovering from a wrong import is
-// one command against one file and needs nothing else to be present.
+// writeSafetyExport saves the configuration about to be replaced as a whole bundle.
 func (c *configService) writeSafetyExport(ctx context.Context) (string, error) {
 	result, err := c.export(ctx, storage.ConfigExportOptions{})
 	if err != nil {
@@ -434,12 +393,7 @@ func changedNames(changes []storage.ConfigChange, action string) []string {
 	return names
 }
 
-// configBackupDir is where safety exports are written.
-//
-// It defaults to a directory beside the record store, which on a deployed
-// instance is the web UI's own data volume: the safety copy then lives with the
-// data it protects, survives a container being recreated, and is picked up by
-// the physical backup without any extra configuration.
+// configBackupDir is where safety exports go, by default beside the record store.
 func (s *Server) configBackupDir() string {
 	if s.configBackups != "" {
 		return s.configBackups
@@ -447,15 +401,7 @@ func (s *Server) configBackupDir() string {
 	return filepath.Join(filepath.Dir(s.dbPath), "config-backups")
 }
 
-// syncImportedDevices brings the poller back in line with the configuration an
-// import has just written.
-//
-// It re-reads the stored devices rather than trusting the plan, because a device
-// the plan did not mention can still have a different module set after an
-// import: its profile's assignments may have changed underneath it. Pushing
-// every device is what makes the poller consistent with storage, and it is the
-// same push a single edit through the API performs, so there is one way a
-// device reaches the poller and not two.
+// syncImportedDevices pushes every stored device to the poller after an import.
 func (s *Server) syncImportedDevices(ctx context.Context, created, removed []string) {
 	if s.pollerClient == nil {
 		return
@@ -497,12 +443,7 @@ func (s *Server) syncImportedDevices(ctx context.Context, created, removed []str
 	}
 }
 
-// callPoller runs one best-effort push inside the poller sync budget.
-//
-// The outcome is logged rather than returned: the configuration is already
-// durable, and the poller picks up anything missed on its next configuration
-// sync. Bounding each call is what stops a poller that is not answering from
-// turning an import of forty devices into a request that never returns.
+// callPoller runs one bounded, best-effort push and logs the outcome.
 func (s *Server) callPoller(ctx context.Context, device string, call func(context.Context) error) {
 	callCtx, cancel := context.WithTimeout(ctx, PollerSyncBudget)
 	defer cancel()

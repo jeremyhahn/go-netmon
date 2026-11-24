@@ -2,23 +2,11 @@ package api
 
 import "time"
 
-// The web UI's time budget, from the outside in.
-//
-// Every value below is part of one chain, and the chain only works if each link
-// fits inside the one outside it:
+// The web UI's time budget: each value fits inside the one outside it, as TestTimeoutBudgetOrdering asserts.
 //
 //	SNMPProbeTimeout × SNMPProbeAttempts ≤ SNMPProbeBudget ≤ HandlerBudget < ServerWriteTimeout
 //	PollerRequestTimeout                  < PollerSyncBudget ≤ HandlerBudget < ServerWriteTimeout
 //	PollerRequestTimeout                  < FleetStatusBudget ≤ HandlerBudget < ServerWriteTimeout
-//
-// When it does not, the failure is not a slow response — it is no response at
-// all. net/http closes a connection whose write deadline expires before the
-// handler wrote anything, and the caller sees a bare EOF with nothing to act
-// on. That is what an unreachable device used to produce here: a probe of
-// 10s × 3 attempts = 30s inside a 15s write timeout.
-//
-// TestTimeoutBudgetOrdering asserts the ordering above, so an edit that
-// inverts a pair fails the build rather than the field.
 const (
 	// SNMPProbeTimeout is the deadline for a single SNMP request attempt. A
 	// device that has not answered in this long on a LAN is not going to.

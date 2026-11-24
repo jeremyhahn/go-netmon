@@ -8,15 +8,7 @@ import (
 	"testing"
 )
 
-// Every list this package returns is read by a human or fed to a UI that builds
-// tabs from it. Two of them — a device's MIBs, directly and through its
-// profiles — were assembled through a map, so they came back in a different
-// order on every call: four consecutive requests gave four different orders,
-// and the dashboard's MIB tabs and the tab that opened by default moved with
-// them. The rest were stable but ordered by record ID, which is import order.
-//
-// These tests state one rule for all of them: by name, and the same on every
-// call.
+// Every list this package returns is sorted by name and stable across calls.
 
 // orderFixture fills a store with records whose names are deliberately not in
 // the order they are created, so a test cannot pass by accident on a store that
@@ -85,12 +77,7 @@ func newOrderFixture(t *testing.T) *orderFixture {
 	return &orderFixture{store: store, deviceID: device.ID, profileID: profile.ID}
 }
 
-// assertStableAndSorted calls list twelve times and requires every call to
-// return the same names, in ascending order.
-//
-// Repeating the call is what makes the test meaningful: Go randomizes map
-// iteration per range statement, so a single call is as likely as not to come
-// back sorted by chance.
+// assertStableAndSorted calls list twelve times and requires the same ascending names each time.
 func assertStableAndSorted(t *testing.T, what string, list func() []string) {
 	t.Helper()
 

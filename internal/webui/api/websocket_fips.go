@@ -6,18 +6,7 @@ import (
 	"net/http"
 )
 
-// The FIPS build's /ws route.
-//
-// The endpoint is still REGISTERED, and answers. A capability that silently
-// disappears is worse than one that is declared: an unregistered route returns
-// 404, which reads to the browser and to whoever is debugging it as a wrong
-// URL or a routing bug, and sends them looking for a mistake that is not
-// there. 501 with the reason spelled out is the honest answer -- the server
-// understood the request and does not implement it in this build.
-//
-// See websocket.go for why: RFC 6455's Sec-WebSocket-Accept is a SHA-1 digest,
-// which GODEBUG=fips140=only refuses, and the protocol names the algorithm so
-// no approved substitute exists.
+// The FIPS build's /ws route answers 501: RFC 6455's Sec-WebSocket-Accept needs SHA-1, which fips140=only refuses.
 func (s *Server) registerWebSocketRoute() {
 	s.router.HandleFunc("/ws", s.handleWebSocketUnavailable)
 }

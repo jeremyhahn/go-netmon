@@ -103,16 +103,10 @@ func newMIBListCommand(env *Env) *cobra.Command {
 	return cmd
 }
 
-// defaultMIBLimit caps the module catalog. A server accumulates modules with
-// every vendor bundle imported — this one is already at 170 — so the listing
-// has to be bounded by default, unlike the device and profile listings whose
-// size an operator controls directly.
+// defaultMIBLimit caps the module catalog listing by default.
 const defaultMIBLimit = 50
 
-// newMIBListFilter builds the search-and-cap filter for the module catalog.
-// Tags are searched alongside name and description because tagging is how
-// modules are grouped by vendor, and "find me the Cisco modules" is the search
-// an operator actually runs.
+// newMIBListFilter builds the module catalog filter, searching name, description and tags.
 func newMIBListFilter() *listFilter[client.MIB] {
 	return &listFilter[client.MIB]{
 		noun:         "MIBs",
@@ -158,13 +152,7 @@ func renderMIBTable(out io.Writer, page listPage[client.MIB]) error {
 	return nil
 }
 
-// newAssignedMIBFilter builds the search-and-cap filter for the MIBs attached
-// to a device or a profile.
-//
-// It is uncapped by default. These lists are the assignments an operator made,
-// and the question they answer — "what is this device polling?" — needs the
-// whole answer. --limit is there for the deployment whose profiles carry
-// hundreds of modules.
+// newAssignedMIBFilter builds the uncapped-by-default filter for a device's or profile's MIBs.
 func newAssignedMIBFilter() *listFilter[client.AssignedMIB] {
 	return &listFilter[client.AssignedMIB]{
 		noun:   "MIBs",
@@ -176,9 +164,7 @@ func newAssignedMIBFilter() *listFilter[client.AssignedMIB] {
 	}
 }
 
-// objectFilter narrows a module's object list for display. A large MIB has
-// thousands of objects — CISCO-ENTITY-VENDORTYPE-OID-MIB has 10,539 — so the
-// default view is a searched, bounded slice.
+// objectFilter narrows a module's object list for display.
 type objectFilter struct {
 	listFilter[client.MIBObject]
 
@@ -206,11 +192,7 @@ func objectMatches(o client.MIBObject, needle string) bool {
 	return search.Object(needle, o.Name, o.OID, o.Description)
 }
 
-// apply drops what --pollable-only excludes, then searches and pages what is
-// left. The order matters for the counts: with --pollable-only in force,
-// "showing 50 of 91" has to mean 91 pollable objects, which is the list the
-// reader asked for, not the module's full object count. It is the same order
-// the server applies them in.
+// apply drops what --pollable-only excludes, then searches and pages, in the server's order.
 func (f *objectFilter) apply(objects []client.MIBObject) listPage[client.MIBObject] {
 	if f.pollableOnly {
 		pollable := make([]client.MIBObject, 0, len(objects))
@@ -224,9 +206,7 @@ func (f *objectFilter) apply(objects []client.MIBObject) listPage[client.MIBObje
 	return f.listFilter.apply(objects)
 }
 
-// query is the narrowing to ask the server for. Sending it is the whole point:
-// "mib objects CISCO-ENTITY-VENDORTYPE-OID-MIB --search cevChassis --limit 3"
-// used to transfer 1.6 MiB to print three rows.
+// query is the narrowing to ask the server for.
 func (f *objectFilter) query() client.ObjectQuery {
 	return client.ObjectQuery{
 		ListQuery:    f.listQuery(),
@@ -303,10 +283,7 @@ func newMIBObjectsCommand(env *Env) *cobra.Command {
 	return cmd
 }
 
-// mibShowReport is the --json form of "mib show": the module exactly as the
-// server described it, its objects narrowed to what the filter selected, and a
-// listing block saying what was held back. The counts are additive, so a
-// consumer that only reads the module's own fields is unaffected.
+// mibShowReport is the --json form of mib show: the module, its filtered objects and a listing block.
 type mibShowReport struct {
 	client.MIBDetail
 

@@ -303,14 +303,7 @@ func (c *Config) Validate() error {
 	return validateAlarms(c.Alarms)
 }
 
-// validateAlarms rejects a rule that could not do anything useful.
-//
-// The check is deliberately shallow: it does not parse the PromQL, because
-// this process is not the one that evaluates it and a rule that Prometheus
-// rejects is reported by the evaluator against the real engine rather than
-// guessed at here. What it does catch is the shape -- a rule with no name
-// cannot be shown, one with no expression can never fire, and a severity
-// nobody recognizes sorts a critical alarm to the bottom of the bell.
+// validateAlarms rejects a rule without a name or expression or with an unknown severity; PromQL is not parsed here.
 func validateAlarms(rules []AlarmRule) error {
 	seen := make(map[string]bool, len(rules))
 

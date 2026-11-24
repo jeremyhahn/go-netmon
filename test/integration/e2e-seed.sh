@@ -1,22 +1,5 @@
 #!/usr/bin/env bash
-# Restore the e2e stack's web UI configuration from one document.
-#
-# Run by the e2e-seed service of docker-compose.test.yml, after the web UI is
-# healthy. The poller already polls snmpsim-01 and snmpsim-02 from its own
-# config; the web UI's database is what the device list and the dashboards the
-# specs render are drawn from, and a dashboard draws only from the MIBs a
-# device is assigned there.
-#
-# The seed's one write is the operator's restore path,
-# POST /api/config/import?apply=true (docs/operations/config-export-import.md),
-# against this disposable stack only. The document,
-# test/integration/snmp-data/e2e-config.json, carries the two devices, the
-# standard MIB sources the snmprec data answers, and their assignments. Nothing
-# here calls a device or MIB endpoint: assigning MIBs by hand through those is
-# what degraded production for fifteen hours.
-#
-# Idempotent: importing the same document again refreshes what it already
-# restored and changes nothing else.
+# Seed the e2e web UI by importing test/integration/snmp-data/e2e-config.json via POST /api/config/import?apply=true; idempotent.
 
 set -euo pipefail
 

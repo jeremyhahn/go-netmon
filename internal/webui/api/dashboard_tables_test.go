@@ -11,14 +11,7 @@ import (
 	webuiStorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// The table is the answer to a usability report: hundreds of interfaces drawn
-// as hundreds of series behind scroll arrows, which is unreadable and slow for
-// the same reason. Rows are listed with their current values and the reader
-// picks which to chart, so history is fetched for a handful rather than for all
-// of them.
-//
-// These tests are about which columns a table offers, because that is where the
-// design is decided. Everything else follows from the catalog.
+// Tests for which columns a dashboard table offers.
 
 // tableFixture builds a device with one MIB and a catalog, and returns the
 // dashboard the browser draws that module's tab from.
@@ -77,26 +70,7 @@ func columnFor(t *testing.T, dash Dashboard, metric string) TableColumn {
 	return TableColumn{}
 }
 
-// TestAUniformStateColumnMovesToTheSummaryRatherThanVanishing is the decision
-// the whole column rule turns on.
-//
-// ifOperStatus reading "up" on every interface is uniform AND is the most
-// valuable thing on the page: "everything is fine" is the answer the operator
-// came for. Two wrong answers were considered and both are recorded here:
-//
-//   - HIDE it, because it differentiates no rows. Then the status column is
-//     absent exactly when the network is healthy and appears only once
-//     something breaks -- a dashboard that goes dark when it is working. Worse,
-//     its absence would carry meaning with three possible causes: uniform,
-//     deselected, or not reported at all. That is a past incident's shape, in a UI.
-//   - EXEMPT enums from the rule and keep them as full columns. Then 72 rows
-//     spend their width repeating one word, which is the crowding this
-//     replaces.
-//
-// So a uniform column of ANY kind moves to the summary line, carrying the value
-// every row reads. The answer stays on screen and costs one line. When a row
-// disagrees the column migrates back into the table -- a visible transition,
-// not a silent appearance.
+// TestAUniformStateColumnMovesToTheSummaryRatherThanVanishing: a uniform column of any kind moves to the summary line.
 func TestAUniformStateColumnMovesToTheSummaryRatherThanVanishing(t *testing.T) {
 	catalog := []map[string]interface{}{
 		{catMetric: "snmp_ifOperStatus", catModule: "IF-MIB", catObject: "ifOperStatus",
@@ -179,12 +153,7 @@ func TestAVaryingNumericColumnIsShown(t *testing.T) {
 	}
 }
 
-// TestASingleRowTableShowsItsColumns guards the degenerate case the uniformity
-// rule gets wrong on its own.
-//
-// One row cannot disagree with itself, so every column is trivially uniform and
-// a table of one interface would come back with nothing but its identity. A
-// table too small to compare shows what it has.
+// TestASingleRowTableShowsItsColumns: a one-row table shows all its columns.
 func TestASingleRowTableShowsItsColumns(t *testing.T) {
 	catalog := []map[string]interface{}{
 		{catMetric: "snmp_ifMtu", catModule: "IF-MIB", catObject: "ifMtu",
@@ -262,16 +231,7 @@ func TestVaryingNumericColumnsAreBounded(t *testing.T) {
 	}
 }
 
-// TestAColumnWithTooFewRowsIsJudgedOnItsOwn is the case a table-wide row count
-// gets wrong.
-//
-// Uniformity is a statement about a column's rows. Asking "does the TABLE have
-// enough rows to compare?" and then applying that answer to every column marks
-// a column uniform on the strength of its neighbours' data -- so a metric the
-// device carries but has answered for once, or answered for on one row only,
-// is left out of the table as though its rows had agreed. "Nothing to compare"
-// and "everything agrees" are different answers and only the second is a reason
-// to drop a column.
+// TestAColumnWithTooFewRowsIsJudgedOnItsOwn: uniformity is judged per column, not by table row count.
 func TestAColumnWithTooFewRowsIsJudgedOnItsOwn(t *testing.T) {
 	catalog := []map[string]interface{}{
 		{catMetric: "snmp_ifSpeed", catModule: "IF-MIB", catObject: "ifSpeed",
@@ -302,21 +262,7 @@ func TestAColumnWithTooFewRowsIsJudgedOnItsOwn(t *testing.T) {
 	}
 }
 
-// TestATextColumnIsJudgedByItsWordsNotItsSample is the column whose loss would
-// have been most obvious and which a sample-based rule drops first.
-//
-// An info metric's sample is 1 on every row and its reading is in a label:
-//
-//	snmp_ifalias_info{ifindex="1",value="uplink"} 1
-//	snmp_ifalias_info{ifindex="2",value="server"} 1
-//
-// Comparing samples finds one distinct value across a hundred differently named
-// interfaces, marks the column uniform, and summarizes it as "1". So the column
-// carrying each row's NAME is the first one dropped from a table whose whole
-// purpose is naming rows, and the summary line says something meaningless.
-//
-// A fixture that can only set samples cannot express this, which is why the
-// stub grew a way to say what an info row reads.
+// TestATextColumnIsJudgedByItsWordsNotItsSample: info columns are compared by their value label.
 func TestATextColumnIsJudgedByItsWordsNotItsSample(t *testing.T) {
 	catalog := []map[string]interface{}{
 		{catMetric: "snmp_ifalias_info", catModule: "IF-MIB", catObject: "ifAlias",
@@ -373,24 +319,7 @@ func TestATextColumnThatReallyIsUniformIsSummarized(t *testing.T) {
 	}
 }
 
-// TestAFailedColumnReadShowsMoreColumnsNotFewer pins the fail-open branch,
-// which is the safety property of the whole column rule.
-//
-// Deciding which columns to hide requires knowing what every column currently
-// reads. When that read fails, the zero value of the answer is "no distinct
-// values anywhere", which reads as "every column is uniform" and would
-// summarize the entire table away -- so a Prometheus outage would empty the
-// dashboard, and it would look like the device had stopped reporting rather
-// than like a failed query.
-//
-// A failed read must therefore err toward showing MORE. Same rule as an absent
-// counter not reading as zero: an answer that was never obtained is not an
-// answer.
-//
-// The fixture supplies values that WOULD make the column uniform, so the test
-// distinguishes "the read failed" from "there was nothing to read". Without the
-// failure this column is summarized away; the sibling test above is what pins
-// that, and the two together are what make this one non-vacuous.
+// TestAFailedColumnReadShowsMoreColumnsNotFewer: a failed read keeps every column.
 func TestAFailedColumnReadShowsMoreColumnsNotFewer(t *testing.T) {
 	catalog := []map[string]interface{}{
 		{catMetric: "snmp_ifMtu", catModule: "IF-MIB", catObject: "ifMtu",
@@ -417,22 +346,7 @@ func TestAFailedColumnReadShowsMoreColumnsNotFewer(t *testing.T) {
 	}
 }
 
-// TestAColumnWithAnUnreadableRowIsNotSummarizedAsUniform is the PARTIAL answer,
-// which is a different failure from the total one above.
-//
-// TestAFailedColumnReadShowsMoreColumnsNotFewer pins the query FAILING. This
-// pins the query SUCCEEDING and coming back quietly incomplete: Prometheus
-// returns three rows, the decoder drops the one carrying NaN, and what reaches
-// the rule is two rows with one distinct value. The column is then marked
-// uniform, summarized as "1500", and the row whose data is unavailable is gone
-// from the table -- with the summary line stating as fact that every row agrees.
-//
-// A fixture that can only fail the whole read cannot express this, so re-pinning
-// total failure with a different shape would have looked like coverage and left
-// the gap exactly where it was.
-//
-// NaN is not exotic: it is how Prometheus encodes an undefined result, and a
-// division or a counter reset produces one on real devices routinely.
+// TestAColumnWithAnUnreadableRowIsNotSummarizedAsUniform: a NaN row keeps the column in the table.
 func TestAColumnWithAnUnreadableRowIsNotSummarizedAsUniform(t *testing.T) {
 	catalog := []map[string]interface{}{
 		{catMetric: "snmp_ifMtu", catModule: "IF-MIB", catObject: "ifMtu",
@@ -465,26 +379,7 @@ func TestAColumnWithAnUnreadableRowIsNotSummarizedAsUniform(t *testing.T) {
 	}
 }
 
-// TestTheEndpointTheBrowserRendersFromCarriesTables is the test whose absence
-// let this feature ship inert.
-//
-// Every other table test here asks /api/mibs/{id}/dashboard, because that is
-// where the tables were built. **The browser never calls it.** app.js fetches
-// /api/devices/{id}/dashboard once and splits the panels per module itself, so
-// tables were being built on an endpoint nothing draws from.
-//
-// Measured on dist-01 before the fix:
-//
-//	/api/devices/5/dashboard  ->  220 panels, no "tables" key
-//	/api/mibs/56/dashboard    ->   11 panels, 2 tables
-//
-// The server emitted an arrangement, the browser received a payload without
-// it, and nothing errored. The Playwright specs passed 9 of 9 against a mock
-// that supplied tables on the device endpoint -- a shape the server did not
-// produce. A mock is a claim about the server, and nothing compared them.
-//
-// So this test asks the endpoint the product asks, which is the only version
-// that can fail the way production failed.
+// TestTheEndpointTheBrowserRendersFromCarriesTables checks /api/devices/{id}/dashboard, which app.js uses, carries tables.
 func TestTheEndpointTheBrowserRendersFromCarriesTables(t *testing.T) {
 	catalog := []map[string]interface{}{
 		{catMetric: "snmp_ifMtu", catModule: "IF-MIB", catObject: "ifMtu",

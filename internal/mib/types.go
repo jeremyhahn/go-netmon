@@ -154,11 +154,7 @@ func (o *OIDMetadata) String() string {
 
 // IsPollable returns true if this OID should be polled
 func (o *OIDMetadata) IsPollable() bool {
-	// There has to be something to ask the device for. A module whose IMPORTS
-	// did not resolve parses into objects with the right access and status and
-	// no OID at all; without this they counted as pollable everywhere the
-	// question is asked -- the series estimate, the object plan, the poller's
-	// own selection -- while the poller could never ask for any of them.
+	// An object with no OID is not pollable.
 	if o.OID == "" {
 		return false
 	}

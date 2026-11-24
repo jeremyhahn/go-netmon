@@ -136,16 +136,7 @@ func (e *RemoteWriteError) Error() string {
 	return fmt.Sprintf("metrics: remote write to %s failed with status %d: %s", e.URL, e.StatusCode, e.Body)
 }
 
-// The errors below all report one thing: an entity sensor reading that cannot
-// be turned into the quantity it represents. Each carries the reason label it
-// is counted under, so a dropped reading is visible in
-// gonetmon_entity_sensor_dropped_total broken down by cause rather than as an
-// unexplained gap in a graph.
-//
-// They are separate types rather than one type with a code because callers
-// distinguish them: a bad scale is a broken agent, a missing metadata column
-// is a MIB module that was never assigned to the device, and a non-ok status
-// is a sensor correctly reporting that it has nothing to say.
+// Entity sensor conversion errors, one type per cause, each carrying its gonetmon_entity_sensor_dropped_total reason.
 
 // sensorDropError is implemented by every error that ends a sensor reading, so
 // the conversion path can label its counter without a type switch that has to
@@ -256,16 +247,7 @@ func (e *SensorStatusError) Error() string {
 
 // DropReason implements sensorDropError.
 func (e *SensorStatusError) DropReason() string {
-	// Only the statuses both MIBs declare get their own reason; everything
-	// else collapses to one label.
-	//
-	// This value is a Prometheus label on a counter and would otherwise come
-	// straight from an Integer32 the device chose, so an agent answering a
-	// fresh status per poll could mint unbounded label values -- from
-	// untrusted input, on the very metric that exists to report untrusted
-	// input. It also read "status_status_9", because Status.String() already
-	// prefixes an undeclared value. The exact number stays in Error(), which
-	// is where someone diagnosing one sensor looks.
+	// Only statuses both MIBs declare get their own reason; others share one label to bound cardinality.
 	switch e.Status {
 	case SensorStatusUnavailable, SensorStatusNonoperational:
 		return "status_" + e.Status.String()

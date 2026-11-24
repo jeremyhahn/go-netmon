@@ -49,8 +49,7 @@ func TestBulkNamesTheFailingReference(t *testing.T) {
 		t.Errorf("Ref = %q, want the module that failed", change.Ref)
 	}
 
-	// The cause must survive wrapping, or callers cannot tell a conflict from
-	// an outage.
+	// The cause must survive wrapping.
 	var apiErr *client.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusConflict {
 		t.Errorf("wrapped cause = %v, want a 409 *client.APIError", err)

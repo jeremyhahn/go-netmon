@@ -14,9 +14,7 @@ import (
 	webuiStorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// twoModuleServer builds a server whose MIB store holds an interface table in
-// TEST-MIB and an identically shaped one in OTHER-MIB. Handlers that answer for
-// one MIB must ignore the other, whatever the size of the store.
+// twoModuleServer stores identically shaped tables in TEST-MIB and OTHER-MIB.
 func twoModuleServer(t *testing.T) *Server {
 	t.Helper()
 

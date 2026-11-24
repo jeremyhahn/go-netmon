@@ -22,14 +22,7 @@ func aStoredDevice(name string) *storage.Device {
 	}
 }
 
-// TestRegisteringADeviceThePollerAlreadyHasIsASuccess is the regression test
-// for the defect: registering the same device twice must succeed the second
-// time.
-//
-// The web UI re-registers every stored device when it starts. On monitor-01 the
-// poller had been up longer than the web UI, so it answered "already exists"
-// for all of them -- correctly -- and the web UI recorded every one as a failed
-// registration while the devices were polling normally.
+// TestRegisteringADeviceThePollerAlreadyHasIsASuccess checks a second registration of the same device succeeds.
 func TestRegisteringADeviceThePollerAlreadyHasIsASuccess(t *testing.T) {
 	var registered atomic.Bool
 
@@ -56,13 +49,7 @@ func TestRegisteringADeviceThePollerAlreadyHasIsASuccess(t *testing.T) {
 	}
 }
 
-// TestAnAlreadyRegisteredDeviceIsNotRetried is the other half of what the 500
-// cost.
-//
-// The client retries a 5xx three times and declines to retry a 4xx, so every
-// device the web UI re-registered cost three requests and three server errors
-// rather than one honest refusal. This pins the request count, because the
-// status code is the only thing that decides it.
+// TestAnAlreadyRegisteredDeviceIsNotRetried checks a 409 is not retried.
 func TestAnAlreadyRegisteredDeviceIsNotRetried(t *testing.T) {
 	var attempts atomic.Int32
 
@@ -82,13 +69,7 @@ func TestAnAlreadyRegisteredDeviceIsNotRetried(t *testing.T) {
 	}
 }
 
-// TestRegistrationFailuresAreStillFailures guards the inversion this fix could
-// have introduced.
-//
-// Accepting "the poller already has it" must not turn a registration that did
-// not happen into a silent success. A poller that answered 500, refused the
-// request as invalid, or did not answer at all has NOT registered the device,
-// and only 409 says otherwise.
+// TestRegistrationFailuresAreStillFailures checks only 409 counts as already registered.
 func TestRegistrationFailuresAreStillFailures(t *testing.T) {
 	tests := []struct {
 		name   string

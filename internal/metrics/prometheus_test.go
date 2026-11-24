@@ -24,14 +24,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
-// syncBuffer is a bytes.Buffer that may be written and read concurrently.
-//
-// bytes.Buffer is not safe for concurrent use, and the standard logger here is
-// written by whatever goroutine happens to log. A test asserting on log output
-// reads the buffer from the test goroutine while the component under test logs
-// from its own -- PrometheusExporter's backgroundFlusher calls log.Printf from
-// recordFailure on every failed flush, and it is still running when the test
-// makes its assertions.
+// syncBuffer is a bytes.Buffer safe for the background flusher's concurrent logging.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -49,16 +42,7 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// captureLogs temporarily redirects the standard logger to a buffer so
-// tests can assert on what an operator would actually see, and restores it
-// on return.
-//
-// The buffer is synchronized. Tests in this package do run sequentially, and
-// that was the stated reason a plain bytes.Buffer was thought safe here, but
-// sequential tests do not imply sequential goroutines: the exporter a test
-// constructs starts a background flusher that keeps logging while that same
-// test reads the buffer. Nothing about another test starting or not starting
-// affects it.
+// captureLogs redirects the standard logger to a synchronized buffer until the returned function restores it.
 func captureLogs(t *testing.T) *syncBuffer {
 	t.Helper()
 	buf := &syncBuffer{}
@@ -417,12 +401,7 @@ func TestPrometheusExporter_ErrorHandling(t *testing.T) {
 	}
 }
 
-// TestPrometheusExporter_RecoversAfterEndpointOutage proves the stall
-// scenario described in the incident this test file was written for: a
-// remote-write endpoint that fails for a while and then recovers must not
-// leave the exporter permanently unable to flush. It also asserts on the
-// operator-visible signals (loud logging, health metrics) that must fire
-// during the outage.
+// TestPrometheusExporter_RecoversAfterEndpointOutage checks the exporter recovers after a failing endpoint and reports the failure meanwhile.
 func TestPrometheusExporter_RecoversAfterEndpointOutage(t *testing.T) {
 	buf := captureLogs(t)
 
@@ -449,8 +428,7 @@ func TestPrometheusExporter_RecoversAfterEndpointOutage(t *testing.T) {
 	ctx := context.Background()
 	own := privateCounters(exporter)
 
-	// Reaching batch size triggers an immediate flush attempt, which fails
-	// against the outage server.
+	// Reaching batch size triggers a flush, which fails.
 	samples := []*Sample{
 		{Name: "test_metric", Labels: map[string]string{"device": "r1"}, Value: 1, Timestamp: time.Now()},
 		{Name: "test_metric", Labels: map[string]string{"device": "r1"}, Value: 2, Timestamp: time.Now()},
@@ -463,12 +441,7 @@ func TestPrometheusExporter_RecoversAfterEndpointOutage(t *testing.T) {
 		t.Fatalf("Export: %v", err)
 	}
 
-	// Let the background flusher retry a few times against the still-failing
-	// endpoint.
-	// Waited for by the LOG, not only by the counter. recordFailure increments
-	// the counter before it writes the line, and the failure now happens on the
-	// sender goroutine, so a wait on the counter alone can arrive between the
-	// two and read an empty buffer.
+	// Let the flusher retry; wait on the log line, which is written after the counter.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if testutil.ToFloat64(own.exports.WithLabelValues("error")) >= 2 &&
@@ -526,9 +499,7 @@ func TestPrometheusExporter_RecoversAfterEndpointOutage(t *testing.T) {
 	}
 }
 
-// TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly proves that a
-// sustained remote-write outage cannot grow the buffer forever, and that
-// every drop is loud (logged and counted), never silent.
+// TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly checks the retry backlog is capped and drops are logged and counted.
 func TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly(t *testing.T) {
 	buf := captureLogs(t)
 
@@ -551,9 +522,7 @@ func TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly(t *testing.T) {
 
 	cap := maxBufferSize(batchSize)
 
-	// The cap bounds the RETRY backlog, so each round has to actually attempt a
-	// flush and fail: Export buffers, the batch-size trigger flushes, the flush
-	// fails, and the batch goes back. Repeat until the backlog exceeds the cap.
+	// The cap bounds the retry backlog, so each round must flush and fail.
 	round := make([]*Sample, batchSize)
 	for i := range round {
 		round[i] = &Sample{
@@ -565,9 +534,7 @@ func TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly(t *testing.T) {
 		_ = exporter.Export(ctx, round) // expected to fail; the backlog is what's under test
 	}
 
-	// The bound is on the QUEUE. One batch may have left it and be on the wire,
-	// and BufferedSamples counts that too -- it is undelivered, and reporting
-	// zero for it is how a stall reads as quiet.
+	// BufferedSamples also counts the batch in flight.
 	if ceiling := cap + batchSize; exporter.BufferedSamples() > ceiling {
 		t.Errorf("Expected undelivered samples to be capped at %d (queue %d plus one "+
 			"batch in flight), got %d", ceiling, cap, exporter.BufferedSamples())
@@ -584,12 +551,7 @@ func TestPrometheusExporter_BufferCapDropsOldestSamplesLoudly(t *testing.T) {
 	}
 }
 
-// TestPrometheusExporter_StallWatchdogDetectsSilentStall reproduces the
-// exact incident this package was fixed for: samples keep being submitted
-// for export, but no successful flush occurs (regardless of why). Even
-// with an empty buffer -- the state flushLocked's early return would
-// otherwise handle completely silently -- the exporter must report this
-// loudly.
+// TestPrometheusExporter_StallWatchdogDetectsSilentStall checks submissions without a successful flush are reported, even with an empty buffer.
 func TestPrometheusExporter_StallWatchdogDetectsSilentStall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -906,18 +868,7 @@ func TestMaxBufferSize(t *testing.T) {
 	}
 }
 
-// TestOverlappingPollsOfOneDeviceEncodeInTimestampOrder is the trigger of the
-// out-of-order remote-write incident, at the layer that decides whether the request is valid.
-//
-// Two polls of one device overlap whenever the device is reconfigured. Their
-// samples reach the buffer in whole-poll batches at completion, while each
-// sample was stamped as its varbind arrived -- so the poll that started first
-// and finished second appends OLDER samples after the other's. Encoding them in
-// buffer order produces a series whose samples descend, and Prometheus rejects
-// the entire request with 400 "out of order sample".
-//
-// The fixture is that exact shape: the later-appended samples are the earlier
-// ones, which is what a poll finishing late looks like from the buffer.
+// TestOverlappingPollsOfOneDeviceEncodeInTimestampOrder checks samples appended out of order are encoded ascending.
 func TestOverlappingPollsOfOneDeviceEncodeInTimestampOrder(t *testing.T) {
 	base := time.Date(2026, 9, 1, 20, 51, 55, 0, time.UTC)
 	series := map[string]string{"device": "pdu-03", "ifindex": "1"}
@@ -952,16 +903,7 @@ func TestOverlappingPollsOfOneDeviceEncodeInTimestampOrder(t *testing.T) {
 	}
 }
 
-// TestOnlyIdenticalReadingsForOneInstantAreCollapsed pins which of the two
-// same-timestamp cases the encoder may act on by itself.
-//
-// The same reading offered twice is lossless to collapse, and Prometheus
-// stores it once regardless. Two DIFFERENT values at one instant are a loss to
-// collapse, and the encoder cannot report a loss: it returns samples, and its
-// caller records the batch as fully sent. That pair is partition's business
-// (TestTwoConflictingReadingsInOneBatchAreNotCollapsedAwaySilently), so the
-// encoder must leave it alone -- collapsing it here would deliver one reading,
-// discard the other, and call the flush a success.
+// TestOnlyIdenticalReadingsForOneInstantAreCollapsed checks the encoder collapses only identical same-timestamp readings.
 func TestOnlyIdenticalReadingsForOneInstantAreCollapsed(t *testing.T) {
 	at := time.Date(2026, 9, 1, 20, 51, 55, 0, time.UTC)
 	series := map[string]string{"device": "pdu-03", "ifindex": "1"}
@@ -1031,19 +973,7 @@ func TestSeriesAreOrderedIndependently(t *testing.T) {
 	}
 }
 
-// TestTwoSeriesCannotShareAKeyThroughTheirLabelText guards the grouping key.
-//
-// Label values come from the device -- an ifAlias or entPhysicalName is
-// whatever someone typed into it -- so a comma or an equals sign inside one
-// made a delimited key ambiguous, and two different series produced the same
-// string. Merging them interleaves their readings into one series, which is a
-// descending pair and a rejected request.
-//
-// The two fixtures below flatten to the identical string under `name,k=v`
-// joining -- verified by mutation, because the first pair written here did not:
-//
-//	{a: "1,b=2"}          -> "snmp_ifHCInOctets" + ",a=1,b=2"
-//	{a: "1", b: "2"}      -> "snmp_ifHCInOctets" + ",a=1" + ",b=2"
+// TestTwoSeriesCannotShareAKeyThroughTheirLabelText checks label text with commas or equals signs cannot merge two series.
 func TestTwoSeriesCannotShareAKeyThroughTheirLabelText(t *testing.T) {
 	at := time.Date(2026, 9, 1, 20, 51, 55, 0, time.UTC)
 	samples := []*Sample{

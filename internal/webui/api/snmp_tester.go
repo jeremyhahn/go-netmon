@@ -150,12 +150,7 @@ func (s *Server) handleTestSNMPDirect(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, statusForProbe(response), response)
 }
 
-// statusForProbe maps a probe result to the status that describes it.
-//
-// A silent device is a gateway timeout, not a server error: nothing here is
-// broken, the box downstream did not answer. A request the server refused
-// before sending anything is the caller's to fix. Either way the body is the
-// same structured result, so a client renders one shape whatever happened.
+// statusForProbe maps a probe result to its HTTP status: silent device 504, refused request 400.
 func statusForProbe(resp *SNMPTestResponse) int {
 	switch {
 	case resp.Success:
@@ -191,15 +186,7 @@ type snmpProbe struct {
 	PrivPassword string
 }
 
-// connection turns a probe into a configured, unconnected gosnmp session.
-//
-// Every server-side SNMP operation builds its session here. That is deliberate:
-// the poller and the connectivity tester once had separate copies of this and
-// disagreed about SNMPv3, so a device could pass its test and still be
-// unpollable. A second copy for walking would have reintroduced exactly that.
-//
-// The returned session carries ctx, so its deadline bounds the whole retry
-// sequence rather than one request.
+// connection turns a probe into a configured, unconnected gosnmp session carrying ctx; every server-side SNMP operation uses it.
 func (p snmpProbe) connection(ctx context.Context) (*gosnmp.GoSNMP, error) {
 	// A port in the address wins over the field, which is how a caller names a
 	// device listening somewhere other than 161.
@@ -284,16 +271,7 @@ func probeForDevice(device *storage.Device) snmpProbe {
 	}
 }
 
-// performSNMPTest probes a device's system group and reports what it found.
-//
-// The whole probe is bounded by SNMPProbeBudget. That bound is the point: this
-// runs inside an HTTP handler, and an unbounded probe against a device that
-// never answers outlives the connection's write deadline, which makes the
-// server close the connection with no response at all. The caller then sees a
-// bare EOF instead of being told its device is unreachable.
-//
-// gosnmp honors the deadline of the context it is given on every attempt, so
-// the budget caps the retry sequence rather than just one request.
+// performSNMPTest probes a device's system group within SNMPProbeBudget, which bounds the whole retry sequence.
 func (s *Server) performSNMPTest(ctx context.Context, probe snmpProbe) *SNMPTestResponse {
 	startTime := time.Now()
 
@@ -378,13 +356,7 @@ func (s *Server) performSNMPTest(ctx context.Context, probe snmpProbe) *SNMPTest
 	return response
 }
 
-// isProbeTimeout reports whether err means the device stayed silent, rather
-// than the probe failing for a reason the device had no part in.
-//
-// What counts as "it never answered" is decided in one place, internal/snmp,
-// so that a probe, the poller and a health check cannot form three different
-// opinions about it. The context is the part that belongs here: a deadline the
-// budget imposed is visible there rather than on the error.
+// isProbeTimeout reports whether err means the device stayed silent, per internal/snmp or the budget deadline.
 func isProbeTimeout(ctx context.Context, err error) bool {
 	return ctx.Err() != nil || snmp.TimedOut(err)
 }

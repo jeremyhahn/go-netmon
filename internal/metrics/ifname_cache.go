@@ -79,8 +79,7 @@ func (c *InterfaceNameCache) GetInterfaceName(deviceName, index string) string {
 // For example: .1.3.6.1.2.1.2.2.1.10.5 -> "5"
 // Returns empty string if not a table OID
 func ExtractTableIndex(oid string) string {
-	// Pattern for IF-MIB table columns: .1.3.6.1.2.1.2.2.1.X.INDEX
-	// Where X is the column ID and INDEX is the interface index
+	// IF-MIB table columns: .1.3.6.1.2.1.2.2.1.X.INDEX, X the column and INDEX the interface.
 	re := regexp.MustCompile(`^\.1\.3\.6\.1\.2\.1\.2\.2\.1\.\d+\.(\d+)$`)
 	matches := re.FindStringSubmatch(oid)
 
@@ -96,8 +95,7 @@ func ExtractTableIndex(oid string) string {
 		return matches2[1]
 	}
 
-	// Generic pattern for any table: OID ends with .INDEX
-	// This is a fallback for other SNMP tables
+	// Fallback for any table: the OID ends with .INDEX.
 	parts := strings.Split(strings.TrimPrefix(oid, "."), ".")
 	if len(parts) >= 2 {
 		// Last part is typically the index

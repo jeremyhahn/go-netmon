@@ -2,9 +2,7 @@ package mib
 
 import "testing"
 
-// TestFormatOctets covers the text-or-hex decision made for an OCTET STRING
-// that carries no DISPLAY-HINT, which is the only information available for
-// the binary objects vendors define without one.
+// TestFormatOctets covers the text-or-hex choice for an OCTET STRING without a DISPLAY-HINT.
 func TestFormatOctets(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -120,9 +118,7 @@ func TestFormatValueBinaryOctetStringWithoutHint(t *testing.T) {
 	}
 }
 
-// TestFormatValueDisplayHintStillWins guards the precedence: a declared
-// DISPLAY-HINT describes the value better than any content heuristic can, so
-// the content rule must not be consulted when one is present.
+// TestFormatValueDisplayHintStillWins checks a declared DISPLAY-HINT takes precedence over the content rule.
 func TestFormatValueDisplayHintStillWins(t *testing.T) {
 	tests := []struct {
 		name  string

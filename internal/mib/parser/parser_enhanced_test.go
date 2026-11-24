@@ -476,7 +476,7 @@ func TestSNMPv2MIBScalars(t *testing.T) {
 		t.Errorf("Expected sysServices ObjectClass to be Scalar, got %s", sysServices.ObjectClass)
 	}
 
-	// sysServices should NOT be chartable (INTEGER bitmask)
+	// sysServices is not chartable (INTEGER bitmask).
 	if sysServices.IsChartable {
 		t.Error("Expected sysServices to NOT be chartable (bitmask indicator in description)")
 	}

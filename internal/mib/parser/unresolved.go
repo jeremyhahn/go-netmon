@@ -65,11 +65,7 @@ func (r *ParseReport) Err() error {
 	}
 }
 
-// missingImports names the modules module imports from that are not loaded.
-//
-// gosmi loads a module's imports with it and carries on when one cannot be
-// found, so a module that is absent from every search path is simply not
-// there afterwards. Each name appears once, sorted.
+// missingImports names, sorted and once each, the modules module imports from that are not loaded.
 func missingImports(module gosmi.SmiModule) []string {
 	seen := make(map[string]bool)
 	var missing []string

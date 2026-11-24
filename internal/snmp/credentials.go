@@ -11,11 +11,7 @@ import (
 )
 
 func init() {
-	// gosnmp caches the key it derives from every SNMPv3 passphrase in a
-	// process-wide map, keyed by a copy of the passphrase itself. That copy
-	// would sit on the heap, in the clear, for the life of the process, which
-	// is exactly what sealing the passphrases exists to prevent. The cost is
-	// that each request derives its keys afresh.
+	// Disable gosnmp's process-wide passphrase key cache, which keeps passphrases on the heap.
 	gosnmp.PasswordCaching(false)
 }
 
@@ -47,10 +43,7 @@ func SealCredentials(ctx context.Context, sealer credential.Sealer, device *conf
 		{&device.AuthPassword, &creds.authPassword, "auth_password"},
 		{&device.PrivPassword, &creds.privPassword, "priv_password"},
 	}
-	// Opening the credentials holds all of them at once. A device whose open
-	// could never fit under RLIMIT_MEMLOCK is refused now, at startup, rather
-	// than at every poll; otherwise sealing waits, as an open does, while other
-	// workers hold the budget.
+	// Refuse at startup a device whose open could never fit under RLIMIT_MEMLOCK.
 	budget, err := lockedBudget()
 	if err != nil {
 		return nil, &CredentialError{Device: device.Name, Err: err}
@@ -110,11 +103,7 @@ type openSecrets struct {
 	privPassword string
 }
 
-// use opens every secret and calls fn with them. The strings fn receives are
-// views of the locked enclaves, not copies: they are valid only until fn
-// returns, after which the enclaves are destroyed. fn must not leave them
-// anywhere that outlives it. While other requests hold the process's locked
-// memory, use waits for its share (see credential.LockedBudget) until ctx ends.
+// use opens every secret and calls fn with views valid only until fn returns; waits for locked memory until ctx ends.
 func (c *Credentials) use(ctx context.Context, fn func(openSecrets) error) error {
 	if c == nil {
 		return fn(openSecrets{})

@@ -247,13 +247,7 @@ func TestMIBListSendsItsFlagsToTheServer(t *testing.T) {
 	}
 }
 
-// TestCLISearchMatchesTheDocumentedObjectFields pins the CLI's promise about
-// --search to the definition the server applies.
-//
-// The flag help says "name, OID or description". If that ever means something
-// else on one side of the wire, an operator's search finds different objects
-// depending on which tool they ran, which is exactly the failure the shared
-// definition exists to prevent.
+// TestCLISearchMatchesTheDocumentedObjectFields pins --search to name, OID or description.
 func TestCLISearchMatchesTheDocumentedObjectFields(t *testing.T) {
 	filter := newObjectFilter()
 	if filter.fields != "name, OID or description" {

@@ -13,24 +13,9 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// The store keeps a MIB import durable and is read on every poll, every CLI
-// lookup and every web UI page. When the disk underneath it starts failing —
-// a bad sector, a full or disconnected volume — each read path has to report
-// that rather than answer as though the store were merely empty. An empty
-// answer is indistinguishable from "this module has no objects", which is how
-// a device silently stops being polled with nothing in the logs.
-//
-// These tests run the store on an in-memory filesystem whose reads can be
-// turned off part-way through. Nothing touches the host filesystem, and the
-// records are flushed to a table first so that reads genuinely go through the
-// filesystem rather than being served from the memtable.
+// Every read path must report disk read failures rather than answer empty; runs on an in-memory filesystem.
 
-// faultyStore returns a store on an in-memory filesystem holding the fixture
-// below, together with a switch that makes every subsequent read fail.
-//
-// Only reads are injected. Pebble treats a failed write as unrecoverable and
-// aborts the process rather than returning an error, so the write-side error
-// branches in this package cannot be reached from a test.
+// faultyStore returns an in-memory store with the fixture and a switch that fails later reads (Pebble aborts on write errors).
 func faultyStore(t *testing.T) (store *Storage, failReads func()) {
 	t.Helper()
 

@@ -33,10 +33,7 @@ func (b buildInfo) String() string {
 	return b.Version + " (commit " + b.Commit + ", built " + b.BuildDate + ")"
 }
 
-// newVersionCommand builds "netmon version".
-//
-// The same facts are reachable through --version, but a subcommand is what
-// scripts and bug reports expect, and only a subcommand can honor --json.
+// newVersionCommand builds "netmon version", which also supports --json.
 func newVersionCommand(env *Env, info buildInfo) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",

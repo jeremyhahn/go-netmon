@@ -34,23 +34,14 @@ func (e *OffsetError) Error() string {
 	return "netmon: --offset must be 0 or greater, got " + strconv.Itoa(e.Offset)
 }
 
-// listFilter is the search-and-cap pair every listing command shares. One
-// implementation keeps the flags, their semantics and their wording identical
-// across the CLI, which is the only way the CLI and the web UI can stay at
-// parity as either grows.
-//
-// The zero value lists everything: an unset --search matches every row and a
-// defaultLimit of 0 prints them all.
+// listFilter is the --search and --limit pair every listing command shares; the zero value lists everything.
 type listFilter[T any] struct {
 	// search, limit and offset are bound to the command's flags.
 	search string
 	limit  int
 	offset int
 
-	// paged marks a listing the server narrows. Such a command offers
-	// --offset, sends the flags to the server as query parameters and builds
-	// its page with serverPage; matches is then nil, because there is one
-	// definition of what a search means and it is the server's.
+	// paged marks a listing the server narrows: --offset is offered, flags become query parameters and matches is nil.
 	paged bool
 
 	// noun names what is being listed, in the plural and in the words the
@@ -66,10 +57,7 @@ type listFilter[T any] struct {
 	// everything, which is right for any list an operator expects to read whole.
 	defaultLimit int
 
-	// matches reports whether item contains the already-lowercased needle. It
-	// defers to internal/mib/search for the record kinds the API also
-	// searches, so a paged listing narrowed here and the same listing narrowed
-	// on the server select the same rows.
+	// matches reports whether item contains the lowercased needle, using internal/mib/search where the API does.
 	matches func(item T, needle string) bool
 }
 
@@ -105,14 +93,7 @@ func (f *listFilter[T]) listQuery() client.ListQuery {
 	return client.ListQuery{Search: f.search, Limit: f.limit, Offset: f.offset}
 }
 
-// apply searches items, then takes the page --offset and --limit select, in
-// that order, so the counts a truncation notice reports are the searched totals
-// rather than the whole set: "showing 50 of 293" has to mean 293 matches, not
-// 293 rows the server sent.
-//
-// This is the client-side path, for the listings a server returns whole. It
-// runs the same search the server would — both go through internal/mib/search —
-// so which rows it selects does not depend on where the narrowing happened.
+// apply searches items, then pages them, so truncation counts are searched totals; same search as the server.
 func (f *listFilter[T]) apply(items []T) listPage[T] {
 	matched := items
 	if needle := search.Fold(f.search); needle != "" && f.matches != nil {
@@ -205,12 +186,7 @@ func wholeList[T any](items []T, noun string) listPage[T] {
 	}
 }
 
-// writeEmpty explains an empty listing and reports whether it wrote anything.
-//
-// A list that is empty because nothing is configured needs different words from
-// one that is empty because --search matched nothing: the first is a state to
-// fix, the second is a query to widen. Printing a bare table header for either
-// tells the reader neither.
+// writeEmpty explains an empty listing (nothing configured or nothing matched) and reports whether it wrote anything.
 func (p listPage[T]) writeEmpty(out io.Writer, indent, unfiltered string) bool {
 	if p.Shown > 0 {
 		return false
@@ -224,12 +200,7 @@ func (p listPage[T]) writeEmpty(out io.Writer, indent, unfiltered string) bool {
 	return true
 }
 
-// note says how much of the list is on screen when --limit held rows back.
-//
-// Silent truncation is the failure that makes an operator distrust a tool: it
-// sends them hunting for a row that was there all along. The count it reports
-// is the searched total, which is what "of" has to mean once --search is in
-// play.
+// note says how many searched rows --limit held back.
 func (p listPage[T]) note(out io.Writer, indent string) {
 	if p.Offset > 0 {
 		// A page that starts partway through has to say where: "showing 51-100
@@ -246,28 +217,12 @@ func (p listPage[T]) note(out io.Writer, indent string) {
 		indent, p.Shown, p.Matched, p.noun)
 }
 
-// containsFold reports whether any of values contains needle, which the caller
-// has already lowercased.
-//
-// It defers to internal/mib/search, which is where the CLI and the API agree on
-// what "search" means: a case-insensitive substring, everywhere and on both
-// sides of the wire.
+// containsFold reports whether any of values contains the lowercased needle, via internal/mib/search.
 func containsFold(needle string, values ...string) bool {
 	return search.Contains(needle, values...)
 }
 
-// narrowedPage presents a listing whose narrowing may have happened on either
-// side of the wire.
-//
-// A page block is the server saying "I narrowed this"; its absence says the
-// whole list arrived. That is the protocol, and it decides which of the two
-// paths is right: adopt the server's counts, or narrow here and count what is
-// in hand. Both run the same search, so the rows are the same either way and
-// only the bytes on the wire differ.
-//
-// Its absence is also what a server that predates these parameters answers with
-// — it returned everything because it ignored the query — so a --limit stays a
-// promise to the terminal rather than to a particular server build.
+// narrowedPage adopts the server's page counts when it sent a page block, else narrows and counts locally.
 func narrowedPage[T any](
 	items []T,
 	page *client.Page,
@@ -281,12 +236,7 @@ func narrowedPage[T any](
 	return serverPage(items, page, noun, term, limit)
 }
 
-// serverPage presents a response the server has already narrowed as a listPage.
-//
-// The rows arrive searched and sliced, so the counts cannot be recovered by
-// counting them: fifty objects say nothing about whether the module defines
-// fifty or ten thousand. They come from the page block the server sends beside
-// them.
+// serverPage presents an already-narrowed response, taking counts from the server's page block.
 func serverPage[T any](items []T, page *client.Page, noun, term string, limit int) listPage[T] {
 	// An empty listing must still encode as [], not null.
 	if items == nil {

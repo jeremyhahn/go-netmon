@@ -118,11 +118,6 @@ type Docker interface {
 }
 
 // validName reports whether a Docker object name is safe to pass as an argument.
-//
-// Names are built by this package from the pinned project and a fixed volume
-// name, so anything outside this shape means a caller has been given something
-// unexpected. Refusing is the only correct response: a name beginning with "-"
-// would be read as a flag by whatever it is handed to.
 func validName(name string) bool {
 	if name == "" {
 		return false

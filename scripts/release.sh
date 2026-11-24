@@ -1,45 +1,5 @@
 #!/usr/bin/env bash
-# Prepare a release of one kind as a pull request:
-#
-#   make release-alpha     [VERSION=vX.Y.Z-alpha]
-#   make release-candidate VERSION=vX.Y.Z-rc.N
-#   make release           VERSION=vX.Y.Z
-#
-# Usage: scripts/release.sh <alpha|candidate|release>   (from the repository root)
-#
-# The argument is the kind the Makefile target stands for. The version must be
-# of exactly that kind; the other two are refused. A candidate or a production
-# release names its version explicitly -- the recipe never guesses a minor or
-# a major. An alpha may leave it out: the next alpha is then the VERSION
-# file's patch plus one (0.1.3 -> v0.1.4-alpha).
-#
-# main accepts only signed commits through pull requests, so nothing here
-# pushes to main or creates a tag. The script commits the release on a
-# release/<version> branch and pushes that branch; merging its PR is the
-# release. When CI is green on the merge commit, auto-release.yml tags it and
-# calls release.yml.
-#
-# Environment (exported by the Makefile, read raw, never interpolated):
-#   VERSION          the version; empty means "not given" (the Makefile
-#                    blanks its own VERSION-file default)
-#   DRY_RUN          1 to run every check and print the branch, writing nothing
-#   RELEASE_REMOTE   the remote to push the branch to; empty means the remote
-#                    main tracks (branch.main.remote), or origin when main
-#                    tracks nothing. It is the GitHub repository, whatever its
-#                    name
-#   RELEASE_GIT      the command that commits and pushes (default git; set it
-#                    to a wrapper that signs, if any)
-#
-# Every check runs before anything is written: the version's form and kind,
-# the branch (main), a clean tree, local main equal to the remote's, the tag
-# free locally and on the remote and the release branch free locally and on
-# the remote (ls-remote exit 2 is the only "free"; anything else fails
-# closed), the version moving forward (release-version-check.sh), and
-# something to release that folds cleanly (changelog-assemble.sh --check).
-# Then it creates the release branch, folds changelog.d/ into CHANGELOG.md,
-# writes VERSION, checks the result (release-check-tag.sh, the check
-# auto-release.yml and release.yml's verify job run), commits
-# "chore(release): <version>" and pushes the branch.
+# Prepare a release PR on release/<version> (make release-alpha|release-candidate|release); env VERSION, DRY_RUN, RELEASE_REMOTE, RELEASE_GIT. Usage: scripts/release.sh <alpha|candidate|release>
 
 set -euo pipefail
 

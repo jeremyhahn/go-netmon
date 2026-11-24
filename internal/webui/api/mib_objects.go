@@ -161,15 +161,7 @@ func assignmentFilters(module string, assignment storage.MIBAssignment) map[stri
 	}
 }
 
-// objectSeries prices one object in Prometheus series from the instance count
-// the module estimate arrived at, so this endpoint and /estimate can never put
-// different numbers on the same table.
-//
-// A polled scalar costs one series. A polled column costs one per row. A walked
-// table costs one per row for each of its pollable columns, since the walk is
-// what collects them; those columns are then reported as covered and priced at
-// zero, so the per-object costs sum to the module's total instead of counting
-// the same data twice.
+// objectSeries prices one object in series from the module's instance estimate; covered columns cost 0.
 func objectSeries(decision selector.Decision, pollableColumns map[string]int, instances int) int {
 	if !decision.Polled {
 		return 0
@@ -204,11 +196,7 @@ func pollableColumnsByTable(objects []*mib.OIDMetadata) map[string]int {
 	return counts
 }
 
-// deviceMIBObjectPlan builds the plan for one device and one MIB.
-//
-// The MIB has to reach the device, directly or through a profile, and the
-// assignment used is the effective one — what the poller acts on — rather than
-// the device's own, which may not exist.
+// deviceMIBObjectPlan builds the plan for one device and MIB from the effective assignment.
 func (s *Server) deviceMIBObjectPlan(
 	ctx context.Context,
 	deviceID, mibID int64,
@@ -286,12 +274,7 @@ func holdsMIB(mibs []storage.MIB, mibID int64) bool {
 	return false
 }
 
-// handleGetDeviceMIBObjects lists a MIB's objects with, for each, whether this
-// device is polling it and why.
-//
-// The query narrows which objects the response carries — search, polled, offset
-// and limit — but never which order they are in: the plan's order is the poller's
-// own, and capped-by-max-oids is only meaningful in it.
+// handleGetDeviceMIBObjects lists a MIB's objects with this device's polling verdict, narrowed but in poller order.
 func (s *Server) handleGetDeviceMIBObjects(w http.ResponseWriter, r *http.Request) {
 	deviceID, mibID, ok := assignmentIDs(w, r, "device")
 	if !ok {

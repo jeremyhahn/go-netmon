@@ -69,10 +69,7 @@ func TestOIDMetadataIsPollable(t *testing.T) {
 			want: false,
 		},
 		{
-			// A module whose IMPORTS did not resolve parses into objects with
-			// the right access and status and no OID at all. Counting them as
-			// pollable told the series estimate, the object plan and the poller
-			// itself that there was something to ask for when there was not.
+			// Objects with no OID from unresolved IMPORTS are not pollable.
 			name: "readable and current but unresolved to any OID",
 			meta: OIDMetadata{Access: "read-only", Status: "current", IsScalar: true},
 			want: false,

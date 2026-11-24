@@ -98,11 +98,7 @@ func NewClientWithCredentials(
 	// secret here: call installs them for each request and removes them after.
 	switch device.SNMPVersion {
 	case "1":
-		// SNMPv1 is still what a lot of embedded equipment offers — KVMs, PDUs,
-		// older UPSs — and several of them offer nothing else. It differs from
-		// v2c in ways the poller has to respect: there is no GETBULK, and a
-		// walk that runs off the end of the tree is reported as the
-		// NoSuchName error rather than as an endOfMibView marker.
+		// SNMPv1: no GETBULK, and a walk past the end reports NoSuchName.
 		conn.Version = gosnmp.Version1
 	case "2c":
 		conn.Version = gosnmp.Version2c
@@ -125,18 +121,7 @@ func NewClientWithCredentials(
 	}, nil
 }
 
-// call runs op with the device's credentials installed on the connection and
-// removes them before it returns.
-//
-// It holds the client exclusively: the connection carries the secrets for the
-// length of op, and no other request may see them or remove them under it.
-// The secrets are views of locked enclaves that are destroyed when call
-// returns, so nothing gosnmp keeps may still refer to them by then; scrub
-// sees to the connection, and gosnmp's own passphrase cache is disabled (see
-// init).
-//
-// Opening the credentials may wait for locked memory other requests hold;
-// ctx bounds that wait, and its end is returned as a CredentialError.
+// call runs op with the credentials installed on the connection, exclusively, and scrubs them before returning; ctx bounds the wait for locked memory.
 func (c *Client) call(ctx context.Context, op func() error) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -421,16 +406,7 @@ func (c *Client) Walk(rootOID string, walkFn func(*Result) error) error {
 	})
 }
 
-// bulkWalker reports the walk to use for a table and what to call it.
-//
-// GETBULK does not exist in SNMPv1: gosnmp refuses it outright with "GETBULK
-// not supported in SNMPv1", so a v1 device would fail every table walk with an
-// error about a protocol feature rather than about anything an operator did.
-// The version is known here and nowhere else that matters, so the choice is
-// made here rather than pushed onto every caller.
-//
-// The fallback is a plain WALK, which is GETNEXT one variable at a time. It is
-// slower — that is the whole reason GETBULK exists — but it is what v1 has.
+// bulkWalker returns GETBULK walk, or plain WALK on SNMPv1, and its name.
 func (c *Client) bulkWalker() (walker, string) {
 	if c.conn.Version == gosnmp.Version1 {
 		return c.conn.Walk, "WALK"

@@ -5,10 +5,7 @@ import "strings"
 // Component is one independently selectable part of a deployment's state.
 type Component string
 
-// The components a backup can carry, in the order a restore applies them.
-//
-// Host-side content is restored before the volumes so that the sources are in
-// place by the time the stack comes back up and re-reads them.
+// The components a backup can carry, in restore order: host content before volumes.
 const (
 	// ComponentConfig covers the repository files bind-mounted into the stack.
 	ComponentConfig Component = "config"

@@ -69,10 +69,9 @@ type MIBMetadataRefresher interface {
 }
 
 // DeviceForgetter is implemented by exporters that keep per-device state
-// between polls -- the friendly names a device's status columns reported, say
-// -- and must drop it when the device is no longer polled, or it would be held
-// for every device ever seen. Like MIBMetadataRefresher it is an optional
-// capability: the poller type-asserts for it when it retires a device.
+// between polls, such as the friendly names a device's status columns reported,
+// and must drop it when the device stops being polled. Like MIBMetadataRefresher
+// it is an optional capability: the poller type-asserts for it when it retires a device.
 type DeviceForgetter interface {
 	// ForgetDevice drops everything the exporter holds for the device. It is
 	// called once nothing more can be exported for it.

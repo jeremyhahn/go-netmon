@@ -17,27 +17,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/backup"
 )
 
-// Backup and restore against a real Docker daemon.
-//
-// The rest of this package's backup coverage runs against a fake runtime that
-// implements the same interface, which proves the right argument vectors are
-// built. It cannot prove the daemon does what those vectors say: that a tar
-// written by one container is read back byte for byte by another, that a volume
-// is genuinely emptied before it is extracted into, and that numeric ownership
-// survives. Those are what a restore rests on, and they only exist at the
-// daemon.
-//
-// The daemon here is the sibling "dind" service, not the host's. It starts
-// empty and dies with the stack, so nothing below can see -- let alone stop,
-// empty or overwrite -- the live deployment whose backup path it is testing.
-// That isolation is why the test container itself is unprivileged and has no
-// host socket.
-//
-// The operations under test go through backup.CLI, the same client the tool
-// uses. Only the fixtures -- creating a labelled volume, reading back an
-// owner -- talk to docker directly, because the client deliberately offers no
-// way to do either and adding one for a test would be shaping production code
-// around its tests.
+// Backup and restore through backup.CLI against the sibling dind daemon, isolated from any deployment.
 
 // dindProject is the compose project these tests claim. Nothing else uses it,
 // and it exists only inside the sibling daemon.
@@ -74,23 +54,7 @@ func requireDinD(t *testing.T) *backup.CLI {
 	return cli
 }
 
-// helperImage is the image the client runs volume work inside.
-//
-// It is BUILT by run-tests.sh and loaded into the sibling daemon rather than
-// pulled from a registry inside it, and its name arrives in
-// NETMON_HELPER_IMAGE so that the script holds the only copy of the string.
-//
-// The previous value was the literal "busybox:1.36". dind is recreated for
-// every run and starts with an empty image store, so that was a fresh Docker
-// Hub pull on EVERY run -- measured 2026-08-28 as a TLS handshake
-// timeout to auth.docker.io that failed the suite for a reason unrelated to
-// the code under test. A tag pin fixes WHICH image, not whether it can be
-// fetched.
-//
-// Fatal rather than skip: DOCKER_HOST is already set by the time this is
-// reached, so the daemon was offered. A missing helper image is the harness
-// being wrong, not this coverage being unavailable, and silently skipping
-// would hide that.
+// helperImage is the volume helper image run-tests.sh builds and loads into dind, named by NETMON_HELPER_IMAGE; missing is fatal.
 func helperImage(t *testing.T) string {
 	t.Helper()
 

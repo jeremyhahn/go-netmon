@@ -4,10 +4,7 @@ services:
     build:
       context: .
       dockerfile: test/integration/Dockerfile.prometheus
-    # Published on an ephemeral host port, not a fixed one: the tests reach
-    # prometheus as "prometheus:9090" over test-network, so a fixed host port
-    # serves only local poking while making two concurrent stacks collide on
-    # the bind. Find it with: docker compose -p <project> port prometheus 9090
+    # Ephemeral host port so concurrent stacks do not collide; tests use prometheus:9090.
     ports:
       - "9090"
     volumes:
@@ -47,28 +44,11 @@ services:
       retries: 5
       start_period: 5s
 
-  # Integration test runner
-  # A Docker daemon of its own, for the tests that drive one.
-  #
-  # netmon-backup exports and imports volumes, stops and starts services, and
-  # empties directories inside containers. Testing that needs a real daemon, and
-  # the two obvious ways to get one are both bad: mounting the host socket gives
-  # the test container root on the host, and running the suite on the host
-  # breaks the rule that integration tests run in a container.
-  #
-  # This is the third way. The daemon is a sibling container, privileged but
-  # ephemeral and empty: it sees none of the host's containers or volumes, so a
-  # backup test cannot reach the live go-netmon deployment even if its project
-  # resolution were wrong. Everything it creates dies with the stack.
+  # Integration test runner.
+  # An isolated, empty Docker daemon for the backup tests.
   dind:
     image: docker:27-dind
-    # Behind a profile, so it is started only when something asks for it.
-    #
-    # A privileged container is not available everywhere -- a CI runner that is
-    # itself unprivileged or rootless cannot start one. That must degrade to
-    # "this coverage was not obtained", announced, rather than failing the whole
-    # suite: the other integration tests have nothing to do with Docker.
-    # run-tests.sh tries to start it and passes DOCKER_HOST only if it comes up.
+    # Behind a profile: run-tests.sh sets DOCKER_HOST only if it starts.
     profiles: ["dind"]
     privileged: true
     environment:
@@ -109,26 +89,10 @@ services:
       - SNMP_PORT=161
     networks:
       - test-network
-    # run-tests.sh overrides this with the same package set. It is spelled here
-    # too so that a bare "docker compose run integration-test" runs the whole
-    # tagged suite rather than the one directory somebody happened to name --
-    # the omission that left internal/mib/parser unrun.
+    # The whole tagged suite, the same package set run-tests.sh passes.
     command: ["bash", "-c", "go test -v -tags=integration $(test/integration/tagged-packages.sh)"]
 
-  # THE E2E PROFILE: a whole disposable go-netmon for the browser specs.
-  #
-  # The rendering specs need a stack that has polled something, and until this
-  # profile the only ones that had were long-lived: the shared dev stack, and
-  # production. These three services poll the simulator above into the
-  # prometheus above -- the one pin, 3.14.0, nothing second -- and serve the web
-  # UI on localhost:${NETMON_E2E_PORT:-8083}, which is DISPOSABLE_URL in
-  # tests/e2e/target.ts. Bring it up with "make e2e-up"; "make integration-down"
-  # removes it with its volumes.
-  #
-  # The simulated devices are the two recordings in test/integration/snmp-data
-  # (SNMPv2-MIB system, IF-MIB with ifXTable, HOST-RESOURCES-MIB, some IP-MIB),
-  # so the specs see two devices, "snmpsim-01" and "snmpsim-02", and their
-  # series. tests/e2e/stack.ts names them for the specs.
+  # E2E profile: a disposable go-netmon polling the simulator, served on localhost:${NETMON_E2E_PORT:-8083}; make e2e-up.
   poller:
     profiles: ["e2e"]
     build:
@@ -212,11 +176,7 @@ services:
       retries: 20
       start_period: 5s
 
-  # One shot: restores test/integration/snmp-data/e2e-config.json into the web
-  # UI through the config import (the operator's restore path), so the device
-  # list and dashboards the specs read have both simulated devices and their
-  # standard MIBs. Its only write is that import; it calls no device or MIB
-  # endpoint.
+  # One shot: imports test/integration/snmp-data/e2e-config.json through the config import.
   e2e-seed:
     profiles: ["e2e"]
     build:

@@ -238,9 +238,7 @@ and no type. Parsed with `mibs/asr1001` alone, IF-MIB gives 62 objects with 62
 empty OIDs; with the full path it gives 91 with none.
 
 The MIB tree ships with the repository, so a missing directory is a failure, not
-a reason to skip. There are no skip guards: the project forbids them, and every
-one that used to be here was hiding a real defect — including a `cbgpPeerTable`
-assertion that named the wrong table.
+a reason to skip. There are no skip guards: the project forbids them.
 
 ### Dependencies
 

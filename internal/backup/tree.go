@@ -16,12 +16,6 @@ import (
 const DefaultMIBMountTarget = "/app/mibs"
 
 // systemDirs are directories a MIB source tree must never resolve to.
-//
-// A tree is emptied before it is extracted into. Unlike a Docker volume, a host
-// directory has no ownership label to check and no container boundary to contain
-// a mistake, and this repository has no version control to recover from. The
-// list is deliberately blunt: a real MIB tree is a leaf directory well inside a
-// checkout, never a system root.
 var systemDirs = map[string]bool{
 	"/": true, "/home": true, "/root": true, "/usr": true, "/etc": true,
 	"/var": true, "/opt": true, "/srv": true, "/tmp": true, "/mnt": true,
@@ -48,12 +42,7 @@ type treeResolver struct {
 	homeDir     string
 }
 
-// resolve locates the MIB source tree, preferring an explicit override and
-// otherwise reading it out of the rendered compose file.
-//
-// The compose file is where the deployment's own answer lives, so a deployment
-// that mounts its MIBs from elsewhere needs no change here, and one that mounts
-// nothing at the target is a fatal ambiguity rather than something to guess at.
+// resolve locates the MIB tree from an override or the rendered compose file.
 func (t *treeResolver) resolve(ctx context.Context, override string) (TreeLocation, error) {
 	dir, origin := strings.TrimSpace(override), "explicit override"
 	if dir == "" {
@@ -102,13 +91,7 @@ func (t *treeResolver) check(dir string) error {
 // refused path tried to leave.
 const treeRootPurpose = "MIB source tree parent"
 
-// treeRoot anchors a root on a tree's parent and returns it with the tree's own
-// directory name.
-//
-// The root is the parent rather than the tree itself, so the tree directory is
-// only ever named as an entry inside a root: it can be created, emptied and
-// extracted into without any path in the operation naming a location the parent
-// does not contain.
+// treeRoot anchors a root on a tree's parent and returns the tree's directory name.
 func treeRoot(loc TreeLocation) (*Root, string, error) {
 	parent, base := filepath.Split(strings.TrimSuffix(loc.Dir, string(filepath.Separator)))
 	parent = strings.TrimSuffix(parent, string(filepath.Separator))
@@ -149,13 +132,7 @@ func inspectTree(loc TreeLocation) (treeState, error) {
 	return treeState{Files: files, Bytes: size}, nil
 }
 
-// isTreeNotMounted reports whether a resolve failure was simply the absence of
-// a MIB bind mount, as opposed to an ambiguous or unusable one.
-//
-// Absence became the normal case when imports started being copied into the
-// poller's own volume: there is then no host directory to copy separately, and
-// the deployment is the better for it. Ambiguity is a different thing entirely
-// and must still stop the backup.
+// isTreeNotMounted reports whether a resolve failed only because no MIB mount exists.
 func isTreeNotMounted(err error) bool {
 	var resolve *TreeResolveError
 	return errors.As(err, &resolve) && len(resolve.Sources) == 0

@@ -215,11 +215,7 @@ func (e *Env) readConfigFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-// configTimeout returns how long a configuration command may take.
-//
-// An operator who set --timeout meant it. One who did not gets a deadline that
-// fits an import of a few hundred MIB modules, rather than the default that
-// suits a listing.
+// configTimeout returns --timeout if set, else ConfigCommandTimeout.
 func configTimeout(cmd *cobra.Command, opts *Options) time.Duration {
 	if flag := cmd.Root().PersistentFlags().Lookup("timeout"); flag != nil && flag.Changed {
 		return opts.Timeout

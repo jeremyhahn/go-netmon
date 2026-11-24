@@ -13,12 +13,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// These tests are about the cost of a RESTART, so they are written as restarts:
-// a loader is opened over a store path, closed, and another opened over the
-// same path. Closing calls gosmi.Exit, which discards every parsed module, so
-// the second loader starts with the same empty parser cache a fresh process
-// would have. Only the Pebble store carries over — which is exactly the
-// asymmetry the fix exploits.
+// Each test simulates a restart: Close calls gosmi.Exit, so only the Pebble store carries over.
 
 // editedFixtureMIB is fixtureMIB with a second scalar, so a test can tell which
 // version of the file the store holds.
@@ -102,9 +97,7 @@ func TestRestartDoesNotReparseAnUnchangedCatalog(t *testing.T) {
 	closeWarm()
 }
 
-// A file named differently from the module it declares (iDRAC-SMIv2.mib
-// declaring IDRAC-MIB-SMIv2) must load under the declared name, with its
-// objects resolved, and a restart must find it cached.
+// A file named differently from its module loads under the declared name and is cached after a restart.
 func TestFileNameDifferingFromModuleNameLoadsAndStaysCached(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "mib-storage")
 	mibs := t.TempDir()

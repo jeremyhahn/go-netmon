@@ -364,23 +364,7 @@ func (b *safeBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestAPollThatOutlivedItsDeviceReportsNothing is the trigger of the
-// out-of-order remote-write incident, at the layer that decides whether those samples exist at all.
-//
-// RemoveDevice deliberately does not wait for the poll in flight -- the control
-// plane must not stall behind a device that has stopped answering, which
-// TestRemoveDeviceDoesNotWaitForAnInFlightPoll states. So a poll finishes after
-// its device is gone, and because a device UPDATE is a remove followed by an
-// add, the replacement worker is already polling by then. That late poll's
-// varbinds were stamped BEFORE the replacement's and reach the exporter after,
-// which leaves one series holding two readings in the wrong order and costs the
-// whole remote-write request.
-//
-// A poll that outlived its device must therefore produce nothing at all: no
-// export, and no result either. The result channel is what this asserts on,
-// because it is reachable with a device that answers nothing -- and a device
-// that answers nothing is the one whose poll is certainly still running when it
-// is removed. The export sits behind the same guard, one line above.
+// TestAPollThatOutlivedItsDeviceReportsNothing checks a poll finishing after its device was removed exports and reports nothing.
 func TestAPollThatOutlivedItsDeviceReportsNothing(t *testing.T) {
 	t.Parallel()
 
@@ -421,24 +405,7 @@ func TestAPollThatOutlivedItsDeviceReportsNothing(t *testing.T) {
 	}
 }
 
-// TestAddDeviceWaitsForTheSameNameToFinishRetiring is the pool race, forced
-// rather than raced for.
-//
-// RemoveDevice cannot hold the poller lock for its whole length: closing an
-// SNMP client waits for the request it has in flight, and the control plane
-// must not stall behind a dead device. So the name leaves the worker map before
-// the pool entry is retired. A replacement registered inside that window takes
-// a client the outgoing removal then closes -- and because ensureClient does
-// nothing once its field is non-nil, the replacement polls a dead connection
-// for good. A device that silently stops reporting and never recovers.
-//
-// The commit barrier this branch added widens that window, which is why it is
-// fixed here rather than deferred: a pre-existing race that a change makes
-// materially more likely is that change's problem.
-//
-// The ordering is built, not timed. The removal is parked at the commit barrier
-// by holding the worker's commit lock, so the window is held open for as long
-// as the test wants rather than for however long a machine takes.
+// TestAddDeviceWaitsForTheSameNameToFinishRetiring holds a removal at its commit barrier and checks re-adding waits.
 func TestAddDeviceWaitsForTheSameNameToFinishRetiring(t *testing.T) {
 	p := NewWithExporter(lifecycleConfig(), nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -511,32 +478,7 @@ func TestAddDeviceWaitsForTheSameNameToFinishRetiring(t *testing.T) {
 	}
 }
 
-// TestAddDeviceNeverInstallsAWorkerOntoAClaimedName is the interleaving the
-// retirement gate exists to make impossible, and the one the first version of
-// it still allowed.
-//
-// That version read retiring[name], released the poller lock, and took it again
-// to install. Between the two holds RemoveDevice could take the name: delete
-// the worker, claim the retirement, and drop the lock on its way to closing the
-// client. The registration then acquired the lock, found no worker -- because
-// the removal had just deleted it -- and started a replacement onto a pool
-// entry that was about to be closed. The gate reported a name it had genuinely
-// observed free, which is what made it convincing.
-//
-// There is no seam to park a goroutine in that window -- in the broken version
-// it is one statement wide -- so the interleaving is raced for rather than
-// forced. What is NOT raced is the observation: the removal is parked at its
-// commit barrier, so a name it has claimed stays claimed until this test
-// releases it, and a worker listed under a claimed name stays listed. Both
-// halves of the violating state persist, so seeing it is not a sampling
-// artifact; only reaching it is probabilistic.
-//
-// The counts below are measured, not guessed. One registration against one
-// removal never hit the window at all: 0 detections in 2,000 iterations, a test
-// that could not fail. Sixteen registrations against one removal hit it about
-// once in 45 iterations, so 600 iterations detect it with near-certainty --
-// 10 of 10 mutated runs, worst detection at iteration 149. Against the fixed
-// gate, 0 in 4,800.
+// TestAddDeviceNeverInstallsAWorkerOntoAClaimedName races registrations against a parked removal; 600 iterations detect a broken gate.
 func TestAddDeviceNeverInstallsAWorkerOntoAClaimedName(t *testing.T) {
 	t.Parallel()
 
@@ -587,10 +529,7 @@ func TestAddDeviceNeverInstallsAWorkerOntoAClaimedName(t *testing.T) {
 		deadline := time.Now().Add(raceObservationWindow)
 		for time.Now().Before(deadline) {
 			p.mu.RLock()
-			// "Claimed" means a REMOVAL holds the name, not merely that the
-			// key exists -- a live worker is an entry too. Reading the key's
-			// presence alone makes this condition true of the healthy state,
-			// which is the probe answering a question next to the one asked.
+			// Claimed means a removal holds the name, not merely that the key exists.
 			entry := p.registry[device]
 			claimed := entry != nil && entry.retired != nil
 			listed := entry.live()

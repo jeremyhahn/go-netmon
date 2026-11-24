@@ -55,11 +55,7 @@ var (
 		},
 		[]string{"device"},
 	)
-	// gonetmon_exports_total and the other export health metrics
-	// (gonetmon_export_last_success_timestamp_seconds,
-	// gonetmon_export_buffered_samples, gonetmon_export_consecutive_failures,
-	// gonetmon_export_stalled) are registered by internal/metrics, where the
-	// exporter that actually knows the outcome of each flush lives.
+	// Export health metrics are registered by internal/metrics, beside the exporter.
 )
 
 func init() {
@@ -68,14 +64,7 @@ func init() {
 	prometheus.MustRegister(pollDuration)
 }
 
-// logExportLoss reports an exporter error, saying plainly when it means data
-// was thrown away.
-//
-// Flush and Close return a typed DroppedError carrying how many samples never
-// reached Prometheus. Logging that as "Error closing exporter" is true and
-// useless: it reads like a tidy-up that went wrong rather than telemetry that
-// is gone, and shutdown is the one moment nobody re-reads the logs for. A typed
-// error nobody acts on is the same silence it was added to remove.
+// logExportLoss logs an exporter error and says how many samples a DroppedError lost.
 func logExportLoss(during string, err error) {
 	var dropped *metrics.DroppedError
 	if errors.As(err, &dropped) {
@@ -138,10 +127,7 @@ func runUntilSignal(cfg *config.Config, webuiURL string) error {
 	return run(ctx, cfg, webuiURL)
 }
 
-// dashboardPath is the directory generated Grafana dashboards are written to.
-// The default is the container mount point; a native install has no /app and
-// sets DASHBOARD_PATH to a directory the service user can write, the same way
-// MIB_UPLOADED_PATH relocates the MIB tree.
+// dashboardPath is where generated Grafana dashboards are written; DASHBOARD_PATH overrides it.
 func dashboardPath() string {
 	if envPath := os.Getenv("DASHBOARD_PATH"); envPath != "" {
 		return envPath
@@ -251,14 +237,7 @@ func run(ctx context.Context, cfg *config.Config, webuiURL string) error {
 		}
 	}
 
-	// Publish the metric catalog, if this collector is the one designated to.
-	//
-	// The catalog describes what every published metric means, so a dashboard
-	// can render from Prometheus alone and needs no MIBs of its own. It is
-	// emitted here rather than from the poll path deliberately: a poll path
-	// would write the whole catalog once per device per cycle, and the
-	// catalog is identical every time and carries no device dimension, so
-	// that would cost the fleet size for nothing.
+	// Publish the metric catalog once here, if this collector is the designated emitter.
 	if cfg.Prometheus.CatalogEmissionEnabled() {
 		catalog := metrics.NewCatalogEmitterFor(exporter)
 		catalog.Start(ctx)
@@ -478,11 +457,7 @@ func processPollResults(ctx context.Context, poll *poller.Poller, statusTracker 
 				duration := time.Since(result.Timestamp).Seconds()
 				pollDuration.WithLabelValues(result.DeviceName).Observe(duration)
 
-				// Answered varbinds, not returned varbinds. A device answers
-				// every OID it was asked about, including the ones it does not
-				// implement, and those come back as NoSuchObject. Reporting the
-				// raw count told an operator a KVM had collected 79 metrics
-				// when it had produced 41 series.
+				// Count answered varbinds: NoSuchObject replies are not metrics.
 				collected := snmp.CountValues(result.Results)
 				if collected == len(result.Results) {
 					log.Printf("Poll successful for device %s: %d results in %.2fs",
@@ -497,11 +472,7 @@ func processPollResults(ctx context.Context, poll *poller.Poller, statusTracker 
 					statusTracker.UpdatePollSuccess(result.DeviceName, collected)
 				}
 
-				// Note: metric export success/failure is tracked by the
-				// exporter itself (gonetmon_exports_total, registered in
-				// internal/metrics), not here -- a successful SNMP poll
-				// does not imply the results were actually exported to
-				// Prometheus.
+				// Export success is tracked by the exporter, not by a successful poll.
 			}
 		}
 	}

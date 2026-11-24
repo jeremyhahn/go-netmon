@@ -55,13 +55,7 @@ func column(entryOID, columnID, index string) string {
 	return entryOID + "." + columnID + "." + index
 }
 
-// testPoll observes one poll and remembers it, so a test can read that poll's
-// readings the way the conversion path does.
-//
-// It exists only to keep the tests reading like the code: observe a poll, then
-// scale its readings with what it observed. There is no state behind it -- a
-// second Update simply replaces the first, which is exactly what happens in
-// production, where nothing about a sensor survives its poll.
+// testPoll observes one poll so a test can read its readings; a second Update replaces the first.
 type testPoll struct {
 	poll *pollSensors
 }
@@ -151,9 +145,7 @@ func TestEntitySensorCacheLearnsMetadata(t *testing.T) {
 	}
 }
 
-// TestEntitySensorCacheLearnsEntityNames checks the ENTITY-MIB join, including
-// the fallback: entPhysicalName is preferred, entPhysicalDescr is used when
-// the device leaves the name empty, and a row with neither has no name.
+// TestEntitySensorCacheLearnsEntityNames checks entPhysicalName, the entPhysicalDescr fallback, and no name.
 func TestEntitySensorCacheLearnsEntityNames(t *testing.T) {
 	cache := newTestSensorCache()
 	cache.Update("dist-01", []*snmp.Result{
@@ -203,19 +195,7 @@ func TestEntitySensorCacheTrimsEntityNames(t *testing.T) {
 	}
 }
 
-// TestEntitySensorCacheForgetsMetadataBetweenPolls is the inverse of a test
-// this file used to carry.
-//
-// It asserted that metadata learned by a full walk still interpreted the
-// readings of a later poll that returned the value column alone -- presented
-// as the reason the cache existed. It was also the mechanism by which a reused
-// entPhysicalIndex inherited a previous sensor's scale, so the behavior is
-// gone and this pins its absence.
-//
-// The cost is real and accepted: a device whose poll does not carry the
-// metadata columns publishes nothing for those sensors that cycle, and says so
-// through the drop counter. There is no correct reading to produce from
-// metadata that was not read.
+// TestEntitySensorCacheForgetsMetadataBetweenPolls checks a value-only poll does not reuse an earlier poll's metadata.
 func TestEntitySensorCacheForgetsMetadataBetweenPolls(t *testing.T) {
 	cache := newTestSensorCache()
 	cache.Update("dist-01", sensorRow(ciscoSensorEntry, "3001", SensorTypeDBm, SensorScaleUnits, 2, -115, SensorStatusOK))
@@ -355,12 +335,7 @@ func TestEntitySensorCacheIgnoresWrongColumnTypes(t *testing.T) {
 	}
 }
 
-// TestEntitySensorCacheScalesWithoutAnyCacheAtAll is the same property stated
-// where it matters: a conversion wired up with no index cache still publishes
-// correctly scaled readings, because the metadata it needs came in with them.
-//
-// Before metadata was made per-poll this dropped every sensor reading, which
-// was defensible only because the cache was the only place metadata lived.
+// TestEntitySensorCacheScalesWithoutAnyCacheAtAll checks scaling works with no index cache.
 func TestEntitySensorCacheScalesWithoutAnyCacheAtAll(t *testing.T) {
 	results := sensorRow(ciscoSensorEntry, "3001", SensorTypeDBm, SensorScaleUnits, 2, -115, SensorStatusOK)
 
@@ -417,10 +392,7 @@ func TestSensorSampleLabels(t *testing.T) {
 	}
 }
 
-// TestSensorSampleOmitsUnknownEntityName checks that a device polled without
-// ENTITY-MIB still reports its readings, without an empty name label. An empty
-// label and an absent one are the same series to Prometheus, so writing one
-// would only be misleading.
+// TestSensorSampleOmitsUnknownEntityName checks a reading without ENTITY-MIB carries no empty name label.
 func TestSensorSampleOmitsUnknownEntityName(t *testing.T) {
 	cache := newTestSensorCache()
 	cache.Update("dist-01", sensorRow(ciscoSensorEntry, "3001", SensorTypeDBm, SensorScaleUnits, 2, -115, SensorStatusOK))
@@ -590,16 +562,7 @@ func TestSensorSampleRefusesUninterpretableReadings(t *testing.T) {
 	}
 }
 
-// TestSensorSampleRequiresTheStatusColumn checks that a sensor whose status
-// the device never reported is not published.
-//
-// This inverts an earlier decision. The reading was published on the reasoning
-// that RFC 3433 makes the column mandatory but refusing every reading for a
-// missing status would drop a whole table over one absent column. Measured
-// against real devices, none omits it: dist-01 and dist-02 return a
-// status row for all 104 of their sensors and access-01 for all 13. So the
-// leniency defended nobody and left a fail-open in the one path whose premise
-// is that an unvalidated number is worse than no number.
+// TestSensorSampleRequiresTheStatusColumn checks a sensor without a reported status is not published.
 func TestSensorSampleRequiresTheStatusColumn(t *testing.T) {
 	cache := newTestSensorCache()
 	cache.Update("dist-01", []*snmp.Result{
@@ -692,13 +655,7 @@ func TestTableColumnAndIndex(t *testing.T) {
 	}
 }
 
-// TestEntitySensorValueKey checks that exactly the value column of the two
-// sensor tables is recognized, no other column of them is, and that the key it
-// returns names the module the reading actually came from.
-//
-// That last part is the whole point: the module in this key is what decides
-// which metadata the reading resolves against, so returning the right index
-// under the wrong module would reintroduce the cross-module scaling bug.
+// TestEntitySensorValueKey checks only the value columns are recognized and the key names the reading's module.
 func TestEntitySensorValueKey(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -731,10 +688,7 @@ func TestEntitySensorValueKey(t *testing.T) {
 	}
 }
 
-// TestEntitySensorValueKeySeparatesTheModules pins that the same
-// entPhysicalIndex read from the two tables produces two different keys. Both
-// tables are INDEX { entPhysicalIndex }, so this is the only thing keeping a
-// dual-implementing agent's two descriptions of one sensor apart.
+// TestEntitySensorValueKeySeparatesTheModules checks one index read from both tables yields two keys.
 func TestEntitySensorValueKeySeparatesTheModules(t *testing.T) {
 	standard, ok := entitySensorValueKey(column(stdSensorEntry, sensorColumnValue, "1"))
 	if !ok {
@@ -804,12 +758,7 @@ func BenchmarkSensorSample(b *testing.B) {
 	}
 }
 
-// TestSensorErrorMessages checks what each refusal says.
-//
-// These strings are how an operator finds out why a transceiver has no graph,
-// so the device, the sensor and the cause all have to be in them. The range
-// error's wording is the one with logic behind it: the same type reports both
-// ends of the range and has to name the right one.
+// TestSensorErrorMessages checks each refusal names the device, the sensor and the cause.
 func TestSensorErrorMessages(t *testing.T) {
 	tests := []struct {
 		name string
@@ -898,14 +847,7 @@ func TestDeviceSensorsEntityNameNilReceiver(t *testing.T) {
 	}
 }
 
-// TestEntitySensorCacheRejectsOversizedColumnValues checks the narrowing
-// guard on the four Integer32 metadata columns.
-//
-// Truncation wraps, so this is a case where accepting the value is more
-// dangerous than rejecting it: 1<<32 + 9 narrows to units(9), which passes
-// every check downstream and scales every reading of that sensor as if the
-// agent had said something it did not. A value that does not fit Integer32
-// must teach the cache nothing.
+// TestEntitySensorCacheRejectsOversizedColumnValues checks values beyond Integer32 are rejected, not wrapped.
 func TestEntitySensorCacheRejectsOversizedColumnValues(t *testing.T) {
 	const wrapsToUnits = int64(1)<<32 + 9
 
@@ -971,15 +913,7 @@ func TestInt32Value(t *testing.T) {
 	}
 }
 
-// documentedDropReasons is every value the reason label of
-// gonetmon_entity_sensor_dropped_total is allowed to take, as
-// docs/metrics/entity-sensors.md publishes it.
-//
-// The set has to be closed and this has to be the list, because the label is
-// derived from data a device chose. A reason minted per response would grow
-// one Prometheus time series per distinct value, on the counter whose whole
-// job is to report devices behaving badly -- the metric would become the
-// attack surface it exists to describe.
+// documentedDropReasons is the closed set of reason label values in docs/metrics/entity-sensors.md.
 var documentedDropReasons = map[string]bool{
 	"missing_metadata":      true,
 	"missing_type":          true,
@@ -997,12 +931,7 @@ var documentedDropReasons = map[string]bool{
 	"unknown":               true,
 }
 
-// TestSensorStatusErrorReasonIsClosed checks that no status a device can put
-// in an Integer32 produces a reason outside the documented set.
-//
-// It sweeps the boundaries rather than a handful of examples, because the
-// property being checked is "no input reaches the label", and an example-based
-// test only shows that the examples do not.
+// TestSensorStatusErrorReasonIsClosed sweeps Integer32 boundaries for reasons outside the documented set.
 func TestSensorStatusErrorReasonIsClosed(t *testing.T) {
 	statuses := []SensorStatus{
 		SensorStatusOK, SensorStatusUnavailable, SensorStatusNonoperational,
@@ -1033,15 +962,7 @@ func TestSensorStatusErrorReasonIsClosed(t *testing.T) {
 	}
 }
 
-// TestEntitySensorDropReasonsStayBounded is the same property checked where it
-// actually matters: on the Prometheus counter, through the real conversion
-// path, for statuses a device made up.
-//
-// The invariant is not "few labels" but "the labels do not grow with the
-// input", so it is checked by sweeping two devices with wildly different
-// numbers of distinct statuses and requiring the same reason set from both. A
-// fixed upper bound would pass just as well on an implementation that leaked
-// one label per status for the first few statuses.
+// TestEntitySensorDropReasonsStayBounded checks the counter's reason labels do not grow with device input.
 func TestEntitySensorDropReasonsStayBounded(t *testing.T) {
 	few := sweepSensorStatuses(t, "bounded-reason-few", 6)
 	many := sweepSensorStatuses(t, "bounded-reason-many", 400)
@@ -1060,12 +981,7 @@ func TestEntitySensorDropReasonsStayBounded(t *testing.T) {
 	}
 }
 
-// sweepSensorStatuses runs one sensor per status value through the real
-// conversion path and returns the reason labels that reached the counter.
-//
-// A reading is expected only for ok(1); every other status is a sensor saying
-// it has nothing to report, and a sample from one would be a stale number
-// published as a measurement.
+// sweepSensorStatuses converts one sensor per status and returns the reason labels; only ok(1) yields a reading.
 func sweepSensorStatuses(t *testing.T, device string, statuses int) map[string]bool {
 	t.Helper()
 
@@ -1149,10 +1065,7 @@ func TestEntitySensorCacheKeysMetadataByModule(t *testing.T) {
 	}
 }
 
-// TestEntitySensorScaleIsReadWithItsOwnModule is why the module is half the
-// key: scale 14 is 10^15 in ENTITY-SENSOR-MIB and 10^18 in
-// CISCO-ENTITY-SENSOR-MIB, so the same varbind read through the wrong module
-// is a thousand-fold out.
+// TestEntitySensorScaleIsReadWithItsOwnModule: scale 14 is 10^15 in ENTITY-SENSOR-MIB and 10^18 in Cisco's.
 func TestEntitySensorScaleIsReadWithItsOwnModule(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1181,15 +1094,7 @@ func TestEntitySensorScaleIsReadWithItsOwnModule(t *testing.T) {
 	}
 }
 
-// TestEntitySensorValueDoesNotBorrowTheOtherModulesMetadata is the case the
-// previous version of this file could not catch, because every reading was
-// supplied from the same table as its metadata.
-//
-// One module describes entPhysicalIndex 1; a value for index 1 then arrives
-// from the *other* module. Keyed by index alone, the reading would be scaled
-// with metadata it has nothing to do with -- 5 at Cisco's scale 14 is 5e18,
-// while the standard module's scale 14 is 5e15, and poll ordering would decide
-// which one a reading got. It must not resolve at all.
+// TestEntitySensorValueDoesNotBorrowTheOtherModulesMetadata checks a value never resolves against the other module's metadata.
 func TestEntitySensorValueDoesNotBorrowTheOtherModulesMetadata(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1225,25 +1130,12 @@ func TestEntitySensorValueDoesNotBorrowTheOtherModulesMetadata(t *testing.T) {
 	}
 }
 
-// TestEntitySensorDualImplementingAgentScalesBothModules is the payoff, and
-// the reason the key is (module, index) rather than a mismatch check that
-// drops one side.
-//
-// Both sensor tables are INDEX { entPhysicalIndex }, so an agent implementing
-// both describes the same physical sensor at the same index in each, using
-// each module's own enum for the quantity: 10^18 is scale 14 in Cisco and
-// scale 15 in the standard module. Both readings are valid and both must
-// arrive at the same physical answer.
+// TestEntitySensorDualImplementingAgentScalesBothModules checks both modules' readings of one sensor scale to the same value.
 func TestEntitySensorDualImplementingAgentScalesBothModules(t *testing.T) {
 	const physicalAnswer = 5e18
 
 	cache := newTestSensorCache()
-	// The same sensor, at the same index, described by both modules in one
-	// poll -- which is what a device implementing both actually returns.
-	// The descriptions differ in precision as well as in scale enum, which
-	// is what makes a collision between them detectable: if the two rows
-	// share a map entry, one module's raw value is read with the other's
-	// decimal places and no combination lands on the right answer.
+	// One sensor described by both modules in one poll, with different precision and scale enums.
 	cache.Update("dual", append(
 		sensorRow(ciscoSensorEntry, "1", SensorTypeWatts, SensorScale14, 0, 5, SensorStatusOK),
 		sensorRow(stdSensorEntry, "1", SensorTypeWatts, SensorScale15, 3, 5000, SensorStatusOK)...))
@@ -1277,14 +1169,7 @@ func TestEntitySensorDualImplementingAgentScalesBothModules(t *testing.T) {
 	}
 }
 
-// TestEntitySensorModulesDoNotCollideWithinOnePoll checks that one module's
-// description of an index cannot disturb the other's when both arrive
-// together, which is how a dual-implementing agent answers.
-//
-// This replaces a test that asserted the same separation *across* polls.
-// Metadata no longer crosses polls at all, so the cross-poll form was
-// asserting something that can no longer happen; the within-poll form is where
-// the collision is still possible and where the key earns its keep.
+// TestEntitySensorModulesDoNotCollideWithinOnePoll checks both modules' descriptions of one index stay separate.
 func TestEntitySensorModulesDoNotCollideWithinOnePoll(t *testing.T) {
 	cache := newTestSensorCache()
 	cache.Update("sw", append(
@@ -1309,12 +1194,7 @@ func TestEntitySensorModulesDoNotCollideWithinOnePoll(t *testing.T) {
 	}
 }
 
-// TestSensorTypeLabelIsClosed checks that no EntitySensorDataType a device can
-// put in an Integer32 produces a sensor_type label outside the declared set.
-//
-// Same hazard as the drop reason: the label lands on every exported sample and
-// on gonetmon_entity_sensor_samples_total, so an agent answering a fresh type
-// per poll would mint one time series per response.
+// TestSensorTypeLabelIsClosed checks no Integer32 type yields a sensor_type label outside the declared set.
 func TestSensorTypeLabelIsClosed(t *testing.T) {
 	declared := map[string]bool{}
 	for _, name := range sensorTypeNames {
@@ -1345,15 +1225,7 @@ func TestSensorTypeLabelIsClosed(t *testing.T) {
 	}
 }
 
-// TestEntitySensorTypeLabelsStayBounded checks the same property on the
-// exported samples, through the real conversion path.
-//
-// Both sweeps cover every declared type, so the declared half of the label set
-// is identical by construction and only the undeclared half varies: one device
-// answers 4 values no MIB declares, the other answers 400. The label sets must
-// still match. Varying the whole range instead would fail for a legitimate
-// reason -- a wider sweep reaches more declared types -- which is a mistake
-// this test made on its first draft.
+// TestEntitySensorTypeLabelsStayBounded checks sensor_type labels on samples do not grow with undeclared types.
 func TestEntitySensorTypeLabelsStayBounded(t *testing.T) {
 	few := sweepSensorTypes(t, "bounded-type-few", 4)
 	many := sweepSensorTypes(t, "bounded-type-many", 400)
@@ -1403,16 +1275,7 @@ func sweepSensorTypes(t *testing.T, device string, undeclared int) map[string]bo
 	return labels
 }
 
-// TestEntitySensorMetadataNeverOutlivesItsPoll is the invariant gate 5 asked
-// for: a value is never published with metadata that could belong to different
-// hardware.
-//
-// The dangerous case is same-type reuse, which no signal in the protocol
-// distinguishes from the sensor simply still being there. An entPhysicalIndex
-// described as Celsius at precision 2, reused by a different Celsius sensor at
-// precision 0, would publish 42 C as 0.42 C if the second poll's missing
-// precision were filled in from the first. It cannot be, because metadata from
-// an earlier poll is not reachable from the sample path at all.
+// TestEntitySensorMetadataNeverOutlivesItsPoll checks a reused index is never scaled with earlier metadata.
 func TestEntitySensorMetadataNeverOutlivesItsPoll(t *testing.T) {
 	cache := newTestSensorCache()
 
@@ -1521,15 +1384,7 @@ func TestEntitySensorReadsASensorFullyDescribedByItsOwnPoll(t *testing.T) {
 	}
 }
 
-// TestEntitySensorNameNeverOutlivesItsPoll is the label-side half of the
-// invariant, and the last lifetime hole this design closed.
-//
-// Names were cached across polls on the reasoning that a stale name mislabels
-// rather than mis-scales, and is therefore the lesser harm. It is lesser, and
-// it is still a confident lie: an operator reading "Ethernet1/3 Rx Power" for
-// a sensor that is now Ethernet1/5 acts on it exactly as readily as on a wrong
-// number. An unnamed reading, with gonetmon_entity_sensor_unnamed_total
-// incrementing, is the honest outcome.
+// TestEntitySensorNameNeverOutlivesItsPoll checks a name is never carried into a later poll.
 func TestEntitySensorNameNeverOutlivesItsPoll(t *testing.T) {
 	cache := newTestSensorCache()
 
@@ -1538,8 +1393,7 @@ func TestEntitySensorNameNeverOutlivesItsPoll(t *testing.T) {
 		sensorRow(ciscoSensorEntry, "1", SensorTypeDBm, SensorScaleUnits, 2, -115, SensorStatusOK),
 		stringResult(column(physicalEntry, physicalColumnName, "1"), "Ethernet1/3 Rx Power")))
 
-	// Poll 2 describes the same index but reports no name -- ENTITY-MIB was
-	// not walked, or the index has been reused and is not yet named.
+	// Poll 2 describes the same index without a name.
 	cache.Update("sw", sensorRow(ciscoSensorEntry, "1", SensorTypeDBm, SensorScaleUnits, 2, -120, SensorStatusOK))
 
 	sample, err := cache.sensorSample("sw", ciscoKey("1"),
@@ -1578,10 +1432,7 @@ func TestEntitySensorNameCountsTheGapItLeaves(t *testing.T) {
 	}
 }
 
-// TestEntitySensorNamesComeFromTheSamePollAsTheReading is the other side: when
-// ENTITY-MIB is walked alongside the sensor modules -- which is what the
-// poller does, resolving every assigned module into one OID set and exporting
-// one slice per cycle -- the name is there and is used.
+// TestEntitySensorNamesComeFromTheSamePollAsTheReading checks names walked in the same poll are used.
 func TestEntitySensorNamesComeFromTheSamePollAsTheReading(t *testing.T) {
 	cache := newTestSensorCache()
 	cache.Update("sw", append(

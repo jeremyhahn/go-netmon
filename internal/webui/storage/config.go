@@ -304,10 +304,7 @@ func (st *configState) configDevices() []ConfigDevice {
 	return devices
 }
 
-// assignments renders one owner's join rows as document assignments, ordered by
-// module name. A row naming a module that is no longer in the catalog is left
-// out: it is a dangling reference the store has, not a configuration anyone can
-// act on, and carrying it would make the document fail its own validation.
+// assignments renders one owner's join rows as assignments ordered by module name, skipping modules no longer in the catalog.
 func (st *configState) assignments(byMIB map[int64]MIBAssignment) []ConfigAssignment {
 	if len(byMIB) == 0 {
 		return nil

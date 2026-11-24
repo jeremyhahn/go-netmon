@@ -57,7 +57,7 @@ func TestChartability_TextualConventions(t *testing.T) {
 	}
 }
 
-// TestChartability_IntegerBitmasks tests that INTEGER bitmasks are NOT chartable
+// TestChartability_IntegerBitmasks tests that INTEGER bitmasks are not chartable
 func TestChartability_IntegerBitmasks(t *testing.T) {
 	parser := New(testsupport.MIBDir("standard"))
 	require.NoError(t, parser.Init())
@@ -98,7 +98,7 @@ func TestChartability_IntegerBitmasks(t *testing.T) {
 	}
 }
 
-// TestChartability_IntegerEnums tests that INTEGER enums are NOT chartable
+// TestChartability_IntegerEnums tests that INTEGER enums are not chartable
 func TestChartability_IntegerEnums(t *testing.T) {
 	parser := New(testsupport.MIBDir("standard"))
 	require.NoError(t, parser.Init())

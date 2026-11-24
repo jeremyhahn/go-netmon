@@ -229,12 +229,7 @@ func TestReachabilityBacksOffAndRecovers(t *testing.T) {
 		t.Errorf("first recorded cycle earned %s, want the device's own interval %s", got, interval)
 	}
 
-	// due() must report the instant record() computed: its own time.Now(),
-	// which lies between the two readings taken around the call, plus the delay
-	// it returned. Bracketing it that way is deterministic and says more than
-	// the "is it in the future" check this replaces, which passed for any
-	// later-but-wrong value and, at a short interval, would fail on a stalled
-	// runner for reasons unrelated to the code.
+	// due() must equal record()'s own now plus the returned delay, bracketed by readings around the call.
 	earliest, latest := before.Add(got), after.Add(got)
 	if due := r.due(); due.Before(earliest) || due.After(latest) {
 		t.Errorf("due = %s, want the scheduled instant within [%s, %s]", due, earliest, latest)
@@ -268,20 +263,7 @@ func TestReachabilityBacksOffAndRecovers(t *testing.T) {
 	}
 }
 
-// TestReachabilityPublishesTheOutcomeAndItsRetryTogether is the invariant
-// behind the status endpoint: a device reported unreachable always says when it will be tried
-// again.
-//
-// The two facts used to be written at two points in the worker's cycle --
-// silent() in commit, schedule() after poll returned, with the export and the
-// result report in between. A status read landing between them saw
-// unreachable=true and next_poll_time=0001-01-01T00:00:00Z, which is what the
-// endpoint exists to avoid telling an operator, and what made
-// TestDeviceStatusReportsAnUnreachableDevice in internal/api fail under load.
-//
-// This asserts the pair after the ONLY write there now is, in the same order
-// worker.commit performs it, so it fails by construction rather than by luck if
-// the two are ever separated again.
+// TestReachabilityPublishesTheOutcomeAndItsRetryTogether checks an unreachable device always reports its next retry.
 func TestReachabilityPublishesTheOutcomeAndItsRetryTogether(t *testing.T) {
 	t.Parallel()
 

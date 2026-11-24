@@ -1,42 +1,5 @@
 #!/usr/bin/env bash
-# Recovery cleanup: remove integration stacks left behind by a run that was
-# killed hard enough to skip its trap.
-#
-# Usage: clean.sh
-#
-# THE HAZARD THIS IS BUILT AROUND
-#
-# "Find the stacks by ownership label and tear them down" is not safe on its
-# own, and the unsafe version was measured, not imagined: `make integration-up`
-# can create test services inside the project compose infers from the working
-# directory -- "go-netmon" -- which is the project a DEPLOYED stack occupies.
-# Selecting projects by "contains a container from our compose file" then
-# returns "go-netmon", and `down -v --remove-orphans` over it removes the
-# deployment's containers as orphans and deletes its volumes: the MIB catalog,
-# the device configuration, the metric history.
-#
-# A per-container match proves that ONE container is ours. It does not prove
-# the PROJECT is. So two independent conditions must both hold before anything
-# is removed:
-#
-#   1. the project name is inside the namespace this repository generates
-#      (go-netmon-integration*), which the deployment's name is not; and
-#   2. EVERY container in that project carries our compose file's label, so a
-#      project holding anything else is left alone rather than cleaned.
-#
-# Either one alone is insufficient. (1) without (2) would tear down a mixed
-# project that merely happens to be named like ours; (2) without (1) is the
-# defect described above.
-#
-# (2) is a claim about every member, so it is TRUE OF A PROJECT WITH NO
-# MEMBERS. That is not a quibble: discovery and the membership query are two
-# separate docker calls, and a project emptied in between passes a check that
-# looked at nothing. verify_exclusive therefore also requires the project to
-# be non-empty and to still contain the container discovery found it by.
-#
-# Every docker call is checked. A discovery or teardown failure exits nonzero
-# rather than reporting "nothing to clean", which would be the same
-# silent-success this script exists to correct.
+# Remove integration stacks left by killed runs: only go-netmon-integration* projects whose every container is ours. Usage: clean.sh
 
 set -uo pipefail
 
@@ -49,25 +12,7 @@ COMPOSE_FILE="$PROJECT_ROOT/docker-compose.test.yml"
 # match on a name no deployment uses.
 PROJECT_PREFIX="go-netmon-integration"
 
-# The manual stack is IN that namespace and is not an orphan. "make
-# integration-up" creates go-netmon-integration-manual and a person leaves it
-# up on purpose -- stack.sh's header says in terms that two people on one host
-# share it. A prefix match alone selects it, so "make -C test/integration
-# clean" would run "down -v --remove-orphans" over a stack someone is using
-# and delete its volumes underneath them. It has its own teardown, "make
-# integration-down"; recovery cleanup is for runs killed past their trap.
-#
-# Read from the shared library so this and stack.sh cannot drift: stack.sh
-# CREATES this project and honours NETMON_INTEGRATION_PROJECT, and reading the
-# same function here means an operator who overrides it is protected under the
-# name they actually used rather than the default.
-#
-# run-tests.sh deliberately has no such override and never names this project.
-# It was briefly given one, and that is precisely how the two sides drifted:
-# the seam that was supposed to keep the destroying side and the keeping side
-# in agreement let run-tests.sh adopt the manual stack's name and tear it down.
-# guard-tests.sh pins the pair against this one definition now, both directions
-# in one test, rather than each side testing only its own half.
+# Leave the manual stack alone; its name comes from the shared library, matching stack.sh.
 # shellcheck source=test/integration/compose-guard.sh
 source "$SCRIPT_DIR/compose-guard.sh"
 MANUAL_PROJECT="$(integration_manual_project)"
@@ -138,35 +83,7 @@ fi
 
 # --- verify exclusive ownership, then remove ------------------------------
 
-# verify_exclusive <project> <anchor> decides whether a project may be
-# destroyed. It prints its reason and returns:
-#
-#   0  proven ours
-#   1  refused -- the answer was "no", which is a normal outcome, not an error
-#   2  the question could not be asked -- a docker failure, which is an
-#      error and must not read as "nothing to clean"
-#
-# Three conditions must ALL hold, and the first two exist because the third is
-# a universal quantifier: "every member came from our compose file" is
-# satisfied vacuously by a project with no members at all. If the containers
-# disappear between discovery and this query the loop runs zero times and
-# reports an exclusivity it never observed, and "down -v --remove-orphans"
-# then runs over a name whose current contents were never looked at. A foreign
-# container that took that name in the gap goes with it, and so do the
-# project's volumes.
-#
-#   1. the project still HAS containers;
-#   2. the container that identified it at discovery is still one of them, so
-#      this is the same project that was looked at and not a reuse of the name;
-#   3. every member carries our compose file's label.
-#
-# For the DECISION, (1) is subsumed by (2): an empty project cannot contain the
-# anchor, so (2) alone already refuses it -- measured by deleting (1) and
-# watching the teardown still be refused. (1) is kept because the two
-# situations are not the same thing to the person reading the output. "the
-# stack you asked me to remove no longer exists" and "this name now holds a
-# different container" call for different responses, and collapsing them
-# reports the second when the first is what happened.
+# verify_exclusive <project> <anchor>: 0 ours, 1 refused, 2 docker failed; the project must be non-empty, hold the anchor and be all ours.
 verify_exclusive() {
     local project="$1" anchor="$2"
     local members="" status=0 id owner anchor_present=0
@@ -217,11 +134,7 @@ for entry in $candidates; do
         *) continue ;;
     esac
 
-    # Asked again immediately before the destructive call. This NARROWS the
-    # window between proving ownership and acting on it; it cannot close it,
-    # because the docker CLI offers no way to make the two atomic. It is worth
-    # the extra query because everything between the two checks -- the label
-    # reads over every member -- is time the first answer was ageing.
+    # Re-check ownership immediately before tearing down.
     verify_exclusive "$project" "$anchor"
     case "$?" in
         0) ;;

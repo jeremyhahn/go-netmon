@@ -58,10 +58,7 @@ type CLI struct {
 	composeFile string
 	helperImage string
 
-	// exec runs one argument vector. It is a field so that a test can assert
-	// on the exact vector that would reach the process - which is the whole
-	// safety claim here - without a daemon. It is never a command line, and
-	// the production value below is the only thing that executes anything.
+	// exec runs one argument vector; tests replace it to assert the vector.
 	exec execFunc
 }
 
@@ -140,12 +137,7 @@ func lines(out string) []string {
 	return result
 }
 
-// rows splits tab-separated output, preserving the separators.
-//
-// lines trims each line, which silently removes a trailing tab — and a trailing
-// tab is exactly what a row whose last field is empty ends in. Trimming it turns
-// "name\t" into "name" and makes an absent label indistinguishable from output
-// this package cannot parse.
+// rows splits tab-separated output, keeping an empty trailing field.
 func rows(out string) []string {
 	var result []string
 	for _, l := range strings.Split(out, "\n") {
@@ -317,23 +309,7 @@ func (c *CLI) VolumeBytes(ctx context.Context, volume string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	// "du -sb" prints "<bytes>\t<path>", so the byte count is everything before
-	// the first tab and ParseInt is handed it directly.
-	//
-	// This used to read strings.Fields(field + " ")[0]. The appended space was
-	// there to guarantee Fields returned at least one element, and it does not:
-	// Fields splits around whitespace and discards it, so a whitespace-only
-	// string yields an empty slice and [0] panicked. An idiom that reads as a
-	// guard and is not one is worse than no guard, because the next reader
-	// stops looking -- and it panicked one line ABOVE the DockerOutputError
-	// below, whose Reason is "expected a byte count", leaving that error
-	// unreachable for precisely the case it was written for.
-	//
-	// Measured: the helper container exiting 0 with empty stdout is reachable
-	// on a loaded or degraded daemon, and it took down a CI run that way.
-	// Empty, whitespace-only and unparseable output now all take the same
-	// route, because they are the same thing to the caller: docker did not
-	// answer the question.
+	// "du -sb" prints "<bytes>\t<path>"; empty or unparseable output is a DockerOutputError.
 	field, _, _ := strings.Cut(strings.TrimSpace(out), "\t")
 	size, convErr := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
 	if convErr != nil {

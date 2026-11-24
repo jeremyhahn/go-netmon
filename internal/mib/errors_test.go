@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// A malformed DISPLAY-HINT is a defect in a MIB file, not in a device, so the
-// message has to carry the hint text itself: that is the only thing that tells
-// an operator which TEXTUAL-CONVENTION to go and look at.
+// A malformed DISPLAY-HINT error must carry the hint text.
 func TestDisplayHintErrorMessage(t *testing.T) {
 	err := &DisplayHintError{Hint: "1x:", Reason: "missing format character"}
 

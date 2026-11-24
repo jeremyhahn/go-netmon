@@ -92,13 +92,7 @@ func parseIntegerHint(hint string) (*DisplayHint, error) {
 	}
 }
 
-// parseOctetHint handles the repeating octet-string grammar:
-//
-//	octet-hint     = *( [ "*" ] length format [ separator [ terminator ] ] )
-//	length         = 1*DIGIT
-//	format         = "a" / "b" / "d" / "o" / "x"
-//	separator      = <any non-alphanumeric character>
-//	terminator     = <any non-alphanumeric character>
+// parseOctetHint parses the repeating RFC 2579 octet-string grammar.
 func parseOctetHint(hint string) (*DisplayHint, error) {
 	parsed := &DisplayHint{}
 
@@ -190,8 +184,7 @@ func formatSignedBase(value int64, base int) string {
 	return strconv.FormatInt(value, base)
 }
 
-// formatScaledDecimal renders value with an implied decimal point, so that
-// DISPLAY-HINT "d-2" turns 1234 into "12.34".
+// formatScaledDecimal renders value with an implied decimal point ("d-2": 1234 is "12.34").
 func formatScaledDecimal(value int64, decimals int) string {
 	sign := ""
 	if value < 0 {
@@ -237,10 +230,7 @@ func (h *DisplayHint) FormatOctets(value []byte) string {
 			out.WriteString(formatOctetRun(value[pos:end], spec.Format))
 			pos = end
 
-			// A separator joins two runs, so it is only correct when another
-			// run will actually follow. A declared repeat count larger than
-			// the octets present (e.g. hint "*1x:" over {9, 0xaa}) would
-			// otherwise leave a dangling "aa:".
+			// A separator only when another run follows.
 			if spec.Separator != 0 && r < repeats-1 && pos < len(value) {
 				out.WriteByte(spec.Separator)
 			}

@@ -10,13 +10,7 @@ import (
 	"time"
 )
 
-// What happens when writing an archive out goes wrong halfway.
-//
-// A restore that fails is safe; a restore that fails and says nothing is not,
-// because the next thing to run assumes the data is there. These cover the
-// paths taken when the stream runs out, when the destination refuses a name,
-// and when an entry is something a tar cannot faithfully carry -- each of which
-// has to stop the extraction and say why.
+// Archive extraction that fails halfway must stop and say why.
 
 // brokenReader fails part-way through, as a truncated archive would.
 type brokenReader struct {
@@ -214,13 +208,7 @@ func (f fakeInfo) Sys() any           { return nil }
 
 var _ io.Reader = (*brokenReader)(nil)
 
-// TestACorruptArchiveIsRefusedNotPartiallyApplied is the failure a restore is
-// most likely to meet in the field: a member that was truncated in transit or
-// on disk.
-//
-// The extraction must stop and report. What it must never do is return the
-// entries it managed before the stream broke as though the restore succeeded,
-// because the caller then starts the stack on half its data.
+// TestACorruptArchiveIsRefusedNotPartiallyApplied checks a truncated member stops the extraction with an error.
 func TestACorruptArchiveIsRefusedNotPartiallyApplied(t *testing.T) {
 	t.Parallel()
 

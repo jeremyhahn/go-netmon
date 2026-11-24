@@ -9,9 +9,7 @@ import (
 	"time"
 )
 
-// hintCache memoizes parsed DISPLAY-HINT clauses. The same handful of hints
-// ("255a", "1x:", the DateAndTime hint) recur across every OID in every module,
-// and formatting sits on the per-poll display path.
+// hintCache memoizes parsed DISPLAY-HINT clauses for the display path.
 var hintCache sync.Map // map[hintKey]*DisplayHint
 
 type hintKey struct {
@@ -19,8 +17,7 @@ type hintKey struct {
 	isInteger bool
 }
 
-// cachedHint parses a DISPLAY-HINT, reusing a previous parse when possible.
-// An unparseable hint is cached as nil so it is not re-parsed on every value.
+// cachedHint parses a DISPLAY-HINT once; an unparseable hint is cached as nil.
 func cachedHint(hint string, isInteger bool) *DisplayHint {
 	key := hintKey{hint: hint, isInteger: isInteger}
 	if cached, ok := hintCache.Load(key); ok {
@@ -61,10 +58,7 @@ func FormatValue(meta *OIDMetadata, value any) string {
 		return ""
 	}
 	if meta == nil {
-		// No MIB describes this object, which is the case FormatOctets is for:
-		// the content is the only evidence there is. Without this an octet
-		// string would render as Go syntax, "[4 0]", or as raw bytes depending
-		// only on which Go type gosnmp happened to yield.
+		// No MIB describes this object, so the content decides.
 		if octets, ok := toBytes(value); ok {
 			return FormatOctets(octets)
 		}
@@ -144,8 +138,7 @@ func FormatValueWithUnits(meta *OIDMetadata, value any) string {
 	return formatted + " " + meta.Units
 }
 
-// formatOctetString renders a byte-valued object, preferring the DISPLAY-HINT
-// and falling back to text-or-hex based on the content.
+// formatOctetString renders a byte value by DISPLAY-HINT, else text-or-hex.
 func formatOctetString(meta *OIDMetadata, octets []byte) string {
 	if len(octets) == 0 {
 		return ""

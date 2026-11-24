@@ -7,11 +7,7 @@ import (
 	"time"
 )
 
-// The assertions here are on the SERIALIZED JSON rather than on the Go value,
-// because that is the only place the defect they cover is visible: the struct
-// field is a time.Time either way, and `omitempty` on a struct is silently a
-// no-op. A test that round-tripped through the Go type would have passed
-// against the broken version.
+// Assertions are on the serialized JSON, where omitempty on time.Time shows.
 
 func TestDeviceStatusOmitsNextPollTimeUntilARetryIsScheduled(t *testing.T) {
 	t.Parallel()

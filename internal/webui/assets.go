@@ -46,12 +46,7 @@ func (e *AssetError) Error() string {
 
 func (e *AssetError) Unwrap() error { return e.Err }
 
-// staticAssets holds internal/webui/static as built into the binary.
-//
-// The "all:" prefix includes files whose names begin with "." or "_", which
-// the default pattern silently skips. Nothing in the tree needs it today; it
-// is there so that adding one later cannot drop a file out of the binary
-// without anyone noticing.
+// staticAssets holds internal/webui/static; "all:" includes names starting with "." or "_".
 //
 //go:embed all:static
 var staticAssets embed.FS
@@ -78,10 +73,6 @@ func Static() (fs.FS, error) {
 }
 
 // validateAssets reports whether a rooted asset tree can serve the UI.
-//
-// It takes an fs.FS rather than reading the embedded tree directly so the
-// check itself is testable against a tree that is deliberately broken; there
-// is no way to build one out of a go:embed directive.
 func validateAssets(assets fs.FS) error {
 	info, err := fs.Stat(assets, landingPage)
 	if err != nil {

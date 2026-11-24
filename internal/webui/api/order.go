@@ -2,15 +2,7 @@ package api
 
 import "strconv"
 
-// compareInstance orders two instance identifiers — the values of the label a
-// chart is broken down by, such as an ifIndex or an entPhysicalIndex.
-//
-// Identifiers that are entirely numeric compare numerically, because SNMP table
-// indexes usually are and an operator reading a list of interfaces expects 2
-// before 10. Anything else compares as text. The point is only that the order
-// is the same on every request: the instance picker is built from this list and
-// its first entry is what the page selects by default, so a list assembled in
-// map order changes the selected interface on every reload.
+// compareInstance orders instance identifiers: numerically when both are numeric, else as text.
 func compareInstance(a, b string) int {
 	numA, errA := strconv.ParseInt(a, 10, 64)
 	numB, errB := strconv.ParseInt(b, 10, 64)

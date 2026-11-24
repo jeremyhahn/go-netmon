@@ -17,12 +17,7 @@ import (
 	webuistorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// handleListStoredMIBs returns the stored MIB catalog, narrowed by the query.
-//
-// The catalog is served in name order, which storage.ListMIBs already
-// guarantees, and the narrowing is applied to that order rather than replacing
-// it: page two has to be the second fifty modules of the same list page one was
-// the first fifty of.
+// handleListStoredMIBs returns the stored MIB catalog in name order, narrowed by the query.
 func (s *Server) handleListStoredMIBs(w http.ResponseWriter, r *http.Request) {
 	// Refuse a malformed query before reading the catalog.
 	query, err := parseMIBQuery(r.URL.Query())
@@ -37,10 +32,7 @@ func (s *Server) handleListStoredMIBs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if we should filter by available data. "device" narrows the
-	// question to one device's own series: without it the answer is every
-	// module holding data for anything on the fleet, which is not what a
-	// caller asking on behalf of one device wants to know.
+	// Filter by available data; device narrows it to one device's series.
 	filterByData := r.URL.Query().Get("filter") == "available"
 
 	if filterByData {
@@ -72,13 +64,7 @@ func (s *Server) handleListStoredMIBs(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, body)
 }
 
-// handleGetStoredMIB retrieves a stored MIB by ID, with its objects narrowed by
-// the query.
-//
-// Without a query it answers exactly as it always has: every object the module
-// defines, in the order the metadata store holds them. That order is a key scan
-// and so is the same on every request, which is what makes the query's offset
-// and limit mean anything.
+// handleGetStoredMIB retrieves a stored MIB by ID with its objects, in store order, narrowed by the query.
 func (s *Server) handleGetStoredMIB(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -99,8 +85,7 @@ func (s *Server) handleGetStoredMIB(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	// Show the file the module is read from now, not the path recorded when
-	// it was imported, which may name a directory that no longer exists.
+	// Show the module's current file, not the path recorded at import.
 	record.FilePath = s.mibSourcePath(record.Name, record.FilePath)
 
 	// Add the module's objects from the loader's metadata store. The lookup is
@@ -199,20 +184,12 @@ func (s *Server) handleGetMIBTables(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// moduleObjects returns a module's stored objects, in the order the metadata
-// store holds them.
-//
-// That order is a key scan of the module's OID index, so it is the same on
-// every request. Paging depends on that: page two is only the continuation of
-// page one if the list was not reassembled in between.
+// moduleObjects returns a module's stored objects in stable store order.
 func moduleObjects(store *mibstorage.Storage, module string) ([]*mib.OIDMetadata, error) {
 	return store.ListModuleOIDs(module)
 }
 
-// wireObjects converts stored OID metadata to the wire format the API serves.
-//
-// It runs after the query has narrowed the list, so a request for three objects
-// of a ten-thousand-object module converts three.
+// wireObjects converts stored OID metadata to the API wire format.
 func wireObjects(oids []*mib.OIDMetadata) []MIBObject {
 	objects := make([]MIBObject, 0, len(oids))
 	for _, oid := range oids {
@@ -221,12 +198,7 @@ func wireObjects(oids []*mib.OIDMetadata) []MIBObject {
 	return objects
 }
 
-// detectTables identifies SNMP tables in a module by analyzing OID patterns.
-//
-// It takes the full OID metadata rather than a reduced copy so the columns it
-// emits carry enumeration labels and display hints, which clients need to
-// render table values as text. Objects from other modules are ignored, so it
-// accepts either one module's objects or the whole store.
+// detectTables identifies a module's SNMP tables from OID patterns, ignoring other modules' objects.
 func detectTables(allOIDs []*mib.OIDMetadata, module string) []TableMetadata {
 	oids := make(map[string]*mib.OIDMetadata, len(allOIDs))
 	for _, oid := range allOIDs {
@@ -326,15 +298,7 @@ func joinOID(parts []string) string {
 	return result
 }
 
-// handleGetMIBDashboard generates a dashboard for one MIB on one device.
-//
-// It is the same builder the whole-device endpoint uses, asked about a single
-// module. It used to be a different one: this endpoint parsed the MIB store to
-// enumerate a module's objects, while the device endpoint read the catalog, and
-// only this one drew anything a person saw. Two builders meant the catalog work
-// landed where nobody was looking -- the panels on screen were still
-// MIB-shaped, and every fix to the catalog path changed nothing a user could
-// see.
+// handleGetMIBDashboard generates one MIB's dashboard for one device with the whole-device builder.
 func (s *Server) handleGetMIBDashboard(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -349,11 +313,7 @@ func (s *Server) handleGetMIBDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A dashboard is always about a device. The panels are the metrics a
-	// device REPORTS, so without one there is no question to answer: the
-	// module alone can only say what some device of that kind might send, and
-	// rendering that put 507 cards across five devices on "Waiting for data"
-	// forever.
+	// A dashboard needs a device: panels are the metrics it reports.
 	name := r.URL.Query().Get("device")
 	if name == "" {
 		http.Error(w, "device is required", http.StatusBadRequest)
@@ -372,18 +332,7 @@ func (s *Server) handleGetMIBDashboard(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, dash)
 }
 
-// filterMIBsWithData narrows a MIB list to the modules that actually have data
-// flowing — either a table the poller has learned, or a scalar metric present in
-// Prometheus.
-//
-// The work is arranged so cost grows with the size of the store, not with the
-// store multiplied by the number of modules. Every OID is read once and grouped
-// by module, and Prometheus is asked once for the set of metric names it holds.
-// Checking each module against those two in-memory structures is then trivial.
-// The previous shape re-read all OIDs per module and issued up to ten Prometheus
-// queries per module, which at 170 modules and ~29,000 OIDs meant millions of
-// deserializations and well over a thousand round trips — the request timed out,
-// and the web UI reported it as "no MIBs assigned".
+// filterMIBsWithData keeps modules with a learned table or a scalar metric in Prometheus, reading OIDs and metric names once.
 func (s *Server) filterMIBsWithData(
 	ctx context.Context, mibs []webuistorage.MIB, device string,
 ) ([]webuistorage.MIB, error) {
@@ -426,28 +375,9 @@ func (s *Server) filterMIBsWithData(
 	return filtered, nil
 }
 
-// prometheusMetricNames returns the metric names Prometheus is currently
-// receiving, optionally narrowed by label matchers such as a device name. An
-// empty set means the question could not be answered, which callers treat as
-// "no scalar evidence" rather than as an error — a MIB with learned table data
-// still shows up.
-//
-// This asks with a query rather than through the label API, which answers at
-// block granularity: a metric that stopped arriving half an hour ago was still
-// listed as present, so narrowing a MIB left its dashboard panels behind
-// promising data that could never come. last_over_time states the window
-// exactly, and on a production deployment it costs about 30ms against 13,000 series.
+// prometheusMetricNames returns metric names Prometheus currently receives, optionally narrowed by matchers; empty means unknown.
 func (s *Server) prometheusMetricNames(ctx context.Context, matchers map[string]string) map[string]bool {
-	// Always constrained to the SNMP families, whatever else was asked.
-	//
-	// The poller's own instrumentation carries a device label too --
-	// gonetmon_polls_total, gonetmon_poll_duration_seconds_bucket,
-	// gonetmon_device_unreachable -- so a device-scoped question without this
-	// answers with them, and every one became a panel. Six of them appeared on
-	// EVERY module tab of core-01, described by no catalog row and filed
-	// under "(uncataloged)", which then reported six metrics the MIBs had
-	// stopped resolving. They are the monitor watching itself, not readings
-	// from the device.
+	// Always restrict to SNMP families, excluding the poller's own instrumentation.
 	parts := append(matcherParts(matchers),
 		promname.NameLabel+`=~"`+promname.Prefix+`.*"`)
 	selector := "{" + joinStrings(parts, ",") + "}"
@@ -484,10 +414,7 @@ func matcherParts(matchers map[string]string) []string {
 	return parts
 }
 
-// prometheusInstanceOIDs returns the set of instance OIDs Prometheus holds,
-// read from the "oid" label every SNMP series carries. It is what counts
-// series: a metric name now covers every row of a table column, so only the
-// instance OID distinguishes one row from another.
+// prometheusInstanceOIDs returns the set of instance OIDs (oid label) Prometheus holds.
 func (s *Server) prometheusInstanceOIDs(ctx context.Context, matchers map[string]string) map[string]bool {
 	return s.prometheusLabelValues(ctx, promname.OIDLabel, matchers)
 }
@@ -511,19 +438,7 @@ func (s *Server) prometheusLabelValues(ctx context.Context, label string, matche
 	return set
 }
 
-// moduleHasData reports whether a module's objects are backed by collected data.
-//
-// Metric names are the stronger evidence and the only kind that can be narrowed
-// to one device, so they are tried first and for every pollable object. A table
-// column counts as well as a scalar: the exporter names a column's metric after
-// the object and puts the row in labels, so one name covers every row.
-//
-// Learned tables are the fallback, for a module whose data has been walked but
-// whose names are not in the metric set the caller supplied. They are discovered
-// process-wide rather than per device, so a caller asking about one device must
-// pass none -- otherwise every module holding a table anyone has walked answers
-// yes, which is how the dashboard came to believe 13 modules had data for a
-// device that has 2.
+// moduleHasData reports whether a module's objects have collected data: metric names first, learned tables only when not device-scoped.
 func moduleHasData(
 	oids []*mib.OIDMetadata,
 	learnedTables map[string]*metrics.LearnedTableInfo,

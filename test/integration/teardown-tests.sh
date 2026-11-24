@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
-# Tests for run-tests.sh's cleanup trap.
-#
-# The behaviour covered here is a leak, not a failure: without --profile dind
-# the suite still passes and still reports success, and simply leaves a
-# privileged Docker daemon and its storage volume running. That is why it went
-# unnoticed long enough to leave one container up for two days on a CI runner,
-# and why the assertion is on the teardown COMMAND rather than on the run's
-# exit status -- no exit status would ever have shown it.
-#
-# The script is driven against a stub `docker` placed first on PATH, which
-# records every invocation. No daemon is contacted and no container is created.
-#
-# Usage: teardown-tests.sh [test-name-substring]
+# Usage: teardown-tests.sh [test-name-substring] -- tests run-tests.sh's cleanup trap tears down the dind profile, against a stub docker.
 
 set -euo pipefail
 
@@ -96,8 +84,7 @@ assert_teardown() {
 
 # --- tests ----------------------------------------------------------------
 
-# The path that leaked: a run where everything passed. The cleanup trap fires
-# on the way out of a SUCCESSFUL run, and that is the one nobody inspects.
+# A fully passing run must still tear down.
 test_teardown_reaps_the_dind_profile_after_a_passing_run() {
     run_harness || fail "the harness failed against the stub" || return 1
     assert_teardown
@@ -112,9 +99,7 @@ test_teardown_reaps_the_dind_profile_after_a_failing_run() {
     assert_teardown
 }
 
-# The teardown must not be issued twice: cleanup is trapped on EXIT, INT and
-# TERM, and the single-shot guard is what stops the second one reporting
-# errors over a project that is already gone.
+# The teardown is issued once despite traps on EXIT, INT and TERM.
 test_teardown_is_issued_once() {
     run_harness || fail "the harness failed against the stub" || return 1
 

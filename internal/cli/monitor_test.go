@@ -470,8 +470,7 @@ func TestMonitorDeviceNamesSeriesThroughMIBs(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"NAME", "VALUE", "TIME",
-		// A column is named with its decoded row index, and its value carries
-		// the UNITS clause the MIB declares.
+		// A column is named with its decoded row index and carries the MIB's UNITS.
 		"ifInOctets[10]", "1107275976 octets",
 		// An enumeration renders as its label.
 		"ifOperStatus[10]", "up(1)",

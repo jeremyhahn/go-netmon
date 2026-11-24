@@ -49,10 +49,7 @@ const (
 	SensorTypeDB          SensorType = 15
 )
 
-// sensorTypeNames is the MIB label of each type, as it appears in the
-// sensor_type label. The MIB spelling is kept exactly -- voltsAC and dBm, not
-// volts_ac and dbm -- because it is what an operator reads in the MIB and in
-// the device's own CLI output.
+// sensorTypeNames is each type's MIB spelling, used as the sensor_type label.
 var sensorTypeNames = map[SensorType]string{
 	SensorTypeOther:       "other",
 	SensorTypeUnknown:     "unknown",
@@ -71,13 +68,7 @@ var sensorTypeNames = map[SensorType]string{
 	SensorTypeDB:          "dB",
 }
 
-// sensorTypeLabelUnrecognized is the sensor_type label every undeclared type
-// shares.
-//
-// It is not "unknown", even though that reads better, because unknown(2) is a
-// declared EntitySensorDataType with its own meaning -- a sensor reporting
-// "arbitrary, relative numbers". Collapsing undeclared types onto that label
-// would merge two different things into one series.
+// sensorTypeLabelUnrecognized is the label every undeclared type shares; distinct from unknown(2).
 const sensorTypeLabelUnrecognized = "unrecognized"
 
 // Label returns the value this type contributes to the sensor_type label, and
@@ -109,14 +100,7 @@ func (t SensorType) String() string {
 	return "type_" + strconv.FormatInt(int64(t), 10)
 }
 
-// sensorUnitSuffixes is the metric name suffix each type is published under.
-//
-// The unit is in the metric name rather than only in a label because a single
-// metric name holding dBm, degrees and volts at once cannot be aggregated,
-// graphed or alerted on without every query first filtering by type -- and a
-// query that forgets to averages optical power with fan speed. voltsAC and
-// voltsDC share the volts metric and stay apart by their sensor_type label,
-// since both are volts and comparing them is meaningful.
+// sensorUnitSuffixes is the metric name suffix per type; voltsAC and voltsDC share volts.
 var sensorUnitSuffixes = map[SensorType]string{
 	SensorTypeVoltsAC:   "volts",
 	SensorTypeVoltsDC:   "volts",
@@ -131,11 +115,7 @@ var sensorUnitSuffixes = map[SensorType]string{
 	SensorTypeDB:        "db",
 }
 
-// sensorUntypedSuffix is the suffix for readings whose type names no unit:
-// other(1), unknown(2), truthvalue(12), specialEnum(13) and anything the MIBs
-// do not declare. Their numbers are still readings and are still scaled; they
-// are simply not in units of anything, so they share one dimensionless metric
-// and are told apart by sensor_type.
+// sensorUntypedSuffix is the dimensionless suffix for types that name no unit.
 const sensorUntypedSuffix = "value"
 
 // entitySensorMetricPrefix is the family every scaled sensor reading is
@@ -206,16 +186,7 @@ const (
 	SensorScaleYotta SensorScale = 17
 )
 
-// Scale 14 and scale 15 are named by their value and not by an SI prefix,
-// because no prefix name is correct for both MIBs.
-//
-// RFC 3433 shipped the labels exa(14) and peta(15) and its published erratum
-// swaps them to peta(14) and exa(15); CISCO-ENTITY-SENSOR-MIB kept the
-// original label order and changed the exponents instead. So the label "peta"
-// is value 14 in one module and value 15 in the other, and a constant called
-// SensorScalePeta would be right in one table and a thousand-fold wrong in the
-// other. What is on the wire is the integer, so the integer is what these are
-// named for. Exponent is where the meaning is resolved.
+// Scales 14 and 15 are named by value: their SI names differ between the two MIBs.
 const (
 	SensorScale14 SensorScale = 14
 	SensorScale15 SensorScale = 15
@@ -326,10 +297,7 @@ const (
 	SensorValueOverflow  int64 = 1000000000
 )
 
-// carriesRangeSentinels reports whether the type's value range reserves
-// SensorValueUnderflow and SensorValueOverflow. The fixed-point physical types
-// range -999,999,999..+999,999,999; other, unknown and specialEnum permit the
-// full Integer32 subtype, where the endpoints are ordinary readings.
+// carriesRangeSentinels reports whether the type reserves the underflow and overflow sentinel values.
 func (t SensorType) carriesRangeSentinels() bool {
 	switch t {
 	case SensorTypeOther, SensorTypeUnknown, SensorTypeSpecialEnum:
@@ -385,13 +353,7 @@ func ScaleSensorValue(raw int64, sensorType SensorType, scale SensorScale, preci
 	return applyDecimalExponent(float64(raw), scaleExponent-fractionalDigits), nil
 }
 
-// applyDecimalExponent returns value * 10**exponent.
-//
-// A negative exponent divides rather than multiplying by a reciprocal. The
-// reciprocal of a power of ten is not exactly representable in binary
-// floating point, so multiplying by it rounds twice where dividing rounds
-// once, and the extra rounding is what puts a 15th decimal place of noise on
-// a number an operator expects to read back as -1.15.
+// applyDecimalExponent returns value * 10**exponent, dividing for negative exponents to round once.
 func applyDecimalExponent(value float64, exponent int) float64 {
 	switch {
 	case exponent == 0:

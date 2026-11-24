@@ -2,19 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// A pane that is redrawn must not sit blank waiting for a change.
-//
-// A browser re-renders a tab for ordinary reasons -- a reload, a MIB newly
-// producing data, a device the reader came back to -- and the markup it was
-// drawing into is gone. If the server still believes that client holds the
-// reading, it sends a heartbeat naming the query instead of the numbers, and on
-// a query that is STEADY there is no next change to rescue it. The panel waits
-// for one that may never come, for as long as the page is open.
-//
-// The scheme this replaced kept a per-client fingerprint that survived exactly
-// that cycle. It is the failure this product exists not to have: not an error,
-// not a blank screen, but a panel confidently showing nothing while the device
-// is answering normally.
+// A redrawn pane must refill without waiting for a value change.
 
 import { BASE } from '../target';
 import { SEEDED_DEVICE } from '../stack';
@@ -119,9 +107,7 @@ test('a redrawn tab fills again rather than waiting for a change', async ({ page
   const after = await state();
   expect(after.total, 'the redraw produced no panels at all').toBe(before.total);
 
-  // Every panel has to come back. Three streaming rounds is generous: the
-  // server resends whole readings to a client it no longer has a sequence for,
-  // so this does not depend on any value happening to change.
+  // Every panel comes back within three streaming rounds.
   await expect.poll(async () => (await state()).waiting, {
     timeout: 45000,
     message: 'panels were still waiting after the redraw; a steady reading was ' +

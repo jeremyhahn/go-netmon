@@ -36,10 +36,7 @@ type recordingPoller struct {
 	stall bool
 	err   error
 
-	// onRemove runs inside RemoveDevice, before it returns. It is how a test
-	// observes what storage held at the moment the poller was asked, which is
-	// the only way to check the ORDER of a delete rather than its outcome.
-	// Set at construction and never written again, so it needs no lock.
+	// onRemove runs inside RemoveDevice so a test can see what storage held when the poller was asked.
 	onRemove func()
 }
 
@@ -320,18 +317,7 @@ func TestAStalledPollerCannotHoldARequestOpen(t *testing.T) {
 	}
 }
 
-// TestPollerFailuresDoNotUndoADurableChange keeps a device CREATE or UPDATE
-// reported as successful when the poller could not be told about it. Those two
-// fail into something visible and self-correcting -- a device that exists and
-// is under-polled -- so the durable change is worth keeping.
-//
-// The delete arm used to be here too, asserting 204, and it is gone
-// deliberately: see TestADeviceIsNotDeletedWhileThePollerStillPollsIt. A delete
-// the poller misses is not an under-polled device, it is a worker polling a
-// device that no longer exists, with nothing left in the UI to act on. The
-// justification the old assertion rested on -- that "the poller re-reads it on
-// its next configuration sync" -- describes a sync that does not exist;
-// ApplyConfiguration runs once, at poller startup.
+// TestPollerFailuresDoNotUndoADurableChange checks create and update succeed when the poller cannot be told.
 func TestPollerFailuresDoNotUndoADurableChange(t *testing.T) {
 	s := newTestServer(t)
 	s.pollerClient = &recordingPoller{err: errors.New("poller is down")}

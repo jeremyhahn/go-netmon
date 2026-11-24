@@ -147,13 +147,7 @@ func TestChartMetricNames(t *testing.T) {
 	}
 }
 
-// TestTheGeneratorAsksAboutThisDeviceOnly is the contract behind every panel.
-//
-// A panel is offered only for a metric the device reports. The question used to
-// be asked fleet-wide, so a metric any device produced offered a panel on every
-// device: 75 of core-01's 408 panels named a metric it does not produce, and
-// narrowing a MIB left its panels behind because the name lingers in the label
-// index after the series goes stale.
+// TestTheGeneratorAsksAboutThisDeviceOnly checks panels come only from metrics this device reports.
 func TestTheGeneratorAsksAboutThisDeviceOnly(t *testing.T) {
 	s := newTestServer(t)
 	s.mibStoragePath = filepath.Join(t.TempDir(), "mib-storage")

@@ -9,17 +9,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// A filter is worth nothing until the poller has it.
-//
-// An operator can narrow a MIB to the objects worth collecting: the web UI
-// stores the patterns, shows them, and the cost estimator prices the result. The
-// poller was told only the module names, so it fetched every pollable object of
-// every module and the narrowing never happened. The whole feature was inert for
-// the one thing it exists to do, and nothing said so -- the UI reported the
-// filter as set, and the poll count did not move.
-//
-// This was found by setting a filter on a live stack and watching core-01
-// keep polling 15,952 OIDs.
+// A MIB filter set in the web UI must reach the poller.
 
 // TestAFilterReachesThePoller is the regression.
 func TestAFilterReachesThePoller(t *testing.T) {
@@ -117,9 +107,7 @@ func TestAnUnfilteredModuleCarriesNoFilter(t *testing.T) {
 	}
 }
 
-// TestDisablingAModuleWithdrawsItEntirely covers the other half of the contract:
-// a disabled assignment is not a filter, it is an absence, and the poller stops
-// fetching the module because it is no longer in the list.
+// TestDisablingAModuleWithdrawsItEntirely checks a disabled module leaves the poller's list.
 func TestDisablingAModuleWithdrawsItEntirely(t *testing.T) {
 	s := newTestServer(t)
 	poller := &recordingPoller{}

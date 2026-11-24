@@ -176,10 +176,7 @@ func (e *Env) monitorDevice(
 	return renderMonitorSeries(out, values, top, index)
 }
 
-// snmpMetricPrefix is the prefix the exporter gives every metric derived from
-// an SNMP object. go-netmon's own operational metrics — poll counts, durations
-// — also carry a device label, so selecting on that label alone would bury the
-// device's data under the poller's telemetry.
+// snmpMetricPrefix marks metrics derived from SNMP objects, apart from go-netmon's own telemetry.
 const snmpMetricPrefix = promname.Prefix
 
 // deviceSeriesQuery selects the SNMP series the exporter emits for a device.
@@ -212,10 +209,7 @@ func renderMonitorHeader(
 			[2]string{"Poll interval", dash(status.PollInterval)},
 			[2]string{"Last error", dash(truncate(status.LastError, 80))},
 		)
-		// Only for a device that has stopped answering entirely. A device that
-		// answers some objects and errors on others has a last error and is
-		// still healthy, and saying otherwise would send someone to the wrong
-		// rack.
+		// Only for a device that has stopped answering entirely.
 		if status.Unreachable {
 			pairs = append(pairs,
 				[2]string{"Unreachable", fmt.Sprintf("yes, after %d failed polls", status.ConsecutiveFailures)},
@@ -277,12 +271,7 @@ type monitorRow struct {
 	time  time.Time
 }
 
-// resolveMonitorSeries names and formats every series, ordered by the name it
-// will be shown under.
-//
-// A series no loaded MIB accounts for keeps its full PromQL identity — name
-// and labels — because that is the only thing left that identifies it, and
-// because the OID must stay readable when the MIBs are incomplete.
+// resolveMonitorSeries names and orders every series; an unknown series keeps its full PromQL identity.
 func resolveMonitorSeries(values []client.InstantValue, index *oidIndex) []monitorRow {
 	rows := make([]monitorRow, 0, len(values))
 	for _, v := range values {

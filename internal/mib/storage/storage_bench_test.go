@@ -19,12 +19,7 @@ const (
 	fillerModuleSize = 200
 )
 
-// benchStore returns a store holding totalOIDs objects, of which targetOIDs
-// belong to targetModule and the rest are spread over filler modules.
-//
-// Records are written through one unsynced batch rather than StoreOID: a
-// benchmark that spends its setup fsyncing 20,000 times measures the disk, not
-// the lookup. The keys written are built by the same helpers production uses.
+// benchStore returns a store of totalOIDs objects, targetOIDs of them in targetModule, written in one unsynced batch.
 func benchStore(b *testing.B, totalOIDs int) *Storage {
 	b.Helper()
 
@@ -125,14 +120,7 @@ func BenchmarkModuleLookup(b *testing.B) {
 	}
 }
 
-// BenchmarkGetMetricColumns measures the call the web UI makes to build a
-// module's chart list.
-//
-// It sits on top of the indexed lookup BenchmarkModuleLookup already covers,
-// and adds what that one does not measure: GetMetricColumns returns values,
-// not pointers, so every kept object is copied out of the slice
-// ListModuleOIDs allocated. Report allocations — the copy, not the read, is
-// what this call adds.
+// BenchmarkGetMetricColumns measures the web UI's chart-list lookup, including the value copies.
 func BenchmarkGetMetricColumns(b *testing.B) {
 	for _, total := range []int{2000, 29000} {
 		store := benchStore(b, total)

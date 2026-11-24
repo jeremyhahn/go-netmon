@@ -2,21 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// The dashboard lists a device's rows and charts the ones you pick.
-//
-// It replaced a chart that drew EVERY interface as its own line behind a
-// scrolling legend. On a switch with hundreds of ports that is unreadable, and
-// slow for the same reason -- the page asked for every series of every panel.
-// The request, in the reporter's words: "we need something that is more user friendly and allows a
-// user to quickly select from a list... If you are going to change the UI, make
-// sure its easier, not harder, to navigate and use."
-//
-// So the assertions here are about FINDING A ROW AND READING ITS STATE, not
-// about the table existing. A table that renders and cannot be used passes the
-// first and fails the ask.
-//
-// Everything is served locally: assets from the working tree, every API
-// response intercepted. Nothing depends on what this host holds.
+// The dashboard lists a device's rows and charts the selected ones; tests find a row and read its state. All API responses are intercepted.
 
 import { BASE } from '../target';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
@@ -297,19 +283,7 @@ test('a value every row shares is stated once, not repeated down a column', asyn
 });
 
 test('a column whose reading is words shows the words, not a dash', async ({ page }) => {
-  // Observed on monitor-01 after the first deploy: IFALIAS, IFDESCR, IFADMINSTATUS
-  // and IFCONNECTORPRESENT showed "—" on every row, while the cards above the
-  // table displayed the same values. The data was arriving; it stopped at the
-  // tile.
-  //
-  // updatePanel returned early for state and text panels -- calling
-  // updatePanelTile and returning -- and the table was fed AFTER that branch.
-  // So the two column kinds a reader most needs to navigate by (a port's name
-  // and whether it is up) were the two that never reached the table.
-  //
-  // The fixture that missed it had two panels, both numeric. Every panel type
-  // being the same kind is a fixture too regular to tell "feeds the table"
-  // from "feeds the table when it happens to be a chart".
+  // State and text panels must feed the table too.
   await serveWorkingTree(page);
   await stubDashboard(page);
   await openDashboard(page);
@@ -323,9 +297,7 @@ test('a column whose reading is words shows the words, not a dash', async ({ pag
     + 'navigates by, and it never reached the table').not.toContainText('—');
 });
 
-// plottedFor reports what one chart HOLDS against what it PLOTS. Both numbers,
-// because "3 plotted" proves nothing if only 3 are held, and "40 held" proves
-// nothing about what is on screen.
+// plottedFor reports what one chart holds and what it plots.
 async function plottedFor(page: Page) {
   return page.evaluate(() => {
     const app = (window as any).app;
@@ -340,9 +312,7 @@ async function plottedFor(page: Page) {
 }
 
 test('unticking every row plots nothing, and the table says so', async ({ page }) => {
-  // The filter carried "|| charted.size === 0", so an empty selection drew
-  // EVERY row rather than none -- absent meaning unfiltered, hand-written into
-  // the filter whose purpose is to stop drawing everything.
+  // An empty selection draws no rows.
   await serveWorkingTree(page);
   await stubDashboard(page);
   await openDashboard(page);
@@ -423,13 +393,7 @@ test('a table whose columns are all summarized still lists its rows', async ({ p
 });
 
 test('a table-bound chart names its lines without a pager', async ({ page }) => {
-  // The "◀ 1/20 ▶" pager is what users reported as unusable: on a switch it
-  // is the only way to tell hundreds of lines apart, and reaching the last one
-  // takes longer than the question is worth.
-  //
-  // It exists because a panel could hold forty rows. A panel bound to a table
-  // now draws at most MAX_SELECTED_ROWS, which fits as plain names — so the
-  // pager should be gone from exactly these charts, and only these.
+  // Table-bound charts draw at most MAX_SELECTED_ROWS and show no legend pager.
   await serveWorkingTree(page);
   await stubDashboard(page);
   await openDashboard(page);
@@ -463,9 +427,7 @@ test('a table-bound chart names its lines without a pager', async ({ page }) => 
 });
 
 test('searching a port alias charts that port and says how many matched', async ({ page }) => {
-  // Search across historical data was asked for and had never been built. Viewing history worked; FINDING a series did not — a reader
-  // who knows a port is called "uplink 7" had no path from that string to its
-  // chart.
+  // Search finds a series by name to chart its history.
   await serveWorkingTree(page);
   await stubDashboard(page);
   await openDashboard(page);

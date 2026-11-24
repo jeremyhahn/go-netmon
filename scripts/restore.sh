@@ -1,49 +1,5 @@
 #!/usr/bin/env bash
-# Restore a go-netmon stack from a backup produced by scripts/backup.sh.
-#
-# THIS IS DESTRUCTIVE. It replaces the contents of Docker volumes and the
-# repository configuration files bind-mounted into the stack. It is built so
-# that every way it can fail leaves the current data intact:
-#
-#   1. The whole archive is verified first - manifest, per-file checksums and a
-#      full decompression of every member. A truncated or corrupt backup is
-#      rejected before anything is stopped or overwritten.
-#   2. The backup's compose project must match the target project. A backup
-#      taken from a different deployment is refused rather than half-applied.
-#   3. The target project must contain no container this repository's compose
-#      file did not create, and every volume must carry the project's compose
-#      label, so a name collision cannot redirect the restore onto someone
-#      else's data.
-#   4. Nothing happens without --yes. Without it the plan is printed and the
-#      command exits non-zero.
-#   5. Unless --no-safety-backup is given, the current state is backed up first,
-#      so a restore of the wrong archive is itself recoverable.
-#   6. The "mibs" component writes into the operator's working tree rather than
-#      into a Docker volume. When that directory already holds files, replacing
-#      it needs --allow-tree-overwrite on top of --yes. See below.
-#
-# THE MIB SOURCE TREE AND ITS GATE
-#
-# Every other component lands inside a Docker volume: a named object this
-# tooling owns, whose contents no one edits by hand. The MIB source tree is a
-# directory in the operator's checkout, and this repository has no version
-# control - files deleted there are gone. Overwriting it is therefore a
-# categorically different act from overwriting a volume, and it is gated
-# separately:
-#
-#   * The destination is empty or absent -> nothing is destroyed, so the tree is
-#     simply created. This is the fresh-host disaster path and it needs no extra
-#     flag.
-#   * The destination already holds files -> --allow-tree-overwrite is required.
-#     Without it the restore fails, loudly, before anything is stopped or
-#     written. It does not "skip the component and carry on": that would print
-#     "restore complete" over a deployment whose MIB sources were never put
-#     back, which is the exact half-restore this component exists to prevent.
-#
-# The replacement is wholesale, matching volume_import and the exact-copy
-# semantics of the config files: the directory is emptied, then extracted into.
-# Merging would leave modules from a newer tree alongside the restored ones,
-# and the deployment would resolve against a set matching neither.
+# Restore a go-netmon stack from a scripts/backup.sh archive; destructive, verifies first, needs --yes, and --allow-tree-overwrite for a non-empty MIB tree.
 
 set -euo pipefail
 
@@ -162,10 +118,7 @@ require_tools jq tar gzip sha256sum awk
 manifest="$(manifest_path "$backup_dir")"
 [ -f "$manifest" ] || die "not a backup directory (no manifest.json): $backup_dir"
 
-# --- stage 1: verify the archive -----------------------------------------
-#
-# Everything here reads the backup only. It runs before any Docker call, so a
-# damaged archive cannot get as far as stopping the stack.
+# --- stage 1: verify the archive (read-only, before any Docker call) ---
 
 info "verifying backup: $backup_dir"
 
@@ -194,17 +147,7 @@ else
     die "backup has no checksums.sha256; refusing to restore an unverifiable archive"
 fi
 
-# Per-member verification. The checksum proves the bytes are the bytes that
-# were written; decompressing proves those bytes are a readable archive whose
-# shape matches what the backup recorded. A member truncated at write time
-# would pass a naive "file exists" check and fail halfway through wiping a
-# live volume.
-# Volume members and host-tree members are verified by one loop over one list.
-# They are separate arrays in the manifest so nothing can confuse a host path
-# with a Docker volume, but their integrity fields are identical and a member
-# that skipped a check because it lived in the "other" array would be a gap
-# nobody notices until a restore. ".trees // []" keeps schema-1 archives, which
-# have no trees at all, working unchanged.
+# Verify every volume and tree member by checksum and full decompression; .trees // [] accepts schema 1.
 member_count="$(jq '(.volumes | length) + ((.trees // []) | length)' "$manifest")"
 info "  checking $member_count member(s)"
 while IFS=$'\t' read -r member sha bytes entries; do
@@ -261,10 +204,7 @@ else
 fi
 [ "${#selected[@]}" -eq 0 ] && die "no components selected"
 
-# The web UI's device records reference MIB ids in its catalog, and those MIBs'
-# source files live in the poller volume. Restoring one without the other can
-# leave devices pointing at MIBs whose files are absent. It is a legitimate
-# thing to want, so it warns rather than refuses.
+# Warn when restoring the web UI without the poller volume holding its MIB sources.
 has_webui=0 has_poller=0
 for c in "${selected[@]}"; do
     [ "$c" = "webui" ] && has_webui=1
@@ -299,9 +239,7 @@ fi
 
 assert_project_ownership
 
-# Every volume this restore needs must be defined by the target compose file.
-# A target that no longer defines a volume the backup carries is an
-# incompatible deployment, not something to partially apply.
+# Every volume the restore needs must be defined by the target compose file.
 mapfile -t target_volumes < <(compose_volume_names)
 for c in "${selected[@]}"; do
     lv="$(component_volume "$c")"
@@ -312,11 +250,7 @@ for c in "${selected[@]}"; do
         die "target compose file does not define volume '$lv' needed by component '$c'"
 done
 
-# Resolve where the MIB source tree would land, and how much is already there.
-# This is the target deployment's answer, not the backup's: restoring into a
-# different checkout is normal, so the destination comes from the compose file
-# being restored into (or --mib-tree), and a difference from the recorded
-# origin is reported rather than silently followed.
+# Resolve the MIB tree destination from the target compose file (or --mib-tree) and report a difference from the recorded origin.
 mib_tree_dest=""
 mib_tree_files_now=0
 mib_tree_bytes_now=0
@@ -463,13 +397,7 @@ fi
 
 safety_dir=""
 if [ "$safety_backup" -eq 1 ]; then
-    # Scoped to exactly the components about to be destroyed, so recovering
-    # from a bad restore needs no reasoning about what was covered.
-    #
-    # 'mibs' is dropped when the destination holds nothing: backup.sh refuses an
-    # empty or absent MIB tree, correctly, and there is by definition nothing
-    # there to preserve. Aborting the restore over it would block precisely the
-    # fresh-host recovery this tool exists for.
+    # Safety backup of exactly the components being replaced; skip mibs when the destination is empty.
     safety_components=()
     for c in "${selected[@]}"; do
         if [ "$c" = "mibs" ] && [ "$mib_tree_existing" -eq 0 ]; then

@@ -19,8 +19,7 @@ func gosnmpTimeout() error {
 	return errors.New("request timeout (after 3 retries)")
 }
 
-// refused is the error a UDP socket produces when the host answers ICMP
-// port-unreachable: nothing is listening on the SNMP port.
+// refused is the error for ICMP port-unreachable.
 func refused() error {
 	return &net.OpError{
 		Op:  "write",

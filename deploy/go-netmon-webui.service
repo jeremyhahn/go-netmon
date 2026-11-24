@@ -1,43 +1,18 @@
-# go-netmon web UI — native systemd unit.
-#
-# Installed to /etc/systemd/system/go-netmon-webui.service by `make deploy`.
-#
-# The web UI owns the device registry: the poller asks it for the device list at
-# startup and on every sync. That makes this unit the one holding the data an
-# operator would actually miss, and -db below the path a backup has to cover.
-#
-# UNAUTHENTICATED. Every endpoint is open to whoever reaches the port, and
-# GET /api/devices returns each device's SNMP community string in clear text.
-# ListenAddress is deliberately not bound to a public interface by default; see
-# docs/operations/security-posture.md before exposing it.
+# go-netmon web UI unit, installed by make deploy; unauthenticated, see docs/operations/security-posture.md before exposing it.
 
 [Unit]
 Description=go-netmon web UI
 Documentation=https://github.com/jeremyhahn/go-netmon
 After=network-online.target
 Wants=network-online.target
-# Deliberately NOT ordered against go-netmon.service. The dependency runs the
-# other way: this service owns the device registry and the poller waits for it.
-# Ordering them the other way round is how the poller comes up first, finds no
-# device list, and monitors nothing.
+# Not ordered against go-netmon.service: the poller waits for this service's device registry.
 
 # Never stop retrying: the appliance is unattended and this service holds the
 # only view an operator has.
 StartLimitIntervalSec=0
 
 [Service]
-# Type=notify, not simple. A simple unit is "active" the moment the process
-# forks, and this process parses its MIB catalog before it binds :8080 -- 203
-# seconds on monitor-01 with 176 modules imported. For that whole window systemd
-# reported a healthy service with a stable PID and NRestarts=0 while every
-# connection to the port was refused, which is exactly what a successful deploy
-# looks like and exactly what a wedged process looks like. On 2026-09-06 a good
-# deploy was read as hung and rolled back on that signal, doubling the outage.
-#
-# With notify the unit stays "activating" until the binary sends READY=1, which
-# it sends after the listener is bound (cmd/webui/main.go). `systemctl restart`
-# then blocks until the service is really serving, and `is-active` means
-# answering rather than forked.
+# Type=notify: the unit is active only after the listener is bound and READY=1 is sent.
 Type=notify
 NotifyAccess=main
 User=go-netmon
@@ -49,15 +24,7 @@ Group=go-netmon
 Environment=CONFIG_PATH=/etc/go-netmon/config.yaml
 Environment=GOMAXPROCS=4
 
-# No WorkingDirectory, deliberately. The UI's static assets are compiled into
-# the binary (internal/webui/assets.go), so this unit serves the same pages
-# wherever systemd starts it from. It used to need a working directory
-# containing a source checkout, which is why a clean install answered 404 on
-# every page while /api/* answered normally -- the shape that passes a
-# post-deploy smoke test and fails for the operator.
-#
-# If you find yourself adding WorkingDirectory to fix a blank UI, the assets
-# have stopped being embedded. Fix that instead.
+# No WorkingDirectory: assets are embedded in the binary.
 ExecStart=/usr/local/bin/go-netmon-webui \
     -listen=:8080 \
     -prometheus=http://127.0.0.1:9090 \
@@ -66,34 +33,18 @@ ExecStart=/usr/local/bin/go-netmon-webui \
     -mib-storage=/var/lib/go-netmon/poller \
     -mib-catalog=/var/lib/go-netmon/webui/mib.db
 
-# systemctl reload re-reads the configuration without a restart. Only the alarm
-# rules are re-applied -- everything else here is bound at startup -- but that
-# is what an operator edits between restarts, and restarting this service costs
-# minutes of MIB parsing, which is long enough that tuning a threshold by
-# restart is not something anyone would do twice.
+# systemctl reload re-applies the alarm rules without a restart.
 ExecReload=/bin/kill -HUP $MAINPID
 
 Restart=always
 RestartSec=5s
 
-# The MIB parse is the whole start-up, and it is minutes on a cold catalog.
-# systemd's 90-second default would kill a start that was going to succeed, so
-# Type=notify without this line would turn a slow start into a restart loop --
-# strictly worse than the defect it replaces. 900s is well clear of the 203s
-# measured on monitor-01; a start that reaches it is genuinely stuck and failing the
-# unit is the right answer.
+# A cold MIB catalog parse takes minutes; 900s exceeds a normal start.
 TimeoutStartSec=900
 
-# No WatchdogSec. A watchdog is a claim that the process can tell it has
-# STOPPED serving, and nothing here checks that -- a ping from a timer would
-# only prove the goroutine sending it still runs. READY=1 is the fix for this
-# defect; a liveness check is a separate piece of work with its own design.
+# No WatchdogSec: nothing here can detect that serving stopped.
 
-# This service does parse MIB modules — it builds its own catalog at startup,
-# which is what makes a cold start take minutes — but it parses them one at a
-# time into Pebble rather than holding a whole resolved tree the way the poller
-# does. Measured at ~100 MB steady state with 183 modules imported, so this has
-# room; it is a runaway guard, not a target.
+# Runaway guard; steady state is about 100 MB.
 MemoryMax=512M
 MemoryHigh=448M
 # Locked memory for the sealed SNMP credentials; sized as for go-netmon.service.

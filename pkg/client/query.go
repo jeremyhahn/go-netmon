@@ -72,11 +72,7 @@ func (q ListQuery) validate() error {
 	return nil
 }
 
-// values renders the query as URL parameters.
-//
-// Only what narrows is emitted. A zero query renders nothing, which is what
-// keeps an unnarrowed call byte for byte the request it always was — and is
-// what tells the server to answer without a page block.
+// values renders the query as URL parameters, emitting only what narrows.
 func (q ListQuery) values() url.Values {
 	values := url.Values{}
 	if q.Search != "" {

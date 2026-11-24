@@ -10,31 +10,11 @@ global:
 prometheus:
   remote_write_url: "http://prometheus:9090/api/v1/write"
 
-  # batch_size bounds BOTH when a flush is triggered and how many samples one
-  # remote-write request may carry. It used to bound only the trigger: Flush
-  # took the whole buffer and sent it as one request, so a retry backlog -- at
-  # least 100,000 samples -- shipped as a single protobuf that the endpoint
-  # would refuse at the same size on every attempt. A request is
-  # additionally bounded by its encoded size, because a sample is not a fixed
-  # width: an ifAlias or an entPhysicalName is whatever somebody typed into the
-  # box.
+  # batch_size bounds both the flush trigger and the samples per remote-write request; requests are also bounded by encoded size.
   batch_size: 1000
   flush_interval: 10
 
-  # This collector publishes the metric catalog: the series that tell a
-  # dashboard what every metric means, so the UI renders from Prometheus alone
-  # and needs no MIBs of its own.
-  #
-  # EXACTLY ONE collector in a fleet may have this on. The catalog carries no
-  # device label, so every collector would write the same series at
-  # uncoordinated moments, and a write landing behind one already ingested is
-  # rejected out of order. That needs more than one collector to show up at
-  # all, so it works in development and fails intermittently in production.
-  #
-  # Defaults to FALSE, so designation is always a decision somebody made: an
-  # upgraded shard whose config predates this field must not silently become a
-  # second emitter. Set explicitly here because this appliance runs one
-  # collector.
+  # Publishes the metric catalog; exactly one collector per fleet may enable this (default false).
   emit_metric_catalog: true
 
 api:
@@ -58,15 +38,7 @@ mib:
     - "IF-MIB"
 
 webui:
-  # How often the web UI pushes a round of metric updates to every connected
-  # browser, in seconds. One hub serves every open browser, so this is a server
-  # setting rather than something a viewer can change: a dashboard control would
-  # change the rate for everyone else too. A viewer's own refresh cadence lives
-  # in their browser, under Settings, and reaches no one but them.
-  #
-  # Devices are polled on their own schedule -- per device, or
-  # global.default_poll_interval above. Nothing here changes that: pushing more
-  # often than a device is polled re-sends readings that have not moved.
+  # Seconds between metric pushes to every connected browser; device poll intervals are separate.
   stream_interval: 5
 
 logging:
@@ -105,23 +77,7 @@ devices:
     tags:
       location: "branch-office"
 
-# What the bell reports.
-#
-# Read by the web UI, which evaluates them against Prometheus and shows what is
-# firing; the poller ignores them. Send the web UI SIGHUP -- `systemctl reload
-# go-netmon-webui` on a systemd deployment -- to re-read this file without a
-# restart. A file that will not parse or will not validate leaves the running
-# rules exactly as they were, so a typo cannot empty the bell.
-#
-# A rule is PromQL and fires once per series its expression returns, so a rule
-# about interfaces fires once per interface. Two ports being down is two things
-# to fix -- but it is also what to think about when writing one, because an
-# expression that matches broadly will fill the bell.
-#
-# severity is critical, warning or info, and orders the list.
-# for is how long the expression must keep returning a series before the alarm
-# is raised. It is what separates a condition from a blip; omit it to raise on
-# the first evaluation.
+# Alarm rules, evaluated by the web UI (SIGHUP reloads): PromQL fires once per series; severity critical|warning|info; for is the hold time.
 alarms:
   - name: DeviceUnreachable
     expr: gonetmon_device_unreachable == 1

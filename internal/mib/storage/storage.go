@@ -19,12 +19,7 @@ type Storage struct {
 	mu   sync.RWMutex
 }
 
-// Prefixes for different key types.
-//
-// The module index prefixes deliberately do not begin with "mod", so that they
-// sort outside the "mod:" range that ListModules and Count scan: a module
-// record and 29,000 index entries sharing a scan range would corrupt both the
-// module listing and the module count.
+// Key prefixes; the module index prefixes sort outside the "mod:" range that ListModules and Count scan.
 const (
 	PrefixOID    = "oid:"
 	PrefixModule = "mod:"
@@ -77,10 +72,7 @@ func (s *Storage) Close() error {
 	return nil
 }
 
-// oidKeyValue returns the key a record is stored under, minus the prefix.
-//
-// OIDs with a numeric identifier are keyed by it. Objects without one (groups,
-// notifications) are keyed by module and name, which is still unique.
+// oidKeyValue returns a record's key minus the prefix: the numeric OID, else module and name.
 func oidKeyValue(meta *mib.OIDMetadata) string {
 	if meta.OID != "" {
 		return meta.OID
@@ -339,16 +331,7 @@ func (s *Storage) moduleIndexedLocked(module string) (bool, error) {
 	return true, nil
 }
 
-// backfillModuleIndex builds the module index from one full scan of the store
-// and returns the requested module's objects.
-//
-// Deployments upgraded in place hold OID records written before the index
-// existed, and re-importing 170 MIBs to recover the index is not an acceptable
-// upgrade step. The scan deserializes every record anyway, so it indexes every
-// module it sees rather than only the one asked for: a single scan repairs the
-// whole store, no matter which module triggered it. The requested module is
-// marked even when it has no objects, so that a module which is genuinely
-// empty does not force a rescan on every call.
+// backfillModuleIndex indexes every module in one full scan and returns the requested module's objects, marking it even if empty.
 func (s *Storage) backfillModuleIndex(module string) ([]*mib.OIDMetadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -398,12 +381,7 @@ func (s *Storage) backfillModuleIndex(module string) ([]*mib.OIDMetadata, error)
 	return matched, nil
 }
 
-// oidScanBounds returns the Pebble key range covering an OID subtree.
-//
-// Keys under prefix P are exactly P or start with P+"." — and since '.' (0x2E)
-// sorts below every digit, the half-open range [P, P+"/") captures precisely
-// those and excludes siblings such as P+"0". With no prefix the range spans the
-// whole OID keyspace.
+// oidScanBounds returns the key range [P, P+"/") covering an OID subtree, or the whole OID keyspace.
 func oidScanBounds(oidPrefix string) (lower, upper []byte) {
 	if oidPrefix == "" {
 		return []byte(PrefixOID), []byte(prefixSuccessor(PrefixOID))
@@ -678,13 +656,7 @@ func (s *Storage) Count() (oids, modules, tables int, err error) {
 	return oids, modules, tables, nil
 }
 
-// countPrefix reports how many keys share a prefix.
-//
-// A read failure part way through an iteration ends it just like exhaustion
-// does, so the error has to be checked: without it a store that cannot be read
-// reports a count of zero and no error, which reads as an empty store.
-//
-// The caller holds s.mu.
+// countPrefix reports how many keys share a prefix, returning iteration errors; the caller holds s.mu.
 func (s *Storage) countPrefix(prefix string) (int, error) {
 	iter, err := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte(prefix),

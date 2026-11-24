@@ -9,20 +9,7 @@ import (
 	"testing"
 )
 
-// What actually reaches the Docker binary.
-//
-// This adapter is the only place in the backup tool that runs anything, and its
-// whole safety claim is that it builds argument vectors rather than command
-// lines: nothing in a volume or service name can be reinterpreted as syntax,
-// because there is no shell to reinterpret it. The exec field exists so that
-// claim can be checked without a daemon, and these tests check it -- both the
-// exact vectors, and the destructive ones being scoped the way their comments
-// promise.
-//
-// The vectors are asserted verbatim rather than loosely matched. A restore that
-// runs the right command against the wrong volume, or empties a directory that
-// is not the one it mounted, is exactly the failure this package must not have,
-// and a loose assertion would not see it.
+// Argument vectors handed to the docker binary, asserted verbatim.
 
 // fakeExec records the vectors it is given and answers with canned output.
 type fakeExec struct {
@@ -69,14 +56,7 @@ func (f *fakeExec) last() []string {
 	return f.calls[len(f.calls)-1]
 }
 
-// testHelperImage is an ARBITRARY image name, and the only thing these tests
-// need from it is that it is not DefaultHelperImage: they assert that a
-// configured HelperImage reaches the argument vector, so a value equal to the
-// default would pass whether or not the option was honored. Nothing here runs
-// a container or fetches anything -- the process runner is a fake.
-//
-// It has one definition because it had five, and a literal repeated at every
-// assertion is a literal that gets updated at four of them.
+// testHelperImage must differ from DefaultHelperImage; nothing runs a container.
 const testHelperImage = "helper-image-under-test:1.0"
 
 // cliWith builds a CLI wired to a fake process runner.
@@ -137,9 +117,7 @@ func TestNewCLIRefusesWhatItCannotPin(t *testing.T) {
 		t.Errorf("defaults not applied: binary=%q helper=%q", c.binary, c.helperImage)
 	}
 
-	// And the override the vector tests configure must DIFFER from that
-	// default, or every assertion that a configured HelperImage reaches the
-	// argument vector would hold whether or not the option was honored.
+	// The override must differ from the default for these assertions to mean anything.
 	if testHelperImage == DefaultHelperImage {
 		t.Errorf("testHelperImage equals DefaultHelperImage (%q): the vector tests can no "+
 			"longer tell an honored HelperImage from an ignored one", DefaultHelperImage)
@@ -350,13 +328,7 @@ func TestVolumeProjectSeparatesAbsentFromUnanswered(t *testing.T) {
 	}
 }
 
-// TestVolumeBytesReadsTheHelpersAnswer covers the size probe's ARGUMENT VECTOR
-// and that a real answer parses, which is this file's subject.
-//
-// The bad-output cases moved to TestVolumeBytesTreatsAnUnanswerableReplyAsAnError
-// in dockercli_output_test.go, which asserts the error TYPE, its Reason and the
-// reply carried verbatim, where the version here only asserted err != nil. Two
-// tests over one behavior drift; the weaker one went.
+// TestVolumeBytesReadsTheHelpersAnswer covers the size probe's vector and a parsed answer.
 func TestVolumeBytesReadsTheHelpersAnswer(t *testing.T) {
 	t.Parallel()
 
@@ -523,17 +495,7 @@ func TestVolumeNamesAndDockerErrorCarryTheirContext(t *testing.T) {
 	}
 }
 
-// TestRunProcessTakesAVectorNotACommandLine proves the claim the rest of this
-// package rests on.
-//
-// Everything above asserts which vector would be handed to the process. This
-// asserts what the process does with it: the arguments reach the program
-// verbatim, so a volume or service name carrying shell syntax is data and not
-// syntax. os/exec passes the vector to execve; there is no shell to reinterpret
-// anything, and this is the test that would fail if that ever changed.
-//
-// It runs /bin/echo and /bin/cat: no daemon, nothing written, nothing on the
-// host touched.
+// TestRunProcessTakesAVectorNotACommandLine checks arguments reach the program verbatim, with no shell.
 func TestRunProcessTakesAVectorNotACommandLine(t *testing.T) {
 	t.Parallel()
 

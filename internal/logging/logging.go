@@ -16,8 +16,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/config"
 )
 
-// logFileMode is the permission new log files are created with: readable by the
-// owner and its group, written only by the owner.
+// logFileMode is the permission for new log files: owner write, group read.
 const logFileMode os.FileMode = 0o640
 
 // New builds a logger from cfg, opening the log file when the output is "file".

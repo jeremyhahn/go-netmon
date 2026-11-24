@@ -22,16 +22,10 @@ VERSION?=$(shell cat VERSION 2>/dev/null || echo dev)
 GIT_COMMIT?=$(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 BUILD_DATE?=$(shell TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
 
-# Values the release targets take, never exported: see "Releases" below. It
-# precedes every $(shell ...) that is evaluated, each of which would otherwise
-# expand them. The defaults above are deferred (?=), so none is evaluated yet,
-# and they come first because make 4.3 defines an unexported variable as empty,
-# which a later ?= then leaves empty.
+# Release target values, never exported; this precedes every evaluated $(shell ...).
 unexport VERSION TAG RELEASE_REMOTE RELEASE_GIT
 
-# Build against go.mod alone. A go.work in a parent directory would otherwise
-# swap in local checkouts of dependencies, and the build would no longer be
-# the one CI and the release produce.
+# Build against go.mod alone, never a parent go.work.
 export GOWORK=off
 
 # Go parameters
@@ -53,10 +47,7 @@ VERSION_LDFLAGS=-X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X ma
 LDFLAGS=-ldflags "-s -w $(VERSION_LDFLAGS)"
 BUILD_FLAGS=-v
 
-# FIPS=1 builds the FIPS 140-3 variant: the Go Cryptographic Module frozen at
-# its latest validated version (GOFIPS140), and the fips build tag, which
-# leaves out the code that cannot run under fips140=only. docs/fips.md has the
-# details.
+# FIPS=1 builds the FIPS 140-3 variant (GOFIPS140 and the fips tag); see docs/fips.md.
 FIPS ?= 0
 ifeq ($(FIPS),1)
 export GOFIPS140 := latest
@@ -114,15 +105,10 @@ test-unit: test ## Alias for test
 test-integration: ## Run integration tests in Docker environment
 	@./test/integration/run-tests.sh
 
-# CLAUDE.md documents "make integration-test" as the entry point, and the
-# per-package targets already use that order (integration-test-parser). Both
-# names now work rather than one of them being a documented command that fails.
+# Alias for the documented integration-test entry point.
 integration-test: test-integration ## Alias for test-integration (documented name)
 
-# The remote-write ordering reproduction, on its own. It is a separate exercise
-# from the deploy check in scripts/measure-export-health.sh, which answers
-# "did this deploy break anything" -- a different question, with a different
-# acceptable runtime. This one produces the disorder rather than waiting for it.
+# Reproduces remote-write ordering on its own; separate from scripts/measure-export-health.sh.
 integration-test-ordering: ## Run the remote-write ordering-disorder reproduction
 	@$(MAKE) -C test/integration test-ordering
 
@@ -141,10 +127,7 @@ test-e2e-guard: ## Test the e2e default-target guard and run it on the suite (no
 GOVULNCHECK ?= govulncheck
 TRIVY ?= trivy
 
-# Both tools are checked before either runs, so a missing trivy fails at once
-# rather than after a full govulncheck pass that then reads as the whole suite.
-# A missing scanner is a failure, never a skip: a security target that passes
-# without scanning is worse than none.
+# Both scanners are checked before either runs; a missing scanner fails, never skips.
 #
 # trivy fs gates on dependency CVEs and leaked secrets, CRITICAL and HIGH,
 # without --ignore-unfixed (that flag belongs to trivy image only). The npm
@@ -161,10 +144,7 @@ security: ## Scan dependencies, the linked standard library and the tree (govuln
 	"$(TRIVY)" fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 \
 		--skip-dirs tests/e2e/node_modules .
 
-# --- CI entry points ------------------------------------------------------
-#
-# CI runs these same targets. A check that exists only in a workflow file
-# cannot be reproduced locally and ends up debugged by pushing commits.
+# --- CI entry points: CI runs these same targets ---
 
 check-tracked: ## Fail if anything the build needs is untracked or ignored by git
 	@echo "Checking that the build's inputs are in the repository..."
@@ -306,11 +286,7 @@ coverage-grafana-template: ## Generate Grafana template package coverage
 	$(GOCOVER) -html=$(COVERAGE_DIR)/coverage-grafana-template.out -o $(COVERAGE_DIR)/coverage-grafana-template.html
 	@echo "Grafana template coverage: $(COVERAGE_DIR)/coverage-grafana-template.html"
 
-# The golangci-lint version this repository lints with. MUST match the pin in
-# .github/workflows/ci.yml, which installs its own copy -- if you change one,
-# change the other. The pin is deliberate: v2.13.0 ships
-# honnef.co/go/tools v0.8.0-rc.1, whose nilness pass panics ("unhandled builtin
-# recover"), producing a RED run with ZERO findings.
+# golangci-lint version; must match the pin in .github/workflows/ci.yml (v2.13.0's nilness pass panics).
 GOLANGCI_LINT_VERSION := v2.14.0
 
 # GOPATH/bin is where "make install-tools" puts golangci-lint, but it is not on
@@ -318,12 +294,7 @@ GOLANGCI_LINT_VERSION := v2.14.0
 # after "make install-tools" without the caller having to fix their profile.
 GOBIN_DIR := $(shell $(GOCMD) env GOPATH)/bin
 
-# GOBIN_DIR is searched BEFORE PATH, which is the opposite of the usual
-# preference and is the point: GOPATH/bin holds the copy install-tools pinned,
-# while PATH holds whatever the machine happens to have. On a shared
-# workstation GOPATH/bin is itself shared between every checkout and every
-# user, so neither location is trustworthy on its own -- which is why lint
-# verifies the version rather than assuming either.
+# GOBIN_DIR is searched before PATH; lint verifies the version either way.
 GOLANGCI_LINT := $(shell test -x $(GOBIN_DIR)/golangci-lint && echo $(GOBIN_DIR)/golangci-lint || command -v golangci-lint 2>/dev/null || echo $(GOBIN_DIR)/golangci-lint)
 
 # Where install-tools fetches the installer from. A variable so the guard tests
@@ -331,14 +302,7 @@ GOLANGCI_LINT := $(shell test -x $(GOBIN_DIR)/golangci-lint && echo $(GOBIN_DIR)
 # that a failed download is refused.
 GOLANGCI_LINT_INSTALLER_URL ?= https://raw.githubusercontent.com/golangci/golangci-lint/main/install.sh
 
-# version_of <path> prints the version the binary reports, and FAILS if the
-# binary is missing, not executable, or exits nonzero.
-#
-# The exit status is captured before the output is parsed. Piping the binary
-# straight into awk yields awk's status, not the binary's, so a binary that
-# prints a plausible banner and then fails its own version command would be
-# accepted as good -- a fail-open of exactly the kind these targets exist to
-# close. Callers treat empty output as "could not determine" and refuse.
+# version_of <path> prints the binary's version and fails if it is missing or exits nonzero.
 VERSION_OF = version_of() { test -x "$$1" || return 1; out=$$("$$1" version 2>/dev/null) || return 1; printf '%s\n' "$$out" | awk '{ for (i = 1; i < NF; i++) if ($$i == "version") { print $$(i+1); exit } }'; }
 
 lint: ## Run linters
@@ -407,19 +371,7 @@ vet-tags: ## Run go vet under every build tag the repository defines
 		$(GOCMD) vet -tags="$$tag" ./... || exit 1; \
 	done
 
-# --- Backup and restore ---------------------------------------------------
-#
-# BACKUPS ARE COLD. "make backup" stops the stack's services, copies the
-# volumes at rest and starts them again. That is deliberate: the web UI and
-# poller stores are PebbleDB (single-writer, exclusive LOCK) and Prometheus
-# runs without --web.enable-admin-api, so there is no supported way to snapshot
-# either of them while they are running. See docs/operations/backup-restore.md.
-#
-# The backup also carries the MIB source tree (./mibs), which is a bind mount
-# from this working directory rather than a Docker volume, and lives in no
-# volume and under no version control. Restoring it therefore writes into your
-# checkout, so it needs ALLOW_TREE_OVERWRITE=1 on top of YES=1 whenever that
-# directory already holds files.
+# --- Backup and restore: cold backups of the volumes and ./mibs; see docs/operations/backup-restore.md ---
 
 BACKUP_ARGS ?=
 RESTORE_ARGS ?=
@@ -457,21 +409,11 @@ restore-help: ## Explain the restore flags, including the ./mibs overwrite gate
 	@echo "make restore FROM=backups/<name> YES=1 RESTORE_ARGS='--skip mibs'"
 	@echo "    Restore everything except the MIB source tree."
 
-# --- native deployment ------------------------------------------------------
-# Deploys go-netmon to a host as systemd services. The target needs SSH and
-# sudo and nothing else — no Docker, no Go toolchain. See docs/deployment/.
-#
-# HOST is the target; everything else has a working default. The scripts own
-# the defaults, so an unset variable here means "the script decides".
+# --- Native deployment: systemd services over SSH and sudo; see docs/deployment/ ---
 HOST ?=
 DEPLOY_ARGS ?=
 MIGRATE_ARGS ?=
-# The backup directory to migrate is named by FROM, already declared above for
-# `make restore` and meaning the same thing here. Not BACKUP — that is the
-# netmon-backup binary's name.
-# The metrics backend. go-netmon stores no samples itself, so a standalone
-# appliance needs this; leave it empty only when remote_write points at a
-# Prometheus that already exists elsewhere.
+# FROM names the backup directory to migrate; the metrics backend is required unless remote_write points elsewhere.
 WITH_PROMETHEUS ?= 1
 PROMETHEUS_IMAGE ?= prom/prometheus:latest
 
@@ -539,27 +481,12 @@ test-toolchain: ## Run the golangci-lint pin and security missing-scanner guard 
 print-golangci-version: ## Print the pinned golangci-lint version, without the leading v
 	@echo "$(GOLANGCI_LINT_VERSION:v%=%)"
 
-# The file lists come from git rather than being written out here.
-#
-# The hardcoded version named scripts/, scripts/lib/, scripts/tests/ and
-# test/integration/ -- and missed six tracked scripts including deploy/install.sh,
-# start.sh, stop.sh and restart.sh. This target's own summary line said "every
-# shell script in the repository" and it was not true, which is the failure mode
-# a hardcoded list has: it is correct when written and silently wrong afterwards.
-# Deriving it means a script added anywhere is linted the day it lands.
-#
-# fake-docker is named separately because it has no .sh extension. The scripts/
-# group carries -P so that "-x" can resolve the sourced lib; the others source
-# relative to their own directory and do not need it.
+# Shell files to lint come from git; fake-docker has no .sh extension.
 SHELLCHECK_SCRIPTS = $(shell git ls-files 'scripts/*.sh' 'scripts/lib/*.sh' 'scripts/tests/*.sh')
 SHELLCHECK_INTEGRATION = $(shell git ls-files 'test/integration/*.sh')
 SHELLCHECK_OTHER = $(shell git ls-files '*.sh' | grep -vE '^(scripts/|test/integration/)')
 
-# lint-early-exit-pipes.sh then refuses "producer | grep -q" and "| head" in
-# any of them that sets pipefail: the consumer's early exit SIGPIPEs the
-# producer and pipefail inverts the check once the input outgrows a pipe
-# buffer. A site safe for a reason the lint cannot see carries an
-# inline "# pipefail-ok: <reason>"; the script's header has the rules.
+# lint-early-exit-pipes.sh refuses early-exit consumers under pipefail; mark safe sites with "# pipefail-ok: <reason>".
 lint-scripts: ## Shellcheck every shell script and refuse early-exit pipes under pipefail
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not installed" && exit 1)
 	@shellcheck -x -P scripts $(SHELLCHECK_SCRIPTS) scripts/tests/fake-docker
@@ -569,35 +496,11 @@ lint-scripts: ## Shellcheck every shell script and refuse early-exit pipes under
 	@./scripts/lint-early-exit-pipes.sh $(SHELLCHECK_SCRIPTS) scripts/tests/fake-docker $(SHELLCHECK_INTEGRATION) $(SHELLCHECK_OTHER)
 	@echo "early-exit pipes: clean"
 
-# --- Releases ---------------------------------------------------------------
-#
-# One target per kind; each refuses the other two. All three run
-# scripts/release.sh, which checks everything before it writes anything,
-# commits the release on a release/vX.Y.Z branch and pushes that branch to
-# $(RELEASE_REMOTE) for a PR. Nothing is pushed to main and no tag is made
-# here: when the merged PR's CI is green, .github/workflows/auto-release.yml
-# tags it and calls release.yml. docs/operations/releasing.md is the
-# operator's page.
-#
-# VERSION is also this Makefile's build stamp, defaulted from the VERSION
-# file. The release targets take it only when it was GIVEN (command line or
-# environment): a defaulted 0.1.3 is not a request to release 0.1.3. Every
-# value reaches the scripts through the environment, unexpanded ($(value)),
-# never spliced into a shell command line.
-#
-# RELEASE_REMOTE is empty by default: scripts/release.sh then pushes the
-# release branch to the remote main tracks, or to origin when main tracks
-# nothing.
+# --- Releases: each target runs scripts/release.sh and pushes a release/vX.Y.Z branch for a PR; see docs/operations/releasing.md ---
 RELEASE_REMOTE?=
 RELEASE_GIVEN_VERSION = $(if $(filter command line environment environment override,$(origin VERSION)),$(value VERSION))
 
-#
-# "override export X := $(value X)" plus the unexport is what keeps a value
-# raw: make 4.4 expands a command-line variable whenever it exports it, to a
-# recipe or to any $(shell ...) in this file, so VERSION='$(shell ...)' would
-# run before the script could refuse it. DRY_RUN stays exported everywhere:
-# scripts/deploy.sh and migrate.sh read it from the environment. The unexport
-# itself sits at the top of this file, before the first $(shell ...).
+# "override export X := $(value X)" keeps a command-line value unexpanded until the script checks it.
 release-alpha release-candidate release: override export VERSION := $(RELEASE_GIVEN_VERSION)
 release-alpha release-candidate release: override export DRY_RUN := $(value DRY_RUN)
 release-alpha release-candidate release: override export RELEASE_REMOTE := $(value RELEASE_REMOTE)
@@ -626,22 +529,7 @@ release-notes: ## Print the CHANGELOG section of TAG=vX.Y.Z[-alpha|-rc.N]
 test-release: ## Test the release scripts, targets and workflow (scratch repositories, no network)
 	@./scripts/tests/release-tests.sh $(RUN)
 
-# --- Release artifacts --------------------------------------------------------
-#
-# What release.yml attaches to a GitHub release, built the same way here. The
-# workflow calls these targets and sets nothing else, so this is the one place
-# the release's build flags live.
-#
-#   dist/go-netmon_<ver>_linux_<arch>.tar.gz        release-build
-#   dist/go-netmon_<ver>_linux_<arch>_fips.tar.gz   release-build-fips
-#   dist/go-netmon_<ver>_sbom.cdx.json              release-sbom
-#   dist/SHA256SUMS                                 release-checksums
-#
-# <ver> is VERSION without a leading v. Each archive holds the five user
-# binaries (pure Go: CGO_ENABLED=0, cross-compiled, -trimpath, stamped through
-# LDFLAGS), the license, README, example configuration and systemd units. The
-# archives are reproducible: entries are sorted, owned by root and dated at
-# the commit, and gzip records no timestamp.
+# --- Release artifacts: what release.yml attaches, built reproducibly into dist/ ---
 DIST_DIR = dist
 RELEASE_VERSION = $(VERSION:v%=%)
 RELEASE_ARCHES = amd64 arm64
@@ -651,8 +539,7 @@ RELEASE_UNITS = $(wildcard deploy/*.service)
 RELEASE_SUFFIX = $(if $(FIPS_TAGS),_fips)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || echo 0)
 
-# The SBOM generator, pinned. go run fetches it through the module proxy and
-# verifies it against the checksum database, as any dependency is.
+# The SBOM generator, pinned and verified through the module proxy.
 CYCLONEDX_GOMOD_VERSION := v1.12.0
 CYCLONEDX_GOMOD ?= $(GOCMD) run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@$(CYCLONEDX_GOMOD_VERSION)
 
@@ -695,9 +582,7 @@ release-checksums: ## Write dist/SHA256SUMS over this version's archives and SBO
 clean-dist: ## Remove the release artifacts from dist/
 	@rm -rf $(DIST_DIR)/stage $(DIST_DIR)/go-netmon_* $(DIST_DIR)/SHA256SUMS $(DIST_DIR)/SHA256SUMS.tmp
 
-# A built image is scanned before it is pushed. trivy image fails on a HIGH or
-# CRITICAL vulnerability that has a fix; one with no fixed version yet cannot
-# be acted on and would hold every release hostage to upstream.
+# trivy image fails on a fixable HIGH or CRITICAL vulnerability before push.
 IMAGE ?=
 image-scan: ## Scan a built container image: IMAGE=<ref> (fails on fixed HIGH/CRITICAL)
 	@test -n "$(IMAGE)" || (echo "IMAGE=<ref> is required" && exit 1)
@@ -705,18 +590,10 @@ image-scan: ## Scan a built container image: IMAGE=<ref> (fails on fixed HIGH/CR
 		(echo "trivy not installed. Install the release from https://github.com/aquasecurity/trivy/releases" && exit 1)
 	"$(TRIVY)" image --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "$(IMAGE)"
 
-# The compose project this repository deploys into. Every docker compose
-# invocation below pins it explicitly. Without -p, compose derives the project
-# from the directory name, which is also "go-netmon" — so a command aimed at
-# the test stack reaches the deployed one instead. That is how the integration
-# runner came to delete live containers; it is not a hypothetical.
+# Every compose command pins the project with -p so test commands never reach the deployed stack.
 COMPOSE_PROJECT?=go-netmon
 
-# Binaries built into the repository root rather than bin/ — "go build ./cmd/x"
-# with no -o leaves one behind, and "go test -c" leaves the .test. They are
-# named explicitly rather than globbed: a pattern here would eventually match
-# something that is not a build artifact, and this repository has no git to
-# recover it from.
+# Stray binaries go build and go test -c leave in the root, named explicitly.
 STRAY_ARTIFACTS=api.test go-netmon webui mib-importer netmon
 
 clean: ## Remove build artifacts (does not touch Docker or backups)
@@ -737,9 +614,7 @@ clean-docker: ## Stop this project's containers and remove its images (keeps dat
 	@docker rmi go-netmon:latest go-netmon-webui:latest 2>/dev/null || true
 	@echo "Containers and images removed. Volumes kept — use clean-data to delete them."
 
-# Deleting the volumes deletes the MIB catalog, every device and profile, and
-# the whole metric history. It is gated on an explicit CONFIRM rather than a
-# flag that is easy to type by accident, and it names what will go first.
+# Deleting the volumes deletes the MIB catalog, devices, profiles and metric history; gated on CONFIRM.
 clean-data: ## DESTRUCTIVE: delete this project's volumes (requires CONFIRM=yes)
 	@echo "This deletes all data in compose project $(COMPOSE_PROJECT):"
 	@echo "  devices, profiles and MIB assignments"

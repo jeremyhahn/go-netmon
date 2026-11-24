@@ -1,12 +1,6 @@
 package metrics
 
 // What one remote-write request may contain.
-//
-// batch_size decided when a flush was TRIGGERED and nothing decided how much
-// went into a request, so Flush took the whole buffer and sent it as one
-// protobuf -- and the retry backlog floor alone is 100,000 samples. A request
-// too large to be accepted is refused at the same size on every attempt, so it
-// can never drain and everything queues behind it.
 
 import (
 	"context"
@@ -164,13 +158,7 @@ func TestABatchBeyondBatchSizeBecomesSeveralRequests(t *testing.T) {
 	}
 }
 
-// TestARequestIsBoundedByBytesAndNotOnlyByCount is the half a sample count
-// cannot do.
-//
-// A sample is not a fixed size. A counter reading is a handful of short labels;
-// an entity-sensor sample carries entPhysicalName, and an ifAlias is whatever
-// somebody typed into the box. One count therefore produces requests of wildly
-// different sizes, and nothing in the path noticed.
+// TestARequestIsBoundedByBytesAndNotOnlyByCount checks the byte bound.
 func TestARequestIsBoundedByBytesAndNotOnlyByCount(t *testing.T) {
 	endpoint := &recorder{}
 	server := httptest.NewServer(endpoint.handler(t))
@@ -223,14 +211,7 @@ func TestARequestIsBoundedByBytesAndNotOnlyByCount(t *testing.T) {
 	}
 }
 
-// TestSplittingKeepsEachSeriesAscendingAcrossRequests is the property that
-// makes splitting safe at all, and the one an index-order split does not have.
-//
-// Requests reach the endpoint in order and each advances the endpoint's head
-// for the series it carries. A boundary that puts a series' NEWER reading in
-// the earlier request and its older one in the later gets the later request
-// refused -- with every other reading in it. That is the out-of-order failure,
-// reached through the request size bound rather than through a poller.
+// TestSplittingKeepsEachSeriesAscendingAcrossRequests checks no series goes backwards across requests.
 func TestSplittingKeepsEachSeriesAscendingAcrossRequests(t *testing.T) {
 	endpoint := &recorder{}
 	server := httptest.NewServer(endpoint.handler(t))
@@ -287,14 +268,7 @@ func TestSplittingKeepsEachSeriesAscendingAcrossRequests(t *testing.T) {
 	}
 }
 
-// TestAPartiallyDeliveredBatchPutsBackOnlyTheRemainder is the interaction the
-// issue calls out: whatever chunking is chosen, a batch that fails midway must
-// put back only what was not delivered.
-//
-// Redelivering an accepted prefix is not merely wasteful. The endpoint's head
-// has moved to the end of it, so on the next attempt those samples are behind
-// their own head -- and the request carrying them is refused whole, taking the
-// remainder with it. A retry that redelivers is a retry that cannot succeed.
+// TestAPartiallyDeliveredBatchPutsBackOnlyTheRemainder checks an accepted prefix is not redelivered.
 func TestAPartiallyDeliveredBatchPutsBackOnlyTheRemainder(t *testing.T) {
 	const batchSize = 100
 	const samples = 500

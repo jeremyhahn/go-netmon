@@ -1,20 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the release scripts, their Makefile targets and the release
-# workflows: scripts/release.sh behind make release-alpha, release-candidate
-# and release, which prepare a release PR; changelog-assemble.sh,
-# release-version-check.sh, release-notes.sh and release-check-tag.sh; the
-# release artifact targets; and the invariants of
-# .github/workflows/release.yml and auto-release.yml.
-#
-# Every release runs in a scratch repository whose "origin" remote is a bare
-# repository beside it, so a test can see exactly what a release pushed: the
-# release branch, and never main or a tag.
-# Nothing here touches this checkout, the network or a real remote. The
-# Makefile targets are driven against this checkout only with versions they
-# must refuse before looking at anything else, or with make -n, which prints
-# a recipe without running it.
-#
-# Usage: release-tests.sh [test-name-substring]
+# Tests for the release scripts, Makefile targets and release workflows, in scratch repositories with a bare origin. Usage: release-tests.sh [test-name-substring]
 
 set -euo pipefail
 
@@ -563,10 +548,7 @@ workflow_needs() {
     ' "$1"
 }
 
-# release_gate_matches_ci CI_YML RELEASE_YML: publish and image need verify
-# and every job CI Passed needs, and each of those runs exactly the commands
-# it runs in ci.yml. image is held to it too: it pushes to the registry, so
-# nothing may reach GHCR before the gate passed.
+# release_gate_matches_ci CI_YML RELEASE_YML: publish and image need verify and every CI Passed job, running the same commands as ci.yml.
 release_gate_matches_ci() {
     local ci="$1" rel="$2" job needs want consumer
     local -a gate

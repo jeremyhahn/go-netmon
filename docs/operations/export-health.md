@@ -51,11 +51,8 @@ drop counter counts individual readings. A request that was never made — every
 reading in it given up on before the wire — is neither a success nor an error,
 so it appears in neither.
 
-`gonetmon_exports_total` used to carry a third child, `status="dropped"`, which
-counted samples among its flush-counting siblings. Anything summed or divided
-across that metric was therefore meaningless, and that incident's own measurement had to
-carry a paragraph saying so. It is gone; `sum(gonetmon_export_dropped_samples_
-total)` is the number it held.
+Dropped samples are counted only by `gonetmon_export_dropped_samples_total`;
+`sum(gonetmon_export_dropped_samples_total)` is the total.
 
 ## Is anything out of order
 

@@ -49,12 +49,6 @@ func unitsByObject(oids []*mib.OIDMetadata) map[string]string {
 }
 
 // untypedAccessible names the readable objects that came back with no type.
-//
-// A readable object with no type is one whose IMPORT did not resolve. It is
-// still classified as a metric and still marked pollable, so the poller issues
-// a request for it and the value is rendered as a bare integer. The names are
-// returned rather than a count because the failure is only actionable if it
-// says which objects lost their type.
 func untypedAccessible(oids []*mib.OIDMetadata) []string {
 	var untyped []string
 	for _, oid := range oids {
@@ -65,14 +59,7 @@ func untypedAccessible(oids []*mib.OIDMetadata) []string {
 	return untyped
 }
 
-// TestUnitsSurviveAcrossAWholeModule pins the UNITS clause for every object in
-// IP-MIB that declares one.
-//
-// UNITS is read from the *resolved* node type; reading it from the raw type
-// silently yields nothing, and that regression is invisible from any single
-// object because most objects declare no units anyway. Pinning the whole set —
-// rather than one object — is what makes the regression detectable: it turns a
-// silent loss of every unit in the module into a failure that names them.
+// TestUnitsSurviveAcrossAWholeModule pins the UNITS clause of every IP-MIB object that declares one.
 func TestUnitsSurviveAcrossAWholeModule(t *testing.T) {
 	oids := parseWith(t, "IP-MIB", allMIBDirs()...)
 
@@ -131,11 +118,7 @@ func TestUnitsSurviveInTCPMIB(t *testing.T) {
 	}
 }
 
-// TestFullSearchPathResolvesTypesAndHints is the good-case regression: with
-// every MIB directory on the path, IP-MIB resolves to a full object set whose
-// accessible objects carry concrete types, and whose textual conventions carry
-// their DISPLAY-HINT. This is what the CLI and web UI need in order to render a
-// value as anything better than a bare number.
+// TestFullSearchPathResolvesTypesAndHints checks IP-MIB objects resolve concrete types and DISPLAY-HINTs.
 func TestFullSearchPathResolvesTypesAndHints(t *testing.T) {
 	oids := parseWith(t, "IP-MIB", allMIBDirs()...)
 
@@ -154,8 +137,7 @@ func TestFullSearchPathResolvesTypesAndHints(t *testing.T) {
 		wantHint     string
 		wantPollable bool
 	}{
-		// An inline INTEGER enumeration resolves to the "Enumeration"
-		// type name, with the labels carried separately in EnumValues.
+		// An inline INTEGER enumeration resolves to type Enumeration, labels in EnumValues.
 		{object: "ipForwarding", wantType: "Enumeration", wantPollable: true},
 		{object: "ipDefaultTTL", wantType: "Integer32", wantPollable: true},
 		{object: "ipReasmTimeout", wantType: "Integer32", wantPollable: true},
@@ -185,21 +167,9 @@ func TestFullSearchPathResolvesTypesAndHints(t *testing.T) {
 	}
 }
 
-// TestAnIncompleteSearchPathIsReported is the trap this used to document.
-//
-// Parsing a module whose imports are not on the search path returns no error. It
-// used to return objects too: fewer of them, carrying no type, no units and no
-// display hint, which downstream is indistinguishable from a MIB that declares
-// none. An import configured with one MIB directory therefore appeared to
-// succeed while producing metadata that rendered every value as a bare number.
-//
-// Those objects also had no OID, so nothing could ever poll them. They are now
-// discarded and counted, which turns a silent degradation into a number the
-// importer can show. This test holds that line: an incomplete search path must
-// produce no usable objects and must say how many it dropped.
+// TestAnIncompleteSearchPathIsReported checks an incomplete search path yields no usable objects and reports the drop count.
 func TestAnIncompleteSearchPathIsReported(t *testing.T) {
-	// IP-MIB's imports (SNMPv2-SMI, SNMPv2-TC, INET-ADDRESS-MIB and others)
-	// are not in the asr1001 directory.
+	// IP-MIB's imports are not in the asr1001 directory.
 	partial, partialReport := parseReportWith(t, "IP-MIB", testsupport.MIBDir("asr1001"))
 	full, fullReport := parseReportWith(t, "IP-MIB", allMIBDirs()...)
 
@@ -251,16 +221,7 @@ func parseReportWith(t *testing.T, moduleName string, dirs ...string) ([]*mib.OI
 	return objects, report
 }
 
-// TestInetAddressMIBResolvesIPMIBZoneColumns guards a gap that used to exist in
-// the repository's MIB set rather than in the parser. INET-ADDRESS-MIB (RFC
-// 4001) was absent from mibs/ even though IP-MIB, TCP-MIB and UDP-MIB all
-// import it, so IP-MIB's InetZoneIndex columns resolved to no type at all —
-// while still being classified as metric columns and still marked pollable, so
-// they were polled and rendered as bare integers.
-//
-// The module has since been added to mibs/standard. This asserts the positive
-// outcome, so removing the file again fails here instead of quietly restoring
-// untyped polling.
+// TestInetAddressMIBResolvesIPMIBZoneColumns checks INET-ADDRESS-MIB (RFC 4001) in mibs/standard types IP-MIB's InetZoneIndex columns.
 func TestInetAddressMIBResolvesIPMIBZoneColumns(t *testing.T) {
 	oids := parseWith(t, "IP-MIB", allMIBDirs()...)
 

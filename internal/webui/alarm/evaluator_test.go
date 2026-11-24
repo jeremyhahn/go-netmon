@@ -57,12 +57,7 @@ func testEvaluator(t *testing.T, q *stubQuery, rules []Rule) (*Evaluator, *clock
 	return e, c
 }
 
-// TestOneRuleFiresOncePerSeries is the shape of the whole feature.
-//
-// A rule about interfaces has to fire once per interface: "Gi0/0/2 is down"
-// and "Gi0/0/5 is down" are two things to fix, and a bell that collapsed them
-// into "InterfaceDown" would tell an operator to go and look rather than what
-// to look at.
+// TestOneRuleFiresOncePerSeries checks a rule fires once per returned series.
 func TestOneRuleFiresOncePerSeries(t *testing.T) {
 	q := &stubQuery{answers: map[string][]Sample{
 		"iface_down": {
@@ -210,13 +205,7 @@ func TestTheWorstAlarmIsFirst(t *testing.T) {
 	}
 }
 
-// TestARuleThatCannotBeEvaluatedDoesNotReadAsQuiet is the failure mode that
-// would matter most.
-//
-// A rule Prometheus refuses is not a rule that found nothing. Reporting
-// all-clear on the strength of a query that never ran is the one moment an
-// operator most needs to be told otherwise -- so the other rules still answer,
-// and the failure is logged rather than swallowed into an empty bell.
+// TestARuleThatCannotBeEvaluatedDoesNotReadAsQuiet checks a refused rule is logged and the other rules still answer.
 func TestARuleThatCannotBeEvaluatedDoesNotReadAsQuiet(t *testing.T) {
 	q := &stubQuery{
 		answers: map[string][]Sample{
@@ -328,13 +317,7 @@ func TestForgettingClearedAlarmsBoundsTheState(t *testing.T) {
 	}
 }
 
-// TestAFailedRuleDoesNotClearWhatItHadAlreadyRaised is the failure mode that
-// would matter most, and the earlier test for it could not see.
-//
-// A Prometheus that stops answering would otherwise produce an all-clear: the
-// rule is skipped, its alarms are not in the new result, and the bell empties.
-// The outage manufactures the good news. What the rule last knew is carried
-// forward instead, with a count saying the answer is incomplete.
+// TestAFailedRuleDoesNotClearWhatItHadAlreadyRaised checks a failed rule carries its last alarms forward with an incomplete count.
 func TestAFailedRuleDoesNotClearWhatItHadAlreadyRaised(t *testing.T) {
 	q := &stubQuery{answers: map[string][]Sample{
 		"down": {{Labels: map[string]string{"device": "core-02"}, Value: 1}},
@@ -382,12 +365,7 @@ func TestAFailedRuleDoesNotClearWhatItHadAlreadyRaised(t *testing.T) {
 	}
 }
 
-// TestAnEvaluationTheRulesChangedUnderIsDiscarded is the reload race.
-//
-// An evaluation snapshots the rule set at its start. If a reload lands while it
-// is running, publishing its result would show alarms belonging to a rule that
-// has been removed, beside a count of the rules that are loaded now -- two
-// numbers on one panel that contradict each other until the next tick.
+// TestAnEvaluationTheRulesChangedUnderIsDiscarded checks a reload during an evaluation discards its result.
 func TestAnEvaluationTheRulesChangedUnderIsDiscarded(t *testing.T) {
 	reloaded := make(chan struct{})
 	q := &stubQuery{answers: map[string][]Sample{
@@ -417,18 +395,7 @@ func TestAnEvaluationTheRulesChangedUnderIsDiscarded(t *testing.T) {
 	}
 }
 
-// TestADiscardedEvaluationLeavesNothingBehind is the other half of discarding.
-//
-// Not publishing the result is not the same as not having run. The evaluation
-// also records when it first saw each alarm, and that record is what "for"
-// measures against -- so an evaluation thrown away for naming rules that no
-// longer exist could still leave its first sighting behind, and the rule that
-// replaced it would inherit a clock it never started.
-//
-// The reloaded rule below asks for five minutes. If the discarded run's
-// sighting survives, the very first evaluation of the NEW rule sees an alarm
-// that has apparently been up for five minutes and fires it immediately --
-// which is exactly what "for" exists to prevent.
+// TestADiscardedEvaluationLeavesNothingBehind checks a discarded evaluation leaves no first-sighting time for "for".
 func TestADiscardedEvaluationLeavesNothingBehind(t *testing.T) {
 	reloaded := make(chan struct{})
 	q := &stubQuery{answers: map[string][]Sample{
@@ -440,9 +407,7 @@ func TestADiscardedEvaluationLeavesNothingBehind(t *testing.T) {
 		{Name: "Watch", Expr: "old", Severity: SeverityWarning},
 	})
 
-	// The reload lands while the query for the old rule is in flight, and the
-	// replacement keeps the rule NAME so both produce the same alarm ID -- the
-	// case where an inherited sighting is invisible in the published answer.
+	// The reload lands mid-query and keeps the rule name, so both produce the same alarm ID.
 	e.query = func(ctx context.Context, expr string) ([]Sample, error) {
 		select {
 		case <-reloaded:
@@ -479,20 +444,7 @@ func TestADiscardedEvaluationLeavesNothingBehind(t *testing.T) {
 	}
 }
 
-// TestReloadWaitsForACommitInFlight closes the window between commit's
-// generation check and its write.
-//
-// The check passing does not make the result current: a reload landing in that
-// window was invisible to it, so the evaluation it should have discarded
-// published anyway and left its sightings behind. Both halves are now inside
-// one critical section, and Reload takes the same lock -- so either commit
-// finishes first, or the reload does and commit sees the generation it changed.
-//
-// That is a property of the LOCKING, and there is no point in the middle of a
-// critical section for a test to stand: hammering reloads against evaluations
-// passes either way, which is what a first version of this test did. So it
-// asserts the ordering directly -- with the lock commit uses held, a reload
-// must wait.
+// TestReloadWaitsForACommitInFlight checks a reload waits while commit's lock is held.
 func TestReloadWaitsForACommitInFlight(t *testing.T) {
 	q := &stubQuery{answers: map[string][]Sample{
 		"a": {{Labels: map[string]string{"device": "a"}, Value: 1}},
@@ -533,18 +485,7 @@ func TestReloadWaitsForACommitInFlight(t *testing.T) {
 	}
 }
 
-// TestEvaluationsDoNotOverlap serializes the exported forced evaluation with
-// the one Run drives.
-//
-// EvaluateOnce exists so a browser opened seconds after a reload does not wait
-// a whole interval, which means it runs alongside Run's tick. Two overlapping
-// evaluations read the same sightings and the same generation, and whichever
-// finished LAST would publish over the other -- an older answer replacing a
-// newer one. Nothing detects it: every access is properly synchronized, so the
-// race detector is quiet and only the order is wrong.
-//
-// Asserted the same way as the reload ordering, and for the same reason: with
-// an evaluation in progress, a second must wait rather than interleave.
+// TestEvaluationsDoNotOverlap checks a second evaluation waits for one in progress.
 func TestEvaluationsDoNotOverlap(t *testing.T) {
 	q := &stubQuery{answers: map[string][]Sample{
 		"a": {{Labels: map[string]string{"device": "a"}, Value: 1}},
@@ -581,12 +522,7 @@ func TestEvaluationsDoNotOverlap(t *testing.T) {
 	}
 }
 
-// TestAQueryMayReloadWithoutDeadlock is why evaluations are serialized on a
-// lock of their own rather than on the one commit and Reload share.
-//
-// The rules are re-read from the config file by a signal handler, so a reload
-// can land at any moment -- including while a query is in flight. An evaluation
-// that held commit's lock across its queries would deadlock against it.
+// TestAQueryMayReloadWithoutDeadlock checks a reload during a query does not deadlock.
 func TestAQueryMayReloadWithoutDeadlock(t *testing.T) {
 	q := &stubQuery{answers: map[string][]Sample{
 		"a": {{Labels: map[string]string{"device": "a"}, Value: 1}},

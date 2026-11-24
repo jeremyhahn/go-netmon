@@ -7,22 +7,7 @@ import (
 	"testing"
 )
 
-// An object with no OID is not an object.
-//
-// gosmi produces them in two situations and both used to be stored, which is
-// what made an unusable module report a healthy object count:
-//
-//   - A module whose IMPORTS did not resolve parses into objects hanging off a
-//     parent identifier that was never found. ATEN-PRODUCTS-MIB imported this
-//     way reported "6 objects" and produced no metrics, for weeks, because
-//     ATEN-SMI was not in the store when it was first imported.
-//   - A module with a duplicate IMPORTS symbol can yield each object twice, once
-//     resolved and once not. KNGeneric-MIB stored 159 records for the 80 objects
-//     it declares.
-//
-// The first case is also cached, which is the harder half: re-importing the same
-// file reads the same cached failure and fails identically, so the module stays
-// broken until the process restarts.
+// Objects without an OID are dropped, including cached unresolved-import failures and duplicate IMPORTS phantoms.
 
 // writeModule puts a MIB source file in dir, named for the module it declares.
 func writeModule(t *testing.T, dir, module, body string) string {
@@ -85,12 +70,7 @@ func standardMIBs(t *testing.T) string {
 	return path
 }
 
-// TestAModuleParsedBeforeItsDependencyRecoversOnRetry is the cached-failure
-// case, and the reason a MIB could be re-imported forever without improving.
-//
-// The leaf is parsed while its dependency is missing, which fails and is cached.
-// The dependency then appears -- exactly what happens when both are uploaded in
-// one run, the root a moment after the leaf -- and the leaf is parsed again.
+// TestAModuleParsedBeforeItsDependencyRecoversOnRetry: a leaf parsed before its dependency recovers once it appears.
 func TestAModuleParsedBeforeItsDependencyRecoversOnRetry(t *testing.T) {
 	dir := t.TempDir()
 	p := New(standardMIBs(t), dir)

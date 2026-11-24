@@ -442,11 +442,7 @@ func (e *Engine) VolumeBytes(_ context.Context, name string) (int64, error) {
 	return e.root.SizeOf(VolumeDir(name))
 }
 
-// transferVolume is the shape both directions share: run the caller's hook,
-// take the lock, prove the volume exists, record the operation, and only then
-// move any bytes. Holding the lock across the transfer is deliberate — it is
-// what makes a concurrent export and import of one volume serialize, as they do
-// against a real daemon.
+// transferVolume runs the hook, takes the lock, checks the volume and records the operation before moving bytes.
 func (e *Engine) transferVolume(ctx context.Context, name, op string,
 	hook func(context.Context, string) error, move func(dir string) error) error {
 	if hook != nil {

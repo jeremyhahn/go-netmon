@@ -391,7 +391,7 @@ func (s *Server) routes() {
 	// What is wrong right now, for the bell.
 	api.HandleFunc("/alarms", s.handleGetAlarms).Methods("GET")
 
-	// MIB endpoints (IMPORTANT: Specific routes MUST be registered BEFORE general routes!)
+	// MIB endpoints: specific routes must be registered before general ones.
 	api.HandleFunc("/mibs/import", s.handleImportMIB).Methods("POST")
 	api.HandleFunc("/mibs", s.handleListStoredMIBs).Methods("GET") // Database-based
 
@@ -417,14 +417,7 @@ func (s *Server) routes() {
 	// OID Learner endpoint - proxies to go-netmon service
 	api.HandleFunc("/learned-tables", s.handleGetLearnedTables).Methods("GET")
 
-	// Static files with no-cache headers
-	// The page and everything on it, served from the assets compiled into the
-	// binary rather than from a path relative to the working directory.
-	//
-	// A server built without assets registers no catch-all at all, so an
-	// unknown path gets the router's 404 rather than a handler that will
-	// answer nothing. That is only reachable in tests; the binaries always
-	// pass the embedded tree.
+	// Static UI from the embedded assets, no-cache; without assets no catch-all is registered.
 	if s.assets != nil {
 		s.router.PathPrefix("/").Handler(
 			noCacheMiddleware(http.FileServer(http.FS(s.assets))))
@@ -490,11 +483,7 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	return s.Serve(ctx, listener)
 }
 
-// newHTTPServer builds the listener the web UI serves on.
-//
-// The deadlines come from the documented budget rather than from literals here
-// so that the ordering the handlers rely on is stated in one place and checked
-// by one test.
+// newHTTPServer builds the web UI's HTTP server with deadlines from the documented budget.
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:         addr,
@@ -528,14 +517,7 @@ func (s *Server) LoadStoredMIBs(ctx context.Context) error {
 	successCount := 0
 	var loadErrors []string
 
-	// EnsureModuleCurrent, not LoadModule. This loop is the whole cold start:
-	// on monitor-01 it reparsed all 176 imported modules on every restart, which is
-	// the 203 seconds the web UI spent before it bound its port. The parsed
-	// catalog is in Pebble and survives the process, so there is nothing to
-	// rebuild unless a MIB file has been edited — and those are still reparsed.
-	//
-	// This runs once, from the startup path in cmd/webui, which is the
-	// precondition EnsureModuleCurrent documents.
+	// EnsureModuleCurrent, not LoadModule: only MIB files changed since the stored parse are reparsed.
 	for i, mib := range mibs {
 		if s.mibLoader != nil {
 			if err := s.mibLoader.EnsureModuleCurrent(mib.Name); err != nil {
@@ -717,19 +699,7 @@ func (s *Server) handleQueryMetrics(w http.ResponseWriter, r *http.Request) {
 		matchParts = append(matchParts, fmt.Sprintf("%s!=%q", labelValues.LabelName, ""))
 		selector := "{" + strings.Join(matchParts, ",") + "}"
 
-		// Every row of the table, from every series carrying the index label.
-		//
-		// This used to ask only for info metrics -- snmp_*_info, the ones
-		// carrying a text value. A table with no text column therefore had no
-		// rows to offer, so its instance picker came up empty, nothing
-		// subscribed, and every one of its cards waited for data that was being
-		// collected the whole time. cpmCPUTotalTable is entirely numeric and
-		// this is exactly what happened to it; across five devices it left 507
-		// cards waiting.
-		//
-		// Aggregated by the label so the cost is one row per instance rather
-		// than one per series: a table of 24 interfaces with 40 columns is 24
-		// rows here, not 960.
+		// Every table row from every series carrying the index label, aggregated to one row per instance.
 		rows, err := s.queryFunc(r.Context(),
 			fmt.Sprintf("count by (%s) (%s)", labelValues.LabelName, selector))
 		if err != nil {
@@ -798,10 +768,7 @@ func (s *Server) handleQueryMetrics(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Convert map to slice of metrics, ordered by the instance identifier.
-		// In map order the instance picker this feeds is rebuilt in a different
-		// order on every request, which moves the entry the page selects by
-		// default from one interface to another.
+		// Order metrics by instance identifier so the picker's default selection is stable.
 		result := make([]map[string]interface{}, 0, len(instanceMap))
 		for _, instance := range slices.SortedFunc(maps.Keys(instanceMap), compareInstance) {
 			result = append(result, map[string]interface{}{

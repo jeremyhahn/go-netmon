@@ -10,14 +10,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// What a FIPS build does with the three protocols it does not have.
-//
-// The negative half. A FIPS build must not merely fail to select MD5, SHA-1 or
-// DES -- it must say that it recognised them and does not provide them. "want
-// SHA224, SHA256, ..." reads as a typo in the config file and sends an
-// operator looking for a mistake that is not there; the real problem is that
-// this binary was built with -tags fips, which is a different problem with a
-// different fix.
+// A FIPS build names MD5, SHA-1 and DES as unavailable in this build.
 func TestFIPSBuildRefusesTheLegacyProtocols(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -57,14 +50,7 @@ func TestFIPSBuildRefusesTheLegacyProtocols(t *testing.T) {
 	}
 }
 
-// The positive half, and the more important one: SNMPv3 itself is NOT absent
-// from a FIPS build. Authentication with the SHA-2 family and privacy with AES
-// work exactly as they do in an ordinary build. Only three protocol names are
-// missing, and a deployment subject to FIPS 140-3 could not lawfully have used
-// those anyway.
-//
-// Without this assertion the test above is satisfied by a build in which
-// SNMPv3 does not work at all.
+// A FIPS build still supports SNMPv3 with SHA-2 authentication and AES privacy.
 func TestFIPSBuildStillSpeaksSNMPv3(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -9,12 +9,7 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// Locked memory is one budget for the whole process: RLIMIT_MEMLOCK bounds
-// every page go-enclave locks, and the 64 KiB a container gets by default is
-// sixteen pages. Every open secret holds locked pages for as long as it is
-// open, so workers opening their devices' credentials at the same time could
-// together ask for more than the limit and have their requests refused. A
-// LockedBudget makes them wait their turn instead.
+// LockedBudget makes concurrent secret opens wait for RLIMIT_MEMLOCK headroom instead of failing.
 
 // keyPageBytes is the locked memory one seal or open of a value holds for its
 // data key, which go-enclave unwraps into a locked page of its own.

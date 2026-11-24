@@ -184,14 +184,7 @@ func (r *Root) Sub(purpose, name string) (*Root, error) {
 	return &Root{root: sub, dir: filepath.Join(r.dir, filepath.FromSlash(rel)), purpose: purpose}, nil
 }
 
-// rel validates a caller-supplied path and returns it in slash form relative to
-// the root.
-//
-// os.Root refuses these paths too. Checking first turns a bare "path escapes
-// from parent" from the kernel into an error that names the root, its purpose
-// and what was wrong, which is what an operator staring at a failed restore
-// needs. It is belt and braces, never a substitute: the kernel check is what
-// makes containment true.
+// rel validates a path and returns it slash-form relative to the root, with an error naming the root.
 func (r *Root) rel(name string) (string, error) {
 	fail := func(reason string) (string, error) {
 		return "", &PathEscapeError{Purpose: r.purpose, Root: r.dir, Path: name, Reason: reason}

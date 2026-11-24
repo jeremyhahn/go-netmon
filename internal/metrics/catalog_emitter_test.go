@@ -17,13 +17,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// captureExporter records what was delivered, so a test can inspect the
-// catalog as a consumer would receive it.
-//
-// It implements catalogSink and nothing else, deliberately. A stub that could
-// also Export would let the emitter drift back to sharing a batch with device
-// telemetry without any test noticing, and that coupling is the reason a
-// rejected catalog write could cost a reading.
+// captureExporter records catalog deliveries; it implements catalogSink only.
 type captureExporter struct {
 	mu      sync.Mutex
 	batches [][]*Sample
@@ -135,19 +129,7 @@ func TestPublishedMetricsIsSafeUnderConcurrentPolls(t *testing.T) {
 	}
 }
 
-// TestCatalogDescribesFamiliesThisProcessNeverPublished is the sharded-fleet
-// invariant, and it is the one this emitter exists to satisfy.
-//
-// Exactly one collector is designated as the emitter, so the catalog it writes
-// is the whole fleet's. If emission were scoped to the emitter's own published
-// set -- which is process-local -- then a designated shard A polling IF-MIB
-// devices would never observe a shard B publishing some other family, and the
-// fleet-wide catalog would carry no row for it. Dashboards could not render
-// B's devices at all, and nothing would report a fault: A is publishing
-// happily, and the missing rows look like metrics nobody has described.
-//
-// So: publish one family locally, and require the catalog to describe the
-// families no local device ever answered for.
+// TestCatalogDescribesFamiliesThisProcessNeverPublished checks the emitter describes the whole fleet's families.
 func TestCatalogDescribesFamiliesThisProcessNeverPublished(t *testing.T) {
 	cache := catalogTestCache(t, []*mib.OIDMetadata{
 		{OID: ".1.3.6.1.2.1.2.2.1.10", Name: "ifInOctets", Module: "IF-MIB", Type: "Counter32", IsColumn: true},
@@ -218,12 +200,7 @@ func TestCatalogEmitterDescribesDerivedMetrics(t *testing.T) {
 	}
 }
 
-// TestCatalogEmitterCountsWhatItCannotDescribe checks that a published metric
-// with no description is counted rather than silently skipped.
-//
-// A raw-OID metric name reaches Prometheus whenever no loaded MIB describes an
-// OID. The catalog cannot say anything about those, and an operator seeing
-// panels missing needs the count to know why.
+// TestCatalogEmitterCountsWhatItCannotDescribe checks undescribed metrics are counted.
 func TestCatalogEmitterCountsWhatItCannotDescribe(t *testing.T) {
 	cache := catalogTestCache(t, nil)
 
@@ -274,16 +251,7 @@ func TestCatalogEmitterCountsUnknownKinds(t *testing.T) {
 	}
 }
 
-// TestCatalogEmitsTheCorpusBeforeAnyPoll is the inverse of what this test
-// once asserted, and the change is deliberate.
-//
-// It previously required an emitter that had not polled to write nothing. That
-// was right only while emission was scoped to what this process had published.
-// A designated emitter describes the fleet, and the fleet's other shards are
-// already polling: waiting for a local poll would leave every dashboard blank
-// for an interval after any restart, and would leave families no local device
-// answers for missing indefinitely. The corpus is knowable at load time, so it
-// is published at load time.
+// TestCatalogEmitsTheCorpusBeforeAnyPoll checks the catalog is published at load time.
 func TestCatalogEmitsTheCorpusBeforeAnyPoll(t *testing.T) {
 	cache := catalogTestCache(t, []*mib.OIDMetadata{
 		{OID: ".1.3.6.1.2.1.2.2.1.10", Name: "ifInOctets", Module: "IF-MIB", Type: "Counter32", IsColumn: true},
@@ -387,12 +355,7 @@ func TestCatalogEmitterIsIndependentOfDeviceCount(t *testing.T) {
 	}
 }
 
-// TestCatalogEmitterReportsAFailedExport checks that a catalog that could not
-// be written says so.
-//
-// A silently failed catalog is worse than a failed metric: the metrics keep
-// arriving and look healthy while every panel loses its description, so the
-// fault presents as a UI problem rather than a collector one.
+// TestCatalogEmitterReportsAFailedExport checks a failed catalog write is reported.
 func TestCatalogEmitterReportsAFailedExport(t *testing.T) {
 	cache := catalogTestCache(t, []*mib.OIDMetadata{
 		{OID: ".1.3.6.1.2.1.2.2.1.10", Name: "ifInOctets", Module: "IF-MIB", Type: "Counter32", IsColumn: true},
@@ -410,12 +373,7 @@ func TestCatalogEmitterReportsAFailedExport(t *testing.T) {
 	}
 }
 
-// TestCatalogEmitterRepublishesOnItsInterval checks that the catalog keeps
-// being written, which is what stops the series going stale.
-//
-// The catalog's content never changes between MIB loads, so the only reason to
-// emit it again is Prometheus's staleness window. A single emission at startup
-// would leave every description disappearing five minutes later.
+// TestCatalogEmitterRepublishesOnItsInterval checks the catalog is rewritten before it goes stale.
 func TestCatalogEmitterRepublishesOnItsInterval(t *testing.T) {
 	cache := catalogTestCache(t, []*mib.OIDMetadata{
 		{OID: ".1.3.6.1.2.1.2.2.1.10", Name: "ifInOctets", Module: "IF-MIB", Type: "Counter32", IsColumn: true},
@@ -479,18 +437,7 @@ func TestCatalogIndexEntryForDegenerateCases(t *testing.T) {
 	}
 }
 
-// TestATableWithNoNamingColumnHasNoIdentity is the case that used to fall back
-// to the first status column in sorted order.
-//
-// That fallback was a guess presented as an answer, and on the real fleet it
-// was wrong: cbgpPeer2Table has no Name, Descr or Alias column, so it elected
-// cbgpPeer2LastError and named all eight of core-01's BGP peers "04:00" --
-// the hex rendering of an error code, identical on every row. A renderer given
-// no identity uses the row's index instead, which for that table is the peer's
-// address.
-//
-// What the fallback was defending is still true and still guarded below: the
-// answer must not depend on the order the columns arrive in.
+// TestATableWithNoNamingColumnHasNoIdentity checks a table without a name column gets no identity, independent of column order.
 func TestATableWithNoNamingColumnHasNoIdentity(t *testing.T) {
 	columns := []statusColumnInfo{{Name: "zzzState"}, {Name: "aaaLabel"}}
 
@@ -516,12 +463,7 @@ func TestIdentityElectionDoesNotDependOnColumnOrder(t *testing.T) {
 	}
 }
 
-// TestNewCatalogEmitterForWiresTheExportersOwnState checks the constructor the
-// collector binary uses.
-//
-// The emitter has to describe the metrics *this* exporter published, using the
-// MIB metadata *this* exporter was built with. Wiring it to anything else
-// would publish a catalog for one collector's metrics from another's MIBs.
+// TestNewCatalogEmitterForWiresTheExportersOwnState checks the emitter uses its exporter's published set and MIBs.
 func TestNewCatalogEmitterForWiresTheExportersOwnState(t *testing.T) {
 	exporter, err := NewPrometheusExporter("http://127.0.0.1:1/write", 1000, time.Hour, nil)
 	if err != nil {
@@ -542,15 +484,7 @@ func TestNewCatalogEmitterForWiresTheExportersOwnState(t *testing.T) {
 	}
 }
 
-// TestPublishedMetricsExcludesTheCatalogsOwnFamilies is the fix for a bug that
-// would have poisoned the exact number it exists to report.
-//
-// The emitter's output flows through the same export path as everything else,
-// so the catalog's own two families entered the published set on the first
-// tick and could never be described -- pinning
-// gonetmon_catalog_undescribed_metrics at two forever, on a perfectly
-// described fleet. That gauge is the honest measure of catalog coverage, and
-// it would have read a floor of two from the first sample.
+// TestPublishedMetricsExcludesTheCatalogsOwnFamilies checks the catalog does not count its own families.
 func TestPublishedMetricsExcludesTheCatalogsOwnFamilies(t *testing.T) {
 	published := newPublishedMetrics()
 
@@ -592,14 +526,7 @@ func TestCatalogEmitterDoesNotDescribeItself(t *testing.T) {
 	}
 }
 
-// TestPublishedMetricsEvictsWhatIsNoLongerPublished checks that the set is
-// what the fleet publishes now, not everything it ever published.
-//
-// Unassign a MIB or retire a device and the name would otherwise persist
-// forever, so the catalog would keep describing a metric no device produces
-// and the dashboard would offer a panel that can never have data. Over a long
-// process the set drifts toward the 9,202 objects the loaded modules could
-// produce, which is what publishing-only was chosen to avoid.
+// TestPublishedMetricsEvictsWhatIsNoLongerPublished checks stale names leave the set.
 func TestPublishedMetricsEvictsWhatIsNoLongerPublished(t *testing.T) {
 	published := newPublishedMetrics()
 
@@ -617,14 +544,7 @@ func TestPublishedMetricsEvictsWhatIsNoLongerPublished(t *testing.T) {
 	}
 }
 
-// TestPublishedMetricsKeepsSlowlyPolledMetrics is the counterweight, and the
-// reason the window is a day rather than a few emitter ticks.
-//
-// A device polled hourly publishes far less often than the catalog is written.
-// Evicting on the emitter's cadence would drop its metrics from the catalog
-// between polls, so a panel would lose its description and get it back every
-// hour. The window has to exceed the slowest cadence in the fleet, not the
-// emitter's.
+// TestPublishedMetricsKeepsSlowlyPolledMetrics checks the one-day window keeps slowly polled metrics.
 func TestPublishedMetricsKeepsSlowlyPolledMetrics(t *testing.T) {
 	published := newPublishedMetrics()
 
@@ -666,16 +586,7 @@ func TestPublishedMetricsEvictionIsSelfHealing(t *testing.T) {
 	}
 }
 
-// TestPublishedMetricsGaugeTracksTheSet checks that the reported count is the
-// set's size after every change, including after eviction.
-//
-// It does not test the other half of that fix. The gauge is now set inside the
-// lock, because setting it outside lets two writers finishing in either order
-// publish a stale lower value -- but that is a benign interleaving with no
-// deterministic trigger, and a concurrent test for it passed just as happily
-// against the broken version. A test that cannot fail is worse than no test,
-// so the lock placement is defended by construction and this covers the part
-// that can actually be checked.
+// TestPublishedMetricsGaugeTracksTheSet checks the gauge equals the set size after every change.
 func TestPublishedMetricsGaugeTracksTheSet(t *testing.T) {
 	published := newPublishedMetrics()
 	base := time.Unix(1756600000, 0)
@@ -700,13 +611,7 @@ func TestPublishedMetricsGaugeTracksTheSet(t *testing.T) {
 	}
 }
 
-// TestPublishedMetricsRecordsOnlyWhatReachedPrometheus is the Codex finding:
-// a sample that was never written must not be described.
-//
-// Recording at buffer-append marked a metric published the moment it was
-// queued, so a remote-write outage still put it in the catalog and the
-// dashboard offered a panel for a series that never arrived. Recording after
-// the send means a name enters the catalog when its data does.
+// TestPublishedMetricsRecordsOnlyWhatReachedPrometheus checks a metric is recorded only after a successful send.
 func TestPublishedMetricsRecordsOnlyWhatReachedPrometheus(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -739,14 +644,7 @@ func TestPublishedMetricsRecordsOnlyWhatReachedPrometheus(t *testing.T) {
 			"the catalog would describe a series that never arrived", got)
 	}
 
-	// The retry lands, and only now is it published.
-	//
-	// Flushed in a loop because Export no longer writes: the first attempt
-	// happens on the sender, so a Flush issued while that attempt is in flight
-	// is told about ITS failure rather than performing the retry itself. The
-	// property under test is unchanged -- nothing is published until a write
-	// lands -- and the loop is bounded so a genuinely stuck exporter still
-	// fails the test.
+	// The retry lands and only now is it published; bounded loop because the first attempt runs on the sender.
 	var flushErr error
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -763,13 +661,7 @@ func TestPublishedMetricsRecordsOnlyWhatReachedPrometheus(t *testing.T) {
 	}
 }
 
-// TestCatalogEmissionSuccessMeansDelivery checks that the success counter
-// records a catalog that reached Prometheus, not one that was queued.
-//
-// Export buffers and returns nil, so counting success there would give an
-// emitter whose remote write is being refused a clean record while every
-// description ages out of Prometheus. The symptom then presents as a broken
-// UI rather than a broken collector.
+// TestCatalogEmissionSuccessMeansDelivery checks success counts delivered catalogs, not queued ones.
 func TestCatalogEmissionSuccessMeansDelivery(t *testing.T) {
 	cache := catalogTestCache(t, []*mib.OIDMetadata{
 		{OID: ".1.3.6.1.2.1.2.2.1.10", Name: "ifInOctets", Module: "IF-MIB", Type: "Counter32", IsColumn: true},
@@ -841,12 +733,7 @@ func benchmarkBatch(samples, distinctNames int) []*Sample {
 	return batch
 }
 
-// BenchmarkPublishedMetricsRecord measures the cost on the flush path.
-//
-// record() runs once per flush over the whole batch, so its cost is O(samples)
-// map probes plus one mutex acquisition. This measures the steady state -- a
-// set that has stopped growing -- because that is what a running collector
-// spends its life in; the growing case takes the same path.
+// BenchmarkPublishedMetricsRecord measures record() on the flush path in steady state.
 func BenchmarkPublishedMetricsRecord(b *testing.B) {
 	batch := benchmarkBatch(15000, 200)
 
@@ -917,13 +804,7 @@ func BenchmarkCatalogRender(b *testing.B) {
 	}
 }
 
-// TestSendCatalogNeverTouchesTheTelemetryBuffer is the half that matters:
-// a description must never be able to cost a reading.
-//
-// Sharing one buffer meant a rejected catalog write put device samples back
-// with it, delaying them and, once the retry backlog hit its cap, discarding
-// them. The catalog is a description of the data; it cannot be allowed to
-// endanger the data.
+// TestSendCatalogNeverTouchesTheTelemetryBuffer checks a rejected catalog write never delays device samples.
 func TestSendCatalogNeverTouchesTheTelemetryBuffer(t *testing.T) {
 	refused := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -969,12 +850,7 @@ func TestSendCatalogNeverTouchesTheTelemetryBuffer(t *testing.T) {
 	}
 }
 
-// TestSendCatalogChunksItsRequests checks that one emission is not one
-// request.
-//
-// A catalog is around 20,000 series, which is more than a full batch at any
-// sane batch_size. Sent whole it is a single very large protobuf, and it
-// dragged whatever telemetry happened to be queued along with it.
+// TestSendCatalogChunksItsRequests checks one emission is split into several requests.
 func TestSendCatalogChunksItsRequests(t *testing.T) {
 	var requests atomic.Int32
 	accepting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1009,12 +885,7 @@ func TestSendCatalogChunksItsRequests(t *testing.T) {
 	}
 }
 
-// TestSendCatalogStopsAtTheFirstFailure checks that a partial catalog is not
-// left behind.
-//
-// A catalog describing an arbitrary subset of metrics is worse than one that
-// is a refresh behind: the missing rows look like metrics that have no
-// description rather than like a failed write.
+// TestSendCatalogStopsAtTheFirstFailure checks a partial catalog is not left behind.
 func TestSendCatalogStopsAtTheFirstFailure(t *testing.T) {
 	var requests atomic.Int32
 	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

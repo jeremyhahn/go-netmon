@@ -3,11 +3,9 @@
 > **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-09
 
 The figures quoted below (object counts, series counts, timings, durations) are
-point-in-time measurements taken when the section was written, on the MIB set
-and the monitor-01 Prometheus of that day. They are context for the design decisions,
-not properties the code guarantees, and they were not re-measured for the
-2026-10-09 verification. The behavior described is what was checked against the
-code.
+point-in-time measurements. They are context for the design decisions, not
+properties the code guarantees. The behavior described is what was checked
+against the code.
 
 How a consumer learns what a series means without parsing a MIB.
 

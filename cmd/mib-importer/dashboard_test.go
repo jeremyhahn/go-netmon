@@ -346,12 +346,7 @@ func TestDashboardList(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			// A regular file used as a parent directory: the kernel refuses it
-			// with ENOTDIR whoever asks. "/nonexistent/path" relied on the
-			// process lacking permission to create it, which is true for a
-			// developer and false for the root user CI runs as - where the
-			// store was created, the case failed, and the run wrote to the
-			// host filesystem.
+			// A regular file as a parent directory fails with ENOTDIR even for root.
 			name: "list with a storage path that cannot be opened",
 			args: []string{
 				"--storage-path", filepath.Join(notADirectory(t), "db"),

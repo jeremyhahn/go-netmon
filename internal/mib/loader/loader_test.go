@@ -12,17 +12,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// The loader is the only thing that turns a MIB file into something pollable,
-// and it is shared by the poller and the web UI. Two properties matter most and
-// are what these tests are built around:
-//
-//   - a module already in the store is not parsed again, because a device can
-//     carry seventeen of them and each parse costs tens of milliseconds; and
-//   - a module that fails to parse costs nothing that was already stored.
-//
-// gosmi, which the parser wraps, keeps its loaded modules in package-global
-// state. Only one loader may therefore be open at a time in this binary, so
-// every test closes its loader before opening another.
+// Loader tests: stored modules are not re-parsed and a failed parse costs nothing stored; gosmi is global, so one loader at a time.
 
 // fixtureMIB is a minimal but genuinely well-formed module. It is written to a
 // temporary directory so a test can corrupt it afterwards, which is not
@@ -50,12 +40,7 @@ fixtureScalar OBJECT-TYPE
 END
 `
 
-// newLoader opens a loader over a fresh store, searching the repository's
-// standard MIB directory plus any extra directories given.
-//
-// The store is in the test's temporary directory, so nothing outside it is read
-// or written. The returned close function is idempotent, so a test that has to
-// release gosmi early can call it and still be cleaned up.
+// newLoader opens a loader over a fresh temporary store and the standard MIB directory; close is idempotent.
 func newLoader(t *testing.T, autoLoad []string, extraPaths ...string) (*Loader, func()) {
 	t.Helper()
 
@@ -261,13 +246,7 @@ func TestLoadModuleReloadsAModuleInPlace(t *testing.T) {
 	}
 }
 
-// TestLoadModuleKeepsTheStoredCopyWhenTheParseFails is a regression test.
-//
-// The loader used to delete a module's stored objects *before* parsing the new
-// copy, so an attempt to refresh a module whose file had become unreadable
-// erased the good copy the operator already had — the module simply vanished
-// from the store and every device polling it silently stopped. Parsing first
-// degrades that to "nothing changed".
+// TestLoadModuleKeepsTheStoredCopyWhenTheParseFails checks a failed refresh keeps the stored module.
 func TestLoadModuleKeepsTheStoredCopyWhenTheParseFails(t *testing.T) {
 	mibDir := t.TempDir()
 	writeMIB(t, mibDir, "FIXTURE-MIB", fixtureMIB)
@@ -376,12 +355,7 @@ func TestEnsureModuleRejectsAnUnknownModule(t *testing.T) {
 	}
 }
 
-// TestEnsureModuleParsesASharedModuleOnce covers the case the poller creates:
-// several device workers reaching the same missing module at the same moment.
-//
-// Equal load timestamps show the module was parsed once. Under -race this is
-// also what catches an unsynchronized parse, because gosmi's loaded modules are
-// package-global state that two concurrent parses corrupt.
+// TestEnsureModuleParsesASharedModuleOnce checks concurrent callers parse a shared module once.
 func TestEnsureModuleParsesASharedModuleOnce(t *testing.T) {
 	l, _ := newLoader(t, nil)
 

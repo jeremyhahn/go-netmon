@@ -324,13 +324,7 @@ func (qb *QueryBuilder) BuildLabelValuesForMetricQuery(metricName, labelName str
 	return fmt.Sprintf("label_values(%s, %s)", metricName, labelName)
 }
 
-// columnFilters returns the label matchers that select the rows a panel shows.
-//
-// A table column's rows all share one metric name, so the row is selected by
-// label. The interface variable is applied to every column because it is the
-// only row selector these dashboards offer; a table with no ifname label is
-// unaffected while $interface is "All", since an empty label value still
-// matches ".*".
+// columnFilters returns the label matchers that select a panel's rows, including the interface variable.
 func (qb *QueryBuilder) columnFilters(oid *mib.OIDMetadata, useDeviceVariable bool) []string {
 	filters := make([]string, 0, 2)
 	if useDeviceVariable {
@@ -342,10 +336,7 @@ func (qb *QueryBuilder) columnFilters(oid *mib.OIDMetadata, useDeviceVariable bo
 	return filters
 }
 
-// metricName returns the metric name the exporter gives every instance of an
-// object. It is derived from the object's name, never from its OID: the OID of
-// a sample identifies one table row, and naming a metric after it would give
-// Prometheus one metric name per row.
+// metricName returns the exporter's metric name for an object, derived from its name, never its OID.
 func (qb *QueryBuilder) metricName(oid *mib.OIDMetadata) string {
 	return promname.NameWithPrefix(qb.metricPrefix, oid.Name)
 }

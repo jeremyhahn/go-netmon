@@ -11,17 +11,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/websocket"
 )
 
-// Finding the rows of a table.
-//
-// A table widget offers an instance picker, and every card under it stays blank
-// until a row is chosen. The rows come from this endpoint, which asked
-// Prometheus only for info metrics -- the ones carrying a text value.
-//
-// A table with no text column therefore had no rows to offer. Its picker came
-// up empty, nothing subscribed, and every card under it sat on "Waiting for
-// data…" while the poller was collecting the whole time. cpmCPUTotalTable is
-// entirely numeric and this is precisely what happened to it; measured in a
-// browser across five devices, 507 cards were in this state.
+// Instance discovery must find rows of tables with no text column.
 
 // recordingQuery captures the PromQL a handler issues and answers with canned
 // series, so a test can assert on what was asked as well as what came back.

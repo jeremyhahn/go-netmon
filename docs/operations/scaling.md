@@ -17,15 +17,10 @@ It makes **one** call to the poller regardless of fleet size. The poller builds
 its device listing from in-memory worker state, so a single response already
 carries everything it polls.
 
-It previously asked the poller once per device. That is invisible on a rack and
-compounding in a datacenter, because every open overview repeats the whole
-fan-out on each refresh (every 30 seconds by default; the Settings view can set
-it between 1 and 60) — the load was devices × sessions.
-
-The old shape also hurt correctness, not only speed: with a throttled poller the
-per-device fan-out exhausted the collection budget while most devices were still
-queued, so most rows came back with no status and the overview displayed a
-fleet-wide outage that was not happening.
+A per-device fan-out would cost devices × sessions on every refresh (every 30
+seconds by default; the Settings view can set it between 1 and 60), and with a
+throttled poller it would exhaust the collection budget and show devices with
+no status.
 
 `TestFleetStatusHoldsUpAcrossManySessions` drives many sessions against a
 throttled poller and a large fleet, and `BenchmarkFleetStatus` holds the poller
@@ -62,12 +57,9 @@ bytes in a browser against a deployed stack.
 
 The page subscribes to the device on screen and nothing else.
 
-It used to also hold a "warm-up" subscription to four unqualified metric names —
-`snmp_sysUpTime`, `snmp_cpmCPUTotal5sec`, `snmp_ciscoMemoryPoolUsed`,
-`snmp_ciscoMemoryPoolFree`. An unqualified name matches **every series on every
-device**, so each round pushed the whole fleet's uptime to every open browser
-whatever it was displaying, on every round. Nothing in the page ever read it — the only consumer matched pre-rename
-OID-style names that no longer exist. It and its dead consumer are gone.
+It holds no unqualified subscription: an unqualified name such as
+`snmp_sysUpTime` matches **every series on every device**, and would push the
+whole fleet's data to every open browser on every round.
 
 The fleet overview needs no metric stream at all; it has `/api/devices/status`.
 

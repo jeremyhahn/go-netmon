@@ -69,10 +69,7 @@ type bulkOp struct {
 	resolveOwner  resolver
 	resolveTarget resolver
 
-	// apply performs the operation for one owner/target pair. Its string is a
-	// note about the outcome, empty for the ordinary case: an operation that
-	// succeeded but did not achieve what the operator was after has to be able
-	// to say so, and returning only an error cannot express that.
+	// apply performs the operation for one owner/target pair and returns an outcome note.
 	apply func(context.Context, *client.Client, int64, int64) (string, error)
 }
 
@@ -87,13 +84,7 @@ func silent(
 	}
 }
 
-// runBulk resolves an owner and a list of references and applies the operation
-// to each pair, so a whole MIB or profile set can be attached in one command.
-//
-// Progress is printed as it goes, because a long list against a slow server
-// should show what it has done rather than fall silent and report in one burst.
-// Under --json the records are emitted together at the end instead, since a
-// half-written document is not a document.
+// runBulk applies the operation to each reference, printing progress; under --json it prints once at the end.
 func (e *Env) runBulk(op bulkOp, ownerRef string, refs []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), e.Opts.Timeout)
 	defer cancel()

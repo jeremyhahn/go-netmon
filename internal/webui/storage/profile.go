@@ -318,10 +318,7 @@ func (s *Storage) AssignMIBToProfile(ctx context.Context, profileID, mibID int64
 		return fmt.Errorf("MIB not found")
 	}
 
-	// Create association. Assigning a MIB that is already assigned must leave
-	// the existing row alone: its value carries the enable state and the
-	// include/exclude filters, and overwriting it with the legacy sentinel
-	// would silently reset a configured assignment to "enabled, unfiltered".
+	// Create the association, leaving an existing row and its filters untouched.
 	key := []byte(PrefixProfMIB + formatID(profileID) + ":" + formatID(mibID))
 	assigned, err := s.keyExists(key)
 	if err != nil {

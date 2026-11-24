@@ -37,19 +37,7 @@ func newStaticTestServer(t *testing.T) *Server {
 	return s
 }
 
-// TestServerServesTheUIFromAnyWorkingDirectory is the regression this change
-// exists for.
-//
-// The assets used to be served from the relative path
-// "internal/webui/static", so the UI worked only when the process happened to
-// be running inside a source checkout. A clean install puts the binary in
-// /usr/local/bin, ships no assets and sets no WorkingDirectory, so CWD is "/"
-// and every non-API route returned 404 while /api/* kept answering -- which is
-// exactly the shape that passes a post-deploy smoke test and fails for the
-// operator.
-//
-// The test runs from an empty directory, so it fails against any
-// implementation that reads the assets from disk.
+// TestServerServesTheUIFromAnyWorkingDirectory runs from an empty directory to prove assets come from the binary.
 func TestServerServesTheUIFromAnyWorkingDirectory(t *testing.T) {
 	t.Chdir(t.TempDir())
 
@@ -132,12 +120,7 @@ func TestServerServesNestedAssetsFromAnyWorkingDirectory(t *testing.T) {
 	}
 }
 
-// TestServerWithoutAssetsRegistersNoCatchAll checks that a server built with
-// no assets answers 404 rather than falling back to a path on disk.
-//
-// The fallback is the bug: any default path reintroduces the dependency on
-// where the process is running. A server with no assets is a test-only
-// configuration, and it should behave like a server with no UI.
+// TestServerWithoutAssetsRegistersNoCatchAll checks a server with no assets answers 404.
 func TestServerWithoutAssetsRegistersNoCatchAll(t *testing.T) {
 	s, err := NewServer(Config{
 		DBPath: filepath.Join(t.TempDir(), "webui.db"),
@@ -157,12 +140,7 @@ func TestServerWithoutAssetsRegistersNoCatchAll(t *testing.T) {
 	}
 }
 
-// TestServerAPIRoutesAreUnaffectedByTheStaticHandler checks that the catch-all
-// still sits behind the API routes.
-//
-// This is the half that never broke and therefore never got noticed: /api/*
-// kept answering throughout the outage, which is why every post-deploy check
-// passed while the page a person opens returned 404.
+// TestServerAPIRoutesAreUnaffectedByTheStaticHandler checks the catch-all sits behind the API routes.
 func TestServerAPIRoutesAreUnaffectedByTheStaticHandler(t *testing.T) {
 	t.Chdir(t.TempDir())
 

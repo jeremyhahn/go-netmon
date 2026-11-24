@@ -59,7 +59,7 @@ keeps the running listener wired to the same constants.
 The budget was not widened to accommodate the slow path. The probe was made to
 fit: gosnmp honors the deadline of the context it is given on every attempt, so
 `performSNMPTest` binds the probe to `context.WithTimeout(ctx, SNMPProbeBudget)`
-and a caller-supplied timeout can no longer push a handler past its budget.
+and a caller-supplied timeout cannot push a handler past its budget.
 
 ## What an unreachable device returns now
 

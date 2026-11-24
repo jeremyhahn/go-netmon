@@ -271,10 +271,7 @@ func newMetricsSystemCommand(env *Env) *cobra.Command {
 					return err
 				}
 
-				// System info is keyed by the name the poller labels samples
-				// with, so resolve the reference to the stored device first: a
-				// numeric ID or a differently-cased name would otherwise match
-				// nothing and look like missing data.
+				// System info is keyed by the poller's device label, so resolve the reference first.
 				id, err := api.ResolveDevice(ctx, args[0])
 				if err != nil {
 					return err

@@ -9,12 +9,6 @@ import (
 )
 
 // shutdownBudget bounds how long the sender keeps writing after Close.
-//
-// Close's own deadline bounds only the Flush that precedes it. Without this the
-// stop path drains the whole queue, starting a fresh sendTimeout for every
-// batch -- up to a hundred sequential requests against the 100,000-sample
-// floor, so a slow endpoint that never quite times out can hold shutdown for
-// tens of minutes.
 var shutdownBudget = 15 * time.Second
 
 // shutdownBudgetForTest shortens the budget and returns a function restoring
@@ -25,23 +19,7 @@ func shutdownBudgetForTest(d time.Duration) func() {
 	return func() { shutdownBudget = previous }
 }
 
-// retryable reports whether an endpoint's refusal is worth offering again.
-//
-// Prometheus Remote-Write 1.0 is explicit, and this is not a judgement call:
-//
-//	"Senders MUST NOT retry on HTTP 4xx responses other than 429"
-//	-- prometheus.io/docs/specs/remote_write_spec, Retries & Backoff
-//
-// So 5xx and 429 are retried, transport failures are retried because the
-// request may never have been seen at all, and every other 4xx is a refusal
-// the endpoint will repeat forever: a malformed request, a sample older than
-// what it holds, a rejected label set.
-//
-// Counting refusals and giving up after N was the previous rule and was wrong
-// in the ordinary case: a Prometheus restart lasting longer than three flushes
-// discarded fresh samples that would have been accepted seconds later. A
-// retry bound that ignores the error class is not a backstop, it is an
-// outage-triggered drop. Age and depth remain the bounds on memory.
+// retryable reports whether a refusal may be retried: 5xx, 429 and transport errors, per the remote-write spec.
 func retryable(err error) bool {
 	var refused *RemoteWriteError
 	if !errors.As(err, &refused) {
@@ -57,9 +35,6 @@ func retryable(err error) bool {
 }
 
 // minSampleAgeHorizon floors how long a sample may wait to be written.
-//
-// Below about a minute the horizon starts discarding samples that a briefly
-// slow endpoint would still have accepted.
 const minSampleAgeHorizon = time.Minute
 
 // sampleAgeMultiplier x flushInterval is the horizon when that is the larger.
@@ -82,14 +57,7 @@ func sampleAgeHorizon(flushInterval time.Duration) time.Duration {
 	return horizon
 }
 
-// submit hands whatever is buffered to the sender without waiting for it, and
-// wakes the sender whether or not there was anything to hand over.
-//
-// The wake is unconditional because a batch the endpoint refused stays in the
-// queue, and nothing else would ever go back for it: the sender sleeps after a
-// refusal, and enqueue only wakes it when NEW samples arrive. An exporter whose
-// devices had gone quiet would then hold a failed batch until something else
-// happened to produce a sample. The flush interval is the retry cadence.
+// submit hands the buffer to the sender without waiting and always wakes it, so refused batches are retried each interval.
 func (e *PrometheusExporter) submit() {
 	e.bufferLock.Lock()
 	handed := len(e.buffer) > 0
@@ -114,17 +82,7 @@ type pending struct {
 	// attempted. Flush waits on it; the poll path does not.
 	done chan error
 
-	// discarded counts samples thrown away AHEAD of this barrier, BY REASON, so
-	// the Flush waiting on it learns that what it was responsible for never
-	// reached the endpoint. A flush that returns nil must mean "delivered",
-	// never "thrown away" -- that is the silent loss this whole package exists
-	// to end, and it would otherwise reappear at the far end of the pipe.
-	//
-	// By reason rather than as a total, because the total alone was what the
-	// caller got and it was reported as backpressure regardless: a Flush whose
-	// readings had been superseded by a later poll was told the queue was full.
-	// The reason is known at the discard and is worth exactly as much to the
-	// caller as it is to the counter it is already recorded on.
+	// discarded counts samples dropped ahead of this barrier, by reason, so the waiting Flush reports them.
 	discarded map[string]int
 }
 
@@ -137,12 +95,7 @@ func (p *pending) charge(reason string, samples int) {
 	p.discarded[reason] += samples
 }
 
-// finishBarrier completes a barrier, reporting anything discarded ahead of it.
-//
-// The reason is passed on only when there is ONE. A Flush that waited behind
-// several different discards has several answers, and naming one of them would
-// be a guess presented as a fact -- which is the same defect this carries the
-// reason to fix, in the other direction.
+// finishBarrier completes a barrier, naming a reason only when exactly one applies.
 func (p *pending) finishBarrier() {
 	total := 0
 	for _, samples := range p.discarded {
@@ -162,30 +115,16 @@ func (p *pending) finishBarrier() {
 	p.finish(&DroppedError{Samples: total, Reason: reason})
 }
 
-// enqueue hands a batch to the sender and reports whether it was accepted.
-//
-// It never blocks on the network. That is the whole point of the sender: a
-// poll worker that fills the buffer used to perform the remote-write request
-// itself, which put the slowest thing in the system inside the poll cycle.
+// enqueue hands a batch to the sender without blocking on the network and reports whether it was accepted.
 func (e *PrometheusExporter) enqueue(batch *pending) {
 	e.enqueueAll(batch)
 }
 
-// enqueueAll adds several entries to the queue as ONE step.
-//
-// Flush submits a batch and a barrier, and they have to arrive together: the
-// sender drains on its own goroutine, so between two separate enqueues it can
-// take the batch, expire a sample out of it, and find no barrier behind it to
-// charge -- and the Flush that was responsible for that sample then returns nil
-// having lost it. Measured at 1 failure in 30 under load before this.
+// enqueueAll adds several entries to the queue as one step.
 func (e *PrometheusExporter) enqueueAll(batches ...*pending) {
 	e.queueMu.Lock()
 	for _, batch := range batches {
-		// A zero-sample entry with a waiter is a BARRIER: it carries nothing,
-		// and completes when the sender reaches it. That is how Flush waits for
-		// what is already queued as well as for what it submitted -- without
-		// it, Flush returned as soon as its own batch was attempted while an
-		// earlier one was still unwritten, which is not what "flush" means.
+		// A zero-sample entry with a waiter is a barrier that completes when the sender reaches it.
 		if len(batch.samples) == 0 && batch.done == nil {
 			continue
 		}
@@ -195,18 +134,11 @@ func (e *PrometheusExporter) enqueueAll(batches ...*pending) {
 	e.boundQueueLocked()
 	e.queueMu.Unlock()
 
-	// The gauge is NOT published here. enqueue is called with bufferLock held
-	// -- that is what makes detaching and queueing one step -- and backlog
-	// takes bufferLock, so publishing from here deadlocks against the caller.
-	// Every caller publishes once it is out of the locks.
+	// Not published here: the caller holds bufferLock, which backlog takes.
 	e.signal()
 }
 
-// signal nudges the sender.
-//
-// Buffered by one, so a wake is never missed and never blocks: the sender
-// re-reads the queue after every send, so one pending wake is enough to bring
-// it back however many batches arrived.
+// signal wakes the sender; the channel is buffered by one, so it never blocks or misses.
 func (e *PrometheusExporter) signal() {
 	select {
 	case e.wake <- struct{}{}:
@@ -223,22 +155,7 @@ func (p *pending) finish(err error) {
 	}
 }
 
-// boundQueueLocked keeps the queue within maxBufferSize. The caller must hold
-// queueMu.
-//
-// Age first, then depth. Dropping by AGE is the principled half: a sample
-// STAMPED longer ago than the horizon has almost certainly been superseded at
-// the endpoint by a newer one for its series, which makes it not merely stale
-// but unacceptable -- retrying it can only fail. Dropping by depth is the
-// backstop for a burst that outruns the endpoint while every sample in it is
-// still fresh.
-//
-// The horizon is measured against the sample's own timestamp, not against how
-// long it has sat in this queue. That is deliberate: what makes a sample
-// unacceptable is where it falls relative to the endpoint's head for its
-// series, which its timestamp says and its residence time does not. The cost
-// is that a device reporting historical or clock-skewed readings has them
-// dropped without ever being offered.
+// boundQueueLocked drops samples older than the horizon (by their own timestamp), then the oldest batches; caller holds queueMu.
 func (e *PrometheusExporter) boundQueueLocked() {
 	if e.queued <= e.maxBufferSize {
 		return
@@ -252,13 +169,7 @@ func (e *PrometheusExporter) boundQueueLocked() {
 		return
 	}
 
-	// Still over. The oldest batches go, because the queue is in the order the
-	// samples were taken and the front of it is the furthest behind.
-	//
-	// Barriers are stepped over rather than evicted. One carries no samples,
-	// so removing it makes no progress towards the bound, and completing it
-	// with a DroppedError would tell a Flush that its work was discarded when
-	// everything ahead of it may have been written successfully.
+	// Still over: evict the oldest batches, stepping over barriers.
 	dropped := 0
 	kept := make([]*pending, 0, len(e.queue))
 	for i, batch := range e.queue {
@@ -293,11 +204,7 @@ func (e *PrometheusExporter) expireLocked() int {
 	kept := e.queue[:0]
 
 	for i, batch := range e.queue {
-		// A barrier carries nothing by design and must keep its place: it
-		// completes when the sender REACHES it, which is what tells Flush that
-		// everything ahead of it has been attempted. Treating "no samples" as
-		// "entirely expired" completed every barrier the moment it was queued,
-		// so Flush returned before anything had been written.
+		// A barrier keeps its place until the sender reaches it.
 		if len(batch.samples) == 0 {
 			kept = append(kept, batch)
 			continue
@@ -328,15 +235,7 @@ func (e *PrometheusExporter) expireLocked() int {
 	return dropped
 }
 
-// abandon removes a barrier its waiter has given up on.
-//
-// Identity makes this safe without any further coordination: if the barrier is
-// still in the queue the sender has not reached it, so removing it loses
-// nothing; if it is not, the sender already owns it and will complete it into
-// a buffered channel nobody reads. Eviction by policy was the alternative and
-// was worse -- it could not tell an abandoned waiter from a live one, so a
-// busy exporter would hand a synthetic failure to a Flush whose work then
-// succeeded.
+// abandon removes a barrier its waiter has given up on; a barrier already taken by the sender completes into an unread channel.
 func (e *PrometheusExporter) abandon(barrier *pending) {
 	e.queueMu.Lock()
 	defer e.queueMu.Unlock()
@@ -366,34 +265,7 @@ func (e *PrometheusExporter) releaseBarriersLocked(err error) int {
 	return released
 }
 
-// discardLocked is the ONE way a sample leaves this exporter undelivered. The
-// caller must hold queueMu.
-//
-// It does both halves of "nothing leaves without something observable saying
-// so": it names the reason on a counter, and it tells whoever is owed an
-// answer. Those were separate calls at each drop site, applied by hand -- and
-// three review rounds found three different exits where one half had been
-// forgotten: aged-out samples completing a waiter with nil, Export returning
-// nil into a queue nothing could drain, Close returning nil after giving up.
-//
-// One path means silently dropping is not something this code can express. A
-// new exit that forgets to call it drops nothing at all, which is a visible
-// bug rather than a plausible silence.
-//
-// behind is the queue index from which barriers are owed the news: samples
-// discarded ahead of a Flush are samples that Flush was waiting for.
-//
-// A discard carries THREE obligations, not two. Naming the reason and charging
-// the barrier were brought in here and that closed four instances of the class
-// -- and a fifth appeared anyway, because the third obligation, telling Close,
-// was fed by a separate accumulator that call sites updated by hand. A final
-// 4xx during shutdown went through this path correctly, counted correctly, and
-// was still invisible to Close, which returned nil having thrown a batch away.
-//
-// So the accumulation lives here too. Anything discarded once shutdown has
-// begun is what Close reports, whatever the reason for it: "went through the
-// single discard path" and "is reported by Close" are now one fact instead of
-// two.
+// discardLocked is the only way a sample leaves undelivered: it counts the reason, charges barriers from behind, and records shutdown losses for Close; caller holds queueMu.
 func (e *PrometheusExporter) discardLocked(samples int, reason string, behind int) *DroppedError {
 	if samples <= 0 {
 		return nil
@@ -433,52 +305,15 @@ func (e *PrometheusExporter) requeueLocked(batch *pending) {
 	e.boundQueueLocked()
 }
 
-// maxTrackedSeries bounds the memory the ordering check may use.
-//
-// The reference fleet carries about 5,000 series. The map is cleared rather
-// than evicted when it grows past this, because the check is a smoke alarm:
-// losing its history costs one missed detection, and a bounded reset is
-// simpler to reason about than any eviction policy worth arguing over.
+// maxTrackedSeries bounds the ordering check's memory; the map is cleared, not evicted, when exceeded.
 const maxTrackedSeries = 50000
 
-// partition splits a batch into what the endpoint can take and what it will
-// refuse, and returns both.
-//
-// Refusing is per REQUEST, not per sample: Prometheus rejects the whole write
-// on the first unacceptable sample in it. So identifying the offender and
-// sending the batch anyway costs every other sample in it -- one stale reading
-// among a thousand good ones lost all thousand, and the non-retryable path then
-// reported reason="rejected" perfectly accurately about a loss that never
-// needed to happen.
-//
-// The exporter already knew which sample it was. This acts on that.
-//
-// Two ways a sample is unacceptable, and Prometheus names them differently:
-// older than the head for its series is "out of order", and equal to the head
-// with a different value is "duplicate sample for timestamp". Equal timestamp
-// AND equal value is fine -- the same reading offered twice -- so the value has
-// to be compared, not just the millisecond. Two reads inside one millisecond is
-// ordinary on a fast poller.
-//
-// A conflict inside ONE batch is refused the same way, and for the same
-// reason: the request Prometheus receives carries both, so two readings for one
-// series at one instant are a duplicate whether they came from one Export or
-// two. Collapsing them at encode time instead would deliver one and report the
-// batch fully sent, which is the silent loss this package exists to end.
-//
-// Disorder within the batch is different and is NOT refused: orderedSamples
-// sorts each series before the request is built, so it is repaired rather than
-// rejected. It is counted, because it says something upstream produced one
-// series' readings out of order.
+// partition splits a batch into samples the endpoint will accept and those it would refuse (older than its head, or a different value at a taken instant).
 func (e *PrometheusExporter) partition(samples []*Sample) (sendable, refused []*Sample) {
 	e.sentMu.Lock()
 	defer e.sentMu.Unlock()
 
-	// Two maps because they answer two different questions. maxAt holds the
-	// newest instant seen so far for a series, which is what says a sample
-	// arrived out of order. claimed holds the value already taken at a given
-	// instant, which is what says a sample conflicts -- and a conflict need not
-	// be at the newest instant, so the running maximum cannot detect it.
+	// maxAt detects out-of-order samples; claimed detects a different value at an already-taken instant.
 	maxAt := make(map[string]int64, len(samples))
 	claimed := make(map[instant]float64, len(samples))
 	repaired := 0
@@ -522,16 +357,7 @@ func (e *PrometheusExporter) partition(samples []*Sample) (sendable, refused []*
 	return sendable, refused
 }
 
-// admissible returns what of a batch the endpoint can still take, and what its
-// waiter is owed for the rest.
-//
-// The rest is discarded as "superseded" here rather than sent, because a
-// request is refused whole: one reading the endpoint has moved past would cost
-// every other reading traveling with it.
-//
-// The second return is an error rather than a *DroppedError deliberately. A nil
-// pointer in an error interface is not nil, and a caller passing this to a
-// waiter would hand it a failure that is not there.
+// admissible returns what the endpoint can still take and the error owed for the rest (discarded as superseded); a plain error avoids a typed nil.
 func (e *PrometheusExporter) admissible(samples []*Sample) ([]*Sample, error) {
 	sendable, refused := e.partition(samples)
 	if len(refused) == 0 {
@@ -562,13 +388,7 @@ func (e *PrometheusExporter) recordSent(samples []*Sample) {
 	defer e.sentMu.Unlock()
 
 	for _, sample := range samples {
-		// Checked inside the loop, not once before it: one Export carries as
-		// many samples as a poll produced -- 15,000 from a single router -- so
-		// a bound tested only on entry is not a bound.
-		//
-		// Cleared rather than evicted. The check is a smoke alarm: losing its
-		// history costs one missed detection, and a reset is simpler to reason
-		// about than any eviction policy worth arguing over.
+		// Bound checked per sample, since one Export can carry a whole poll; the map is cleared when full.
 		if len(e.lastSent) >= maxTrackedSeries {
 			log.Printf("[metrics] ordering check tracked %d series, at the %d bound; starting over",
 				len(e.lastSent), maxTrackedSeries)
@@ -587,14 +407,7 @@ func (e *PrometheusExporter) recordSent(samples []*Sample) {
 	}
 }
 
-// sender owns the remote-write endpoint. It is the only thing that writes to
-// it, which is what makes the ORDER of the writes knowable.
-//
-// Before this, every poll worker that filled the buffer wrote inline and the
-// background flusher wrote on a tick, so two requests could be in flight with
-// nothing deciding which arrived first. A batch taken later could land first
-// and leave the earlier one permanently unacceptable -- the same failure as a
-// malformed request, reached without one.
+// sender is the only writer to the remote-write endpoint, so writes arrive in order.
 func (e *PrometheusExporter) sender() {
 	defer e.wg.Done()
 
@@ -603,29 +416,17 @@ func (e *PrometheusExporter) sender() {
 		case <-e.wake:
 			e.drain()
 		case <-e.stopChan:
-			// Whatever is queued gets one last attempt, so a clean shutdown
-			// does not discard a poll that has already been collected -- under
-			// the deadline Close set, or a slow endpoint holds the process
-			// open.
+			// One last attempt at whatever is queued, bounded by Close's deadline.
 			e.drainUntil(time.Time{})
 
-			// And whatever survives that is abandoned, out loud. drainUntil
-			// stops on the first refusal as well as at the deadline, so an
-			// endpoint answering retryably forever left the queue populated
-			// and the sender simply returned -- the last exit where discarding
-			// data reported success, reached by the one path that does not go
-			// through the deadline.
+			// Whatever survives is discarded and reported, including after a retryable refusal.
 			e.giveUp()
 			return
 		}
 	}
 }
 
-// giveUp abandons whatever is still queued when the shutdown deadline passes.
-//
-// It is a drop like any other and goes through the one path that names a
-// reason and tells whoever is owed -- here, Close, which must not report a
-// shutdown that threw telemetry away as a success.
+// giveUp discards whatever is queued when the shutdown deadline passes, reporting it to Close.
 func (e *PrometheusExporter) giveUp() {
 	e.queueMu.Lock()
 	left := e.queued
@@ -644,16 +445,7 @@ func (e *PrometheusExporter) giveUp() {
 	}
 }
 
-// keepWhatLanded takes an accepted prefix off a batch that failed partway
-// through, so that neither the retry nor the discard that follows reaches
-// samples the endpoint already holds.
-//
-// A batch is several requests now, so a failure can arrive with part of
-// it delivered. Offering that part again is not merely wasteful: the endpoint's
-// head has moved to the end of it, so on the next attempt those samples are
-// behind their own head -- and the request carrying them is refused whole,
-// taking the undelivered remainder with it. A retry that redelivers is a retry
-// that cannot succeed.
+// keepWhatLanded removes the accepted prefix of a partly delivered batch so it is neither retried nor discarded.
 func (e *PrometheusExporter) keepWhatLanded(batch *pending, delivered int) {
 	if delivered <= 0 {
 		return
@@ -668,10 +460,6 @@ func (e *PrometheusExporter) keepWhatLanded(batch *pending, delivered int) {
 }
 
 // drain writes queued batches until the queue is empty or one is refused.
-//
-// It stops on the first refusal rather than carrying on to the next batch:
-// carrying on would write newer samples over the head of series the refused
-// batch still holds, which is exactly what makes a refused batch unlandable.
 func (e *PrometheusExporter) drain() {
 	e.drainUntil(time.Time{})
 }
@@ -680,11 +468,7 @@ func (e *PrometheusExporter) drain() {
 // the ordinary case: the sender is not in anyone's way.
 func (e *PrometheusExporter) drainUntil(deadline time.Time) {
 	for {
-		// The shutdown deadline applies to a drain ALREADY RUNNING, not only to
-		// the one the stop branch starts. Close's Flush waits on whatever the
-		// sender is doing, so a bound that took effect only after that had
-		// returned bounded nothing: the drain holding it up was the unbounded
-		// one.
+		// The shutdown deadline also bounds a drain already running.
 		if at := e.shutdownAt.Load(); at != 0 {
 			if closing := time.Unix(0, at); deadline.IsZero() || closing.Before(deadline) {
 				deadline = closing
@@ -716,10 +500,7 @@ func (e *PrometheusExporter) drainUntil(deadline time.Time) {
 			continue
 		}
 
-		// Whatever the endpoint would refuse is taken out first, and dropped on
-		// its own. Sending it costs every other sample in the batch: Prometheus
-		// rejects the whole write on the first unacceptable sample, and the
-		// non-retryable path then discards all of them.
+		// Drop what the endpoint would refuse before sending, since one bad sample fails the whole request.
 		sendable, owed := e.admissible(batch.samples)
 		if len(sendable) == 0 {
 			e.queueMu.Lock()
@@ -771,11 +552,7 @@ func (e *PrometheusExporter) drainUntil(deadline time.Time) {
 		e.queueMu.Lock()
 		e.inFlight = 0
 		e.requeueLocked(batch)
-		// Everyone waiting behind a batch that was just refused is told now.
-		// Their flush cannot complete -- the refused batch is still ahead of
-		// them and will be retried -- and leaving them to block until their
-		// context expires would report a timeout for a failure we already know
-		// the reason for.
+		// Fail the waiters behind a refused batch now rather than letting them time out.
 		released := e.releaseBarriersLocked(err)
 		e.queueMu.Unlock()
 

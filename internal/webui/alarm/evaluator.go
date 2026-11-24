@@ -39,11 +39,7 @@ type Evaluator struct {
 	// firing is the current answer, published as one immutable snapshot.
 	firing atomic.Pointer[Snapshot]
 
-	// generation counts rule-set swaps. An evaluation that started before a
-	// reload must not publish over the one that started after it. It is
-	// written under mu -- see Reload -- and read without it at the start of an
-	// evaluation, where a slightly stale value only means the evaluation
-	// discards itself.
+	// generation counts rule-set swaps so a stale evaluation discards itself; written under mu.
 	generation atomic.Uint64
 
 	// raised remembers when each alarm ID was first seen, so an alarm that
@@ -52,14 +48,7 @@ type Evaluator struct {
 	mu     sync.Mutex
 	raised map[string]time.Time
 
-	// evalMu serializes evaluations. EvaluateOnce is exported, so a caller
-	// forcing one can run alongside Run's tick: both would read the same
-	// sightings and the same generation, and whichever finished LAST would
-	// publish over the other -- an older answer replacing a newer one, with
-	// nothing to detect it, since every access is properly synchronized.
-	//
-	// It is not mu. A query can call Reload, which takes mu, and an evaluation
-	// holding mu across its queries would deadlock on that.
+	// evalMu serializes evaluations; it is separate from mu, which Reload takes.
 	evalMu sync.Mutex
 }
 
@@ -87,12 +76,7 @@ func (e *Evaluator) Reload(rules []Rule) {
 	set := make([]Rule, len(rules))
 	copy(set, rules)
 
-	// Under the same lock commit uses. Bumping the generation outside it left
-	// a window between commit's check and its write: a reload that landed
-	// there was not seen by the check, and the evaluation it should have
-	// discarded published anyway and left its sightings behind. The two are
-	// now ordered -- either commit finishes first, or the reload does and
-	// commit sees the generation it changed.
+	// Bump the generation under the lock commit uses.
 	e.mu.Lock()
 	e.rules.Store(&set)
 	e.generation.Add(1)
@@ -164,10 +148,7 @@ func (e *Evaluator) evaluate(ctx context.Context) {
 	e.evalMu.Lock()
 	defer e.evalMu.Unlock()
 
-	// The generation this evaluation belongs to. A reload during it makes the
-	// result stale before it is published: the answer would name rules that
-	// have been removed while the count beside it says how many are loaded
-	// now, and the two would disagree until the next tick.
+	// The generation this evaluation belongs to; a reload during it makes the result stale.
 	generation := e.generation.Load()
 
 	rules := e.rules.Load()
@@ -181,25 +162,14 @@ func (e *Evaluator) evaluate(ctx context.Context) {
 	held := e.Snapshot()
 	since := e.sinceHeld()
 	pending := make([]Alarm, 0, len(*rules))
-	// next is what `raised` becomes if this evaluation is the one that
-	// publishes. Nothing is written back until then: an evaluation the rules
-	// changed under is discarded, and one that had already recorded a first
-	// sighting would leave that behind for the rules that replaced it.
+	// next becomes raised only if this evaluation publishes.
 	next := make(map[string]time.Time, len(*rules))
 	unevaluated := 0
 
 	for _, rule := range *rules {
 		samples, err := e.query(ctx, rule.Expr)
 		if err != nil {
-			// A rule that cannot be evaluated is not a rule that is quiet.
-			// Dropping it would clear whatever it had already raised, so a
-			// Prometheus that stops answering reads as a fleet that has just
-			// come good -- an all-clear produced by the outage itself, at the
-			// one moment an operator most needs otherwise.
-			//
-			// What it last knew is carried forward, and the count of rules
-			// that could not be asked goes with it so the bell can say the
-			// answer is incomplete rather than imply it is current.
+			// A rule that cannot be evaluated keeps its last alarms and is counted as unevaluated.
 			e.logger.Error("alarm rule could not be evaluated",
 				"rule", rule.Name, "error", err)
 			unevaluated++
@@ -261,10 +231,6 @@ func (e *Evaluator) commit(generation uint64, raised map[string]time.Time, snaps
 }
 
 // sinceHeld copies when each alarm ID was first raised.
-//
-// A copy, because the evaluation reads it while Reload can be running: an
-// alarm that stays up keeps its original timestamp, which is what makes
-// "since" mean how long something has been broken.
 func (e *Evaluator) sinceHeld() map[string]time.Time {
 	e.mu.Lock()
 	defer e.mu.Unlock()

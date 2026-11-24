@@ -1,26 +1,5 @@
 #!/usr/bin/env bash
-# Restore a containerised go-netmon deployment onto a native appliance.
-#
-# The input is a backup directory produced by netmon-backup (scripts/backup.sh):
-# a manifest plus one gzipped tar per Docker volume. The output is plain
-# directories under /var/lib on the target, owned by the service accounts. The
-# appliance has no container runtime, so the volumes stop being volumes here.
-#
-# THE SOURCE IS NEVER TOUCHED. This script reads a backup; it does not talk to
-# the source host or its Docker daemon at all. Decommissioning the old
-# deployment is a separate, manual decision made after the target is confirmed
-# good.
-#
-# WHAT MOVES, AND WHY EACH:
-#   poller  -> /var/lib/go-netmon/poller    MIB tree and the poller's catalog
-#   webui   -> /var/lib/go-netmon/webui     THE DEVICE REGISTRY. The device list
-#                                           lives here, not in config.yaml.
-#   metrics -> /var/lib/prometheus          ALL MONITORING HISTORY. go-netmon
-#                                           stores no samples of its own; every
-#                                           one it has ever produced is in here.
-#   grafana -> not restored                 Grafana is not part of the appliance.
-#                                           The archive is left in the backup;
-#                                           dashboards regenerate from MIBs.
+# Restore a netmon-backup archive of a containerised deployment onto a native appliance under /var/lib; the source is never touched, grafana is not restored.
 
 set -euo pipefail
 
@@ -87,9 +66,6 @@ step() { printf '  %s\n' "$*"; }
 run_remote() { ssh "${ssh_args[@]}" "$target" "$@"; }
 
 # component:archive member:destination:owner
-#
-# Order matters only in that metrics is the largest and slowest; nothing here
-# depends on anything else here.
 members=(
     "poller:volumes/poller.tar.gz:/var/lib/go-netmon/poller:go-netmon"
     "webui:volumes/webui.tar.gz:/var/lib/go-netmon/webui:go-netmon"
@@ -134,11 +110,7 @@ fi
 say "Checking target state"
 for m in "${members[@]}"; do
     IFS=: read -r component member dest _owner <<<"$m"
-    # The listing has to happen INSIDE sudo. Written as `sudo test -n "$(ls
-    # ...)"` the substitution runs as the login user, who cannot read a 0750
-    # directory owned by a service account — so it returns nothing, every
-    # destination looks empty, and the guard below never fires on the exact
-    # data it exists to protect.
+    # List inside sudo: the login user cannot read the service-owned directories.
     if run_remote "sudo sh -c \"test -n \\\"\\\$(ls -A '$dest' 2>/dev/null)\\\"\""; then
         if [[ -z "$replace" ]]; then
             echo "$dest on $target is not empty. Pass --replace to overwrite it." >&2
@@ -155,10 +127,7 @@ if [[ -n "$dry_run" ]]; then
     exit 0
 fi
 
-# --- stop -------------------------------------------------------------------
-# Pebble and the Prometheus TSDB are both single-writer on-disk stores. Neither
-# tolerates having its directory swapped underneath a running process, so the
-# restore is cold. The services come back at the end of every exit path.
+# Stop: Pebble and the Prometheus TSDB need a cold restore; services restart on every exit path.
 say "Stopping services"
 restart_services() {
     say "Starting services"
@@ -208,8 +177,7 @@ trap - EXIT
 restart_services
 
 say "Verifying"
-# Prometheus replays its write-ahead log before it serves anything, and on a
-# migrated TSDB that replay is the slow part. Poll rather than guess.
+# Poll until Prometheus has replayed its WAL and serves.
 for _ in $(seq 1 60); do
     if run_remote "curl -fsS http://127.0.0.1:9090/-/ready >/dev/null 2>&1"; then
         step "prometheus ready"

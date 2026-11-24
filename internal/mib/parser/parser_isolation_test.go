@@ -102,10 +102,7 @@ func TestCloseLeavesNothingForTheNextParser(t *testing.T) {
 	}
 }
 
-// TestInitSearchesOnlyTheGivenDirectories checks that the host's SMIPATH does
-// not reach the search path. gosmi.Init seeds the path from every existing
-// directory in SMIPATH; a parser given one directory must search that one only,
-// or a module it was not given resolves on one host and not on another.
+// TestInitSearchesOnlyTheGivenDirectories checks the host's SMIPATH does not reach the search path.
 func TestInitSearchesOnlyTheGivenDirectories(t *testing.T) {
 	t.Setenv("SMIPATH", testsupport.MIBDir("standard"))
 
@@ -188,10 +185,7 @@ func TestLoadModuleFromFileLeavesTheSearchPathAsConfigured(t *testing.T) {
 	}
 }
 
-// TestLoadModuleFromFileResolvesAModuleLoadedEarlier checks that taking a
-// file's directory back off the path does not lose what was loaded from it: a
-// module from another directory that IMPORTS it still resolves, because gosmi
-// finds an import among the loaded modules before it searches the path.
+// TestLoadModuleFromFileResolvesAModuleLoadedEarlier checks a loaded module still resolves as an import after its directory leaves the path.
 func TestLoadModuleFromFileResolvesAModuleLoadedEarlier(t *testing.T) {
 	p := New(isolationDir(t, true))
 	if err := p.Init(); err != nil {

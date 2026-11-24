@@ -8,10 +8,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// TestLoaderIgnoresSMIPATH checks that the loader searches exactly its
-// configured paths. A module that only the host's SMIPATH holds must not load:
-// otherwise what the daemon monitors depends on the environment it was
-// started from, not on its configuration.
+// TestLoaderIgnoresSMIPATH checks the loader searches only its configured paths.
 func TestLoaderIgnoresSMIPATH(t *testing.T) {
 	t.Setenv("SMIPATH", testsupport.MIBDir("standard"))
 

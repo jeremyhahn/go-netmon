@@ -5,12 +5,7 @@ import (
 	"testing"
 )
 
-// Validating the alarm rules an operator writes.
-//
-// The check is deliberately shallow -- it does not parse the PromQL, because
-// this process does not evaluate it -- so what it has to catch is the shape.
-// Every case here is a rule that would be accepted, loaded, and then quietly do
-// nothing or do the wrong thing.
+// Alarm rule validation checks shape only; the PromQL is not parsed.
 
 func TestAlarmRulesAreValidated(t *testing.T) {
 	tests := []struct {
@@ -31,8 +26,7 @@ func TestAlarmRulesAreValidated(t *testing.T) {
 			field: "alarms[0].expr",
 		},
 		{
-			// A severity nobody recognizes sorts to the bottom of the bell, so
-			// a critical alarm written "CRITICAL" would sit under the warnings.
+			// An unknown severity sorts last, so severities must be lowercase known values.
 			name: "a severity nothing orders",
 			rules: []AlarmRule{
 				{Name: "Down", Expr: "up == 0", Severity: "CRITICAL"},

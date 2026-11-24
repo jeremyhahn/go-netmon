@@ -244,12 +244,7 @@ func (c *Client) TestSNMP(ctx context.Context, req SNMPTestRequest) (*SNMPTestRe
 	return &resp, nil
 }
 
-// probeResult recovers the structured probe result carried by a failed probe.
-//
-// The server reports an unreachable device with a gateway status and the same
-// body a successful probe returns, so the negative result is data the caller
-// can render — naming the device and why it failed — rather than an opaque
-// "504 Gateway Timeout". Anything that is not a probe result stays an error.
+// probeResult recovers the structured probe result from a failed probe response.
 func probeResult(err error) (*SNMPTestResponse, error) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {

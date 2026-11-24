@@ -11,14 +11,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// A MIB store is written by an importer and read by the poller, the CLI and the
-// web UI. A record that cannot be decoded — a partial write, a store written by
-// an older schema, a truncated file — must never be handed to a caller as an
-// empty-but-valid record, because an OIDMetadata with no Access and no Status
-// silently drops out of every poll without anything reporting why.
-//
-// These tests write the malformed bytes directly through the underlying store,
-// which is the only way to produce a record the marshaller would never emit.
+// A record that cannot be decoded must be reported, never returned as an empty record.
 
 // corrupt writes bytes that are not valid JSON under key.
 func corrupt(t *testing.T, s *Storage, key string) {
@@ -134,9 +127,7 @@ func TestDeleteOIDRejectsCorruptRecord(t *testing.T) {
 	}
 }
 
-// TestGetOIDByNameWithDanglingMapping covers a name index pointing at a record
-// that is no longer there. The lookup must report that rather than return a
-// zero-valued object.
+// TestGetOIDByNameWithDanglingMapping checks a name pointing at a missing record is reported.
 func TestGetOIDByNameWithDanglingMapping(t *testing.T) {
 	store, cleanup := getTestStorage(t)
 	defer cleanup()

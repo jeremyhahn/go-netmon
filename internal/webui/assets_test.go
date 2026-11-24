@@ -27,12 +27,7 @@ func TestStaticServesTheLandingPage(t *testing.T) {
 	}
 }
 
-// TestStaticIsRootedAtTheAssetTree checks that the sub-filesystem is rooted at
-// the assets themselves.
-//
-// Without the fs.Sub the landing page would be "static/index.html", every URL
-// would need that prefix, and the fault would look like a routing bug rather
-// than an embedding one.
+// TestStaticIsRootedAtTheAssetTree checks index.html is at the root of Static.
 func TestStaticIsRootedAtTheAssetTree(t *testing.T) {
 	assets, err := Static()
 	if err != nil {
@@ -49,14 +44,7 @@ func TestStaticIsRootedAtTheAssetTree(t *testing.T) {
 	}
 }
 
-// TestStaticEmbedsEveryFileOnDisk is the guard against a file silently
-// dropping out of the binary.
-//
-// The default go:embed pattern skips names beginning with "." or "_", so a
-// future partial or dotfile would vanish from the build with nothing failing
-// -- the UI would simply 404 that one asset in production. This walks the
-// source tree and requires every file in it to be present in the embedded
-// tree, so the "all:" prefix cannot be dropped without a test failing.
+// TestStaticEmbedsEveryFileOnDisk checks every source asset file is embedded.
 func TestStaticEmbedsEveryFileOnDisk(t *testing.T) {
 	assets, err := Static()
 	if err != nil {
@@ -104,14 +92,7 @@ func TestStaticEmbedsEveryFileOnDisk(t *testing.T) {
 	}
 }
 
-// TestValidateAssetsRejectsATreeThatCannotServeTheUI is the check that makes
-// "a broken embed is a startup error" true rather than aspirational.
-//
-// fs.Sub succeeds as long as the directory exists, so without this a tree that
-// had lost index.html would start cleanly and 404 the landing page while
-// /api/* kept answering -- the identical failure embedding was meant to end.
-// The cases are built as synthetic filesystems because there is no way to
-// produce a broken tree from a go:embed directive.
+// TestValidateAssetsRejectsATreeThatCannotServeTheUI checks synthetic broken trees are rejected.
 func TestValidateAssetsRejectsATreeThatCannotServeTheUI(t *testing.T) {
 	tests := []struct {
 		name       string

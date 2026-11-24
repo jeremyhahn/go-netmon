@@ -8,18 +8,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// The protocols an ordinary build still offers and a FIPS build does not.
-//
-// This exists so that moving MD5, SHA-1 and DES out of the shared table did
-// not quietly move them out of the suite. They are a supported capability of
-// the default build -- the product exists to monitor legacy gear, a great deal
-// of which speaks only these -- and compiling them out of the FIPS build
-// never means deleting them. A
-// capability with no test is on its way to being deleted by accident.
-//
-// Its FIPS counterpart is TestFIPSBuildRefusesTheLegacyProtocols in
-// v3_fips_test.go, which asserts the same three names are refused there, with
-// a message that says why.
+// The legacy protocols the default build offers; TestFIPSBuildRefusesTheLegacyProtocols covers the FIPS build.
 func TestConfigureV3AcceptsTheLegacyProtocols(t *testing.T) {
 	tests := []struct {
 		name  string

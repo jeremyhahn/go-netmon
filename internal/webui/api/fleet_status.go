@@ -181,12 +181,7 @@ func (q FleetQuery) page(entries []FleetDeviceStatus) []FleetDeviceStatus {
 	return entries[q.Offset:end]
 }
 
-// handleFleetStatus handles GET /api/devices/status: live status for every
-// configured device in one request.
-//
-// It exists because a fleet overview built on the per-device endpoint issues one
-// request per device on every page load, which is invisible at four devices and
-// is not at a hundred.
+// handleFleetStatus handles GET /api/devices/status: live status for every configured device in one request.
 func (s *Server) handleFleetStatus(w http.ResponseWriter, r *http.Request) {
 	query, err := parseFleetQuery(r)
 	if err != nil {
@@ -200,10 +195,7 @@ func (s *Server) handleFleetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every device is classified, because the summary counts all of them and
-	// the poller answers for all of them in the one call either way. What the
-	// narrowing saves is the serialization and the transfer, which is where the
-	// cost actually was.
+	// Every device is classified, since the summary counts all; narrowing saves serialization only.
 	all := s.fleetStatus(r.Context(), devices)
 
 	summary := make(map[DeviceState]int, len(all))
@@ -223,21 +215,7 @@ func (s *Server) handleFleetStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// fleetStatus collects every device's status in the order given.
-//
-// It asks the poller once. The poller builds its device listing from in-memory
-// worker state, so one response already carries the status of everything it
-// polls; asking per device instead cost a round trip per device, and since
-// every open overview repeats that every 30 seconds the load on the poller was
-// devices times sessions. At 10,000 devices and 25 operators that was 250,000
-// requests a tick, which queued past the collection budget and left 85% of the
-// rows blank — an overview reporting a fleet-wide outage that was not
-// happening. One request per refresh is flat in both directions.
-//
-// Order comes from the caller's slice: the storage layer sorts devices by name
-// and rows are filled in that order, so repeated requests do not reshuffle. A
-// device the poller has no record of is reported as such rather than as an
-// error, and if the poller cannot be reached at all every row says so.
+// fleetStatus collects every device's status from one poller listing call, in the caller's order; an unknown device or unreachable poller is reported per row.
 func (s *Server) fleetStatus(ctx context.Context, devices []storage.Device) []FleetDeviceStatus {
 	ctx, cancel := context.WithTimeout(ctx, FleetStatusBudget)
 	defer cancel()
@@ -330,15 +308,7 @@ func newFleetDeviceStatus(
 	return entry
 }
 
-// deviceState names the state a fleet card shows for a device.
-//
-// Unreachable outranks a failed poll because it is the stronger and more
-// actionable statement: a device answering nothing at all is a different
-// problem from one whose polls partly fail, and the poller distinguishes them.
-// The zero last_poll_time is checked after it, so a device that has never
-// answered since being registered reads as unreachable rather than as merely
-// pending — the raw last_poll_time is still in the row for anyone who needs the
-// finer fact.
+// deviceState names a device's fleet state; unreachable outranks a failed poll, then a zero last_poll_time.
 func deviceState(status *client.DeviceStatus, err error) DeviceState {
 	if err != nil {
 		var notPolled *DeviceNotPolledError

@@ -43,9 +43,7 @@ const SnapshotInterval = 20
 
 // queryState is what one query last read, and what that reading is called.
 type queryState struct {
-	// seq increments when the READING changes, not when the query runs. A
-	// client holding seq N holds the result that produced N, however many
-	// rounds ago that was.
+	// seq increments when the reading changes, not when the query runs.
 	seq uint64
 
 	// byKey is the reading at seq, indexed by series identity.
@@ -109,9 +107,6 @@ func newQueryStates() *queryStates {
 }
 
 // advance records a new reading and reports what to send for it.
-//
-// This is the once-per-round diff. It runs on the streaming goroutine for one
-// query, and its result is fanned to every client subscribed to that query.
 func (s *queryStates) advance(query string, metrics []MetricValue) update {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -188,11 +183,7 @@ func (s *queryStates) queries() []string {
 	return names
 }
 
-// forget drops a query nobody subscribes to any more.
-//
-// Its sequence goes with it. A query that is subscribed again starts from one,
-// and every client is new to it, so nobody can hold a sequence from before the
-// gap and be told it is still current.
+// forget drops a query with no subscribers, and its sequence.
 func (s *queryStates) forget(query string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,11 +197,7 @@ func diff(previous, current map[string]MetricValue) Delta {
 
 	for key, metric := range current {
 		held, existed := previous[key]
-		// The timestamp is deliberately not compared. An instant query is
-		// stamped at the moment it is asked rather than at the scrape the
-		// value came from, so an unchanged reading arrives with a later
-		// timestamp every five seconds. Comparing it would make every round a
-		// change and the whole mechanism a no-op with extra steps.
+		// Timestamps are not compared: an instant query is stamped at evaluation time.
 		if existed && held.Value == metric.Value {
 			continue
 		}
@@ -243,12 +230,7 @@ func byKey(metrics []MetricValue) map[string]MetricValue {
 	return indexed
 }
 
-// seriesKey identifies one series by its labels.
-//
-// Internal to the server: the browser never sees it, which is why a removal
-// carries its label set instead. Length-prefixed so the encoding is injective
-// -- label values may contain any byte, so no separator can be reserved, and
-// two different series must never key the same.
+// seriesKey identifies a series by its labels, length-prefixed so the encoding is injective.
 func seriesKey(labels map[string]string) string {
 	names := make([]string, 0, len(labels))
 	for name := range labels {

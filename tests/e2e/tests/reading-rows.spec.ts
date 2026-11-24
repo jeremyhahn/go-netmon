@@ -2,20 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// An info metric that carries SEVERAL readings on one series renders one row
-// per reading, not one run-together string.
-//
-// snmp_system_info collapses the whole system group -- sysDescr, sysName,
-// sysObjectID -- onto a single series carrying each as a label. Those labels
-// used to be joined into "sys_descr=..., sys_name=..., sys_object_id=..." and
-// printed as a paragraph. sysDescr alone is ~190 characters, so it filled the
-// tile's four visible lines by itself and pushed every other reading below the
-// clip: the card showed a wall of text and withheld the two readings a reader
-// could have used.
-//
-// The UI under test is the working tree, served over the live API by
-// page.route(), so these run against a deployment that has not shipped the
-// files yet and keep passing once it has.
+// An info metric with several readings on one series renders one row per reading; the working-tree UI is served via page.route().
 
 import { BASE } from '../target';
 import { SEEDED_DEVICES } from '../stack';
@@ -67,12 +54,7 @@ async function openDashboard(page: Page) {
   await expect(page.locator('#mibTabList .tab-button').first()).toBeVisible({ timeout: 45000 });
 }
 
-// systemCard is the tile fed by snmp_system_info: the one scalar on this
-// device whose series carries more than one reading.
-//
-// Matched on the card's TITLE, not on hasText: a tile's description sheet
-// carries the MIB DESCRIPTION, and "system" appears in plenty of them, so a
-// text match can hand back a different card entirely.
+// systemCard is the snmp_system_info tile, matched by title.
 function systemCard(page: Page) {
   return page.locator('.tab-pane.active .status-item')
     .filter({ has: page.locator('.panel-title', { hasText: /^system$/ }) })
@@ -104,13 +86,7 @@ test.describe('an info metric carrying several readings', () => {
         await expect(row.locator('.panel-row-value')).not.toBeEmpty();
       }
 
-      // The shape this replaced, asserted against the WHOLE card rather than
-      // against its rows. The old rendering produced no rows at all -- a single
-      // joined reading took updatePanelTile's textContent path -- so a check
-      // that reads .panel-row-value would find an empty list on the broken code
-      // and pass over it in silence. The reading is scoped to the two labels
-      // that were actually run together, so an operator-typed sysContact or
-      // sysLocation containing "Version=..., Build=..." cannot fail this.
+      // Assert on the whole card that sys_descr and sys_object_id are not joined into one reading.
       const whole = (await card.locator('.status-value').textContent()) || '';
       expect(whole, `the system group is still one joined string: ${whole}`)
         .not.toMatch(/sys_\w+=[\s\S]*,\s*sys_\w+=/);
@@ -210,26 +186,12 @@ test.describe('a reading the card had to clip', () => {
       const sheet = page.locator('#descSheet');
       await expect(sheet).toBeVisible();
 
-      // The sheet now carries two kinds of content. A device's READING must not
-      // open under a heading that says "Description": that presents data as
-      // documentation, which is its own quiet way of misleading a reader.
+      // A reading must not open under a Description heading.
       await expect(page.locator('#descSheetTitle')).toHaveText(row.name);
       await expect(page.locator('#descSheetTitle')).not.toHaveText('Description');
       await expect(page.locator('#descSheetEyebrow')).toHaveText('Reading');
 
-      // And the point of opening it. Length is no test here -- the card's
-      // textContent already holds the whole reading, because the clip is CSS
-      // and hides text rather than removing it. What the sheet has to do is
-      // show that text without cutting it, which is a measurement rather than
-      // a string comparison.
-      //
-      // The comparison that remains is made on collapsed whitespace, because
-      // the sheet REFLOWS what it is given. A real sysDescr arrives wrapped by
-      // the device -- the simulated router's is 247 characters across four
-      // CRLF-separated lines (public.snmprec) -- and that wrapping is the vendor's, meaningless in a
-      // proportional column, so the sheet reflows it exactly as it reflows a
-      // MIB DESCRIPTION. Asserting on the raw string would be asserting that
-      // the reflow does not happen.
+      // The sheet shows the reading uncut, compared on collapsed whitespace since the sheet reflows it.
       const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
       const revealed = await page.locator('#descSheetBody').evaluate(el => ({
         text: el.textContent || '',

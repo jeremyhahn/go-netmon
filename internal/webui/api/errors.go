@@ -212,10 +212,8 @@ func (e *ListenError) Unwrap() error { return e.Err }
 // PollerDetachError reports that the poller could not be relied on to have
 // stopped polling a device, so the device was not deleted.
 //
-// It is a type, and it is returned rather than logged, because it decides the
-// outcome of the request that produced it. The failure used to be written to
-// the log and dropped while the response stayed a bare 204, so the record went
-// and the polling did not, and the operator was told the delete had succeeded.
+// It is returned rather than logged because it decides the outcome of the
+// request: the delete must not report success while polling continues.
 type PollerDetachError struct {
 	Device string
 	Err    error
