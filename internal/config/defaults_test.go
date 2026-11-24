@@ -41,10 +41,7 @@ func TestApplyDefaultsMakesAPartialConfigValid(t *testing.T) {
 	}
 }
 
-// The web UI's stream cadence has a default because it used to be a literal in
-// the hub: a configuration that omits the key must keep ticking at the rate
-// that literal set, or making it configurable would have changed behavior for every deployment
-// that never asked for it.
+// An omitted stream interval keeps the default cadence.
 func TestApplyDefaultsSetsTheStreamInterval(t *testing.T) {
 	cfg := &Config{}
 

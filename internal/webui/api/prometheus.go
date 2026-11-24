@@ -45,26 +45,13 @@ type prometheusResponse struct {
 	ErrorType string `json:"errorType,omitempty"`
 }
 
-// Query executes an instant query
-// Query returns the samples an instant query produced, dropping any row that
-// carries no usable value.
-//
-// Callers that need to know a row was dropped use QueryReportingDiscards.
-// Silence is the right answer for a renderer -- there is nothing to draw -- and
-// the wrong answer for anything deciding what a set of rows AGREES about, since
-// a discarded row is not a row that agrees.
+// Query returns an instant query's samples, dropping rows with no usable value; see QueryReportingDiscards.
 func (p *PrometheusClient) Query(ctx context.Context, query string) ([]websocket.MetricValue, error) {
 	metrics, _, err := p.QueryReportingDiscards(ctx, query)
 	return metrics, err
 }
 
-// QueryReportingDiscards is Query, and also says which rows produced no usable
-// value: their label sets, in the order Prometheus returned them.
-//
-// A row can be discarded for five reasons below, and every one of them is a row
-// Prometheus DID return. Reading the survivors as the whole answer turns "three
-// rows, one unreadable" into "two rows that agree", which is a different claim
-// and a false one.
+// QueryReportingDiscards is Query plus the label sets of rows that produced no usable value, in returned order.
 func (p *PrometheusClient) QueryReportingDiscards(ctx context.Context, query string) ([]websocket.MetricValue, []map[string]string, error) {
 	u := fmt.Sprintf("%s/api/v1/query", p.baseURL)
 
@@ -124,23 +111,7 @@ func (p *PrometheusClient) QueryReportingDiscards(ctx context.Context, query str
 			continue
 		}
 
-		// NaN and the infinities do not cross this boundary.
-		//
-		// Prometheus really returns them -- "NaN" is how it encodes an
-		// undefined result, and a division or a counter reset produces one on
-		// real devices routinely. ParseFloat accepts the string happily, and then
-		// encoding/json REFUSES to marshal the value: "json: unsupported
-		// value: NaN".
-		//
-		// That failure lands nowhere useful. A metric frame that cannot be
-		// marshaled is never sent, while the sequence has already advanced, so
-		// the panel stops updating for as long as the NaN persists and nothing
-		// on screen says why. One NaN in an alarm's value would take the whole
-		// bell response with it.
-		//
-		// Dropping it is not a workaround but the faithful reading: NaN is
-		// Prometheus saying there is no value here, and a sample is how this
-		// API says there is one.
+		// Drop NaN and infinities: Prometheus means no value, and encoding/json cannot marshal them.
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			discarded = append(discarded, result.Metric)
 			continue
@@ -215,16 +186,7 @@ func (p *PrometheusClient) QueryRange(ctx context.Context, query string, start, 
 	return results, nil
 }
 
-// LabelValueWindow is how far back a label lookup looks.
-//
-// Without a window the label API answers across the whole retention period, so
-// a metric that stopped being collected hours ago is still reported as present.
-// That made the dashboard offer panels for objects a device no longer reports:
-// narrowing a MIB left 42 of core-01's panels naming metrics with no live
-// series, promising data that could never arrive.
-//
-// It has to be comfortably longer than the slowest poll interval, or a device
-// polled every five minutes would look as though it had stopped.
+// LabelValueWindow is how far back a label lookup looks; it must exceed the slowest poll interval.
 const LabelValueWindow = 30 * time.Minute
 
 // QueryLabelValues queries Prometheus for unique values of a label
@@ -306,8 +268,7 @@ func (p *PrometheusClient) QuerySeries(ctx context.Context, matchers map[string]
 
 	params := url.Values{}
 
-	// Build match[] parameter - series endpoint requires at least one matcher
-	// IMPORTANT: Only query for info metrics since that's what we need for friendly names
+	// Build match[]; the series endpoint needs a matcher, and only info metrics are queried for friendly names.
 	if len(matchers) > 0 {
 		matchParts := make([]string, 0, len(matchers))
 		for k, v := range matchers {

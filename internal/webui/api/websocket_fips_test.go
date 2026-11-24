@@ -9,13 +9,7 @@ import (
 	"testing"
 )
 
-// A FIPS build must DECLARE the missing capability, not just lack it.
-//
-// The route stays registered and answers 501 with the reason. An unregistered
-// route would 404, which reads to a browser and to whoever is debugging it as
-// a wrong URL or a routing bug and sends them looking for a mistake that is
-// not there. This asserts the status AND the explanation, because a bare 501
-// is the answer that produces that same wasted afternoon.
+// A FIPS build answers the WebSocket route with 501 and the reason.
 func TestWebSocketRouteDeclaresItselfUnavailable(t *testing.T) {
 	s := newTestServer(t)
 

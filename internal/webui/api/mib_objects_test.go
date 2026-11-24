@@ -133,7 +133,7 @@ func TestPlanMIBObjectsIncludeNames(t *testing.T) {
 	assertPlanned(t, byName, "sysUpTime", true, string(selector.ReasonPolled))
 	assertPlanned(t, byName, "sysDescr", false, string(selector.ReasonNotIncluded))
 	assertPlanned(t, byName, "ifTable", false, string(selector.ReasonNotIncluded))
-	// With the table no longer walked, its columns stand on their own access.
+	// With the table not walked, its columns stand on their own access.
 	assertPlanned(t, byName, "ifInOctets", false, string(selector.ReasonNotIncluded))
 	assertPlanned(t, byName, "ifIndex", false, string(selector.ReasonNotAccessible))
 	assertPlanned(t, byName, "ifSpecific", false, string(selector.ReasonNotCurrent))
@@ -207,9 +207,7 @@ func TestPlanMIBObjectsDisabled(t *testing.T) {
 	}
 }
 
-// TestPlanMIBObjectsEmptyModule covers SNMPv2-TC and SNMPv2-CONF, which are
-// legitimately empty: textual conventions and conformance statements define
-// nothing to poll. The answer is an empty list, not an error.
+// TestPlanMIBObjectsEmptyModule checks SNMPv2-TC and SNMPv2-CONF plan to an empty list.
 func TestPlanMIBObjectsEmptyModule(t *testing.T) {
 	planned := PlanMIBObjects(nil, "SNMPv2-TC", webuistorage.DefaultMIBAssignment(), 24)
 

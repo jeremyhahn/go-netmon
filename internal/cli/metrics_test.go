@@ -12,12 +12,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// testSeries is the range-query payload the fake API serves, deliberately in
-// descending timestamp order so the renderer cannot rely on server ordering.
-//
-// It reproduces the server's actual encoding — samples are positional
-// [timestamp, value] arrays, not objects — so these tests exercise the same
-// decoding path a live server drives.
+// testSeries is the fake range-query payload, in descending order and the server's positional encoding.
 func testSeries() []map[string]any {
 	now := time.Now()
 	return []map[string]any{

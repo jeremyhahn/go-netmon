@@ -1,16 +1,4 @@
-# go-netmon configuration — native appliance install.
-#
-# Installed to /etc/go-netmon/config.yaml by `make deploy`, and NOT overwritten
-# on re-deploy: this file is operator data once the appliance is running.
-# Use FORCE_CONFIG=1 to replace it deliberately.
-#
-# Devices are NOT listed here. They live in the web UI's store
-# (/var/lib/go-netmon/webui/webui.db) and the poller pulls them from it at
-# startup — which is why migrating a deployment means moving that store, not
-# copying this file.
-#
-# The tunables below match the containerised deployment this appliance
-# replaces. The paths deliberately do not: there is no /app on a host.
+# go-netmon native appliance configuration; make deploy does not overwrite it (FORCE_CONFIG=1 does). Devices live in the web UI store.
 
 global:
   default_poll_interval: 30
@@ -26,20 +14,7 @@ prometheus:
   batch_size: 1000
   flush_interval: 10
 
-  # This collector publishes the metric catalog: the series that tell a
-  # dashboard what every metric means, so the UI renders from Prometheus alone
-  # and needs no MIBs of its own.
-  #
-  # EXACTLY ONE collector in a fleet may have this on. The catalog carries no
-  # device label, so every collector would write the same series at
-  # uncoordinated moments, and a write landing behind one already ingested is
-  # rejected out of order. That needs more than one collector to show up at
-  # all, so it works in development and fails intermittently in production.
-  #
-  # Defaults to FALSE, so designation is always a decision somebody made: an
-  # upgraded shard whose config predates this field must not silently become a
-  # second emitter. Set explicitly here because this appliance runs one
-  # collector.
+  # Exactly one collector per fleet publishes the metric catalog; defaults to false.
   emit_metric_catalog: true
 
 api:
@@ -60,8 +35,7 @@ mib:
     # imported and both services read it. Set for the poller by
     # MIB_UPLOADED_PATH in the unit file as well, so the two agree.
     - "/var/lib/go-netmon/poller/uploaded"
-    # The IETF base set, so a fresh install with an empty store can still
-    # parse the standard modules.
+    # The IETF base set, so an empty store can parse the standard modules.
     - "/usr/local/share/go-netmon/mibs/standard"
     - "/usr/share/snmp/mibs"
   # The poller's MIB metadata store. Pebble admits a single writer, so this
@@ -85,18 +59,7 @@ logging:
 
 devices: []
 
-# What the bell reports.
-#
-# Read by the web UI, which evaluates them against Prometheus and shows what is
-# firing; the poller ignores them. `systemctl reload go-netmon-webui` re-reads
-# this file without a restart, which matters here more than anywhere else in it:
-# restarting the web UI costs minutes of MIB parsing, and tuning a threshold by
-# restart is not something anyone would do twice.
-#
-# A rule is PromQL and fires once per series its expression returns, so a rule
-# about interfaces fires once per interface. That is deliberate -- two ports
-# being down is two things to fix -- but it is also the thing to think about
-# when writing one: an expression that matches broadly will fill the bell.
+# Alert rules: PromQL evaluated by the web UI, one alert per returned series; reload with systemctl reload go-netmon-webui.
 alarms:
   # The monitoring system reporting on itself. These are the ones that are
   # silent on a healthy fleet and are never noise when they are not.
@@ -119,9 +82,7 @@ alarms:
       polled and nothing is being recorded, so this is invisible on a
       dashboard until the buffer is full and readings start disappearing.
 
-  # AGGREGATE, do not evaluate per collector: gonetmon_catalog_series sits at
-  # zero on every collector that is not the designated emitter, which is the
-  # correct state for all but one of them.
+  # Aggregate across collectors: non-emitters report zero catalog series.
   - name: MetricCatalogNotPublished
     expr: max(gonetmon_catalog_series) == 0
     severity: critical
@@ -151,15 +112,7 @@ alarms:
       module describes the OID. They are charted, unlabeled. A jump here usually
       means a module stopped resolving rather than a device changing.
 
-  # Fires once per interface, by design. Measured on a production deployment: 36 interfaces
-  # are labeled, administratively up and operationally down, nearly all of them
-  # unused ports on access-02. That is an accurate reading rather than noise,
-  # but it IS what a bell with three dozen entries looks like -- narrow the
-  # expression to the devices or the interfaces you care about rather than
-  # raising the threshold.
-  #
-  # The alias filter is the scoping already applied: an interface somebody
-  # bothered to label is an interface somebody cares about.
+  # Fires once per labeled interface that is admin up and oper down; narrow the expression to scope it.
   - name: InterfaceDown
     expr: >-
       snmp_ifOperStatus == 2

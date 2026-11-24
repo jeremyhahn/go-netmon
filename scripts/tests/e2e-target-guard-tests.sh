@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# Tests for scripts/e2e-target-guard.sh.
-#
-# Each test builds a throwaway e2e tree and runs the guard against it, so a
-# case is a statement about the rule rather than about today's specs. One test
-# runs it against this repository, which is what keeps the real suite honest.
-#
-# Usage: e2e-target-guard-tests.sh [filter]
+# Tests for scripts/e2e-target-guard.sh against throwaway trees and this repository. Usage: e2e-target-guard-tests.sh [filter]
 
 set -uo pipefail
 

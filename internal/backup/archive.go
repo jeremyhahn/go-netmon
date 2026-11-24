@@ -12,16 +12,10 @@ import (
 	"path"
 )
 
-// gzipLevel matches the shell tooling's "gzip -6": the default trade between
-// archive size and the length of the outage a cold backup costs.
+// gzipLevel matches gzip -6.
 const gzipLevel = 6
 
-// tarUnsupportedEntryError reports an archive entry this tool will not create or
-// restore.
-//
-// Sockets, devices and hard links are refused rather than skipped. A restore
-// that silently drops entries produces a tree that does not match the manifest's
-// entry count, which is the one thing verification is supposed to catch.
+// tarUnsupportedEntryError reports an entry type (socket, device, hard link) this tool refuses to archive or restore.
 type tarUnsupportedEntryError struct {
 	Name string
 	Mode fs.FileMode
@@ -33,10 +27,6 @@ func (e *tarUnsupportedEntryError) Error() string {
 }
 
 // entryKind names a file type in words.
-//
-// fs.FileMode.Type().String() renders the permission-string form -- a socket
-// prints as "S---------" -- which tells an operator deciding whether a skipped
-// entry matters almost nothing.
 func entryKind(mode fs.FileMode) string {
 	switch {
 	case mode&fs.ModeSocket != 0:
@@ -77,11 +67,7 @@ func (d *digestWriter) Write(p []byte) (int, error) {
 
 func (d *digestWriter) sum() string { return hex.EncodeToString(d.hash.Sum(nil)) }
 
-// writeMember writes one compressed archive member into a root and reports its
-// size and digest.
-//
-// The member is created through the root, so a member name that could name a
-// location outside the backup directory fails here rather than writing there.
+// writeMember writes one compressed member through the root and reports its size and digest.
 func writeMember(dst *Root, name string, body func(io.Writer) error) (int64, string, error) {
 	f, err := dst.Create(name)
 	if err != nil {
@@ -128,11 +114,7 @@ func digestFile(r *Root, name string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
-// countMemberEntries decompresses a member end to end and counts its entries.
-//
-// This is deliberately a second pass over the data: a member truncated at write
-// time passes a "file exists" check and fails halfway through overwriting a live
-// volume, which is the worst possible moment to find out.
+// countMemberEntries decompresses a member end to end and counts its entries, catching truncation before a restore.
 func countMemberEntries(r *Root, name string) (int, error) {
 	f, err := r.Open(name)
 	if err != nil {
@@ -166,14 +148,7 @@ func countEntries(r io.Reader) (int, error) {
 	}
 }
 
-// WriteTree streams a directory inside a root to w as an uncompressed tar and
-// reports how many entries it wrote.
-//
-// Ownership is deliberately not carried. These are the operator's own files on
-// the operator's own machine, and the uid that took the backup is not
-// necessarily the uid that restores it; content, layout and mode are what
-// matters. Docker volumes are the opposite case and are streamed by the runtime
-// with numeric ownership intact.
+// WriteTree streams a directory inside a root to w as an uncompressed tar without ownership and reports the entry count.
 func WriteTree(src *Root, base string, w io.Writer) (int, error) {
 	tw := tar.NewWriter(w)
 	entries := 0
@@ -253,12 +228,7 @@ func copyFileInto(w io.Writer, src *Root, rel string) error {
 	return err
 }
 
-// ExtractTree replaces a directory inside a root with the contents of a tar
-// stream and reports how many entries it read.
-//
-// Every entry lands through the root, so an archive carrying "../etc/passwd" or
-// "/etc/passwd" as an entry name is refused instead of being sanitized into
-// something plausible and written anyway.
+// ExtractTree replaces a directory inside a root with a tar stream's contents, refusing entries that escape the root.
 func ExtractTree(dst *Root, base string, r io.Reader) (int, error) {
 	if err := dst.MkdirAll(base, 0o755); err != nil {
 		return 0, err

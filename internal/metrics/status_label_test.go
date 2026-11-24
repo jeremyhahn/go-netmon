@@ -9,9 +9,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
-// bgpPeerTable is the cbgpPeer2Table cut down to the columns these tests need:
-// an index, a textual status column, an enumerated one, and cbgpPeer2LastError,
-// whose SYNTAX is OCTET STRING (SIZE (2)) holding a BGP error code and subcode.
+// bgpPeerTable is cbgpPeer2Table cut down to an index, a textual status, an enum and cbgpPeer2LastError (OCTET STRING (SIZE (2))).
 var bgpPeerTable = []*mib.OIDMetadata{
 	{
 		OID:          "1.3.6.1.4.1.9.9.187.1.2.5.1",
@@ -140,10 +138,7 @@ func TestInfoMetricLabelFormatsBinaryOctetStrings(t *testing.T) {
 	}
 }
 
-// TestInfoMetricLabelKeepsTextualColumnsTextual checks the fix did not turn
-// readable status columns into hex: padded text is still text, a DISPLAY-HINT
-// still drives the rendering, and enumerations keep the bare label that is part
-// of their series identity.
+// TestInfoMetricLabelKeepsTextualColumnsTextual checks text stays text, DISPLAY-HINT applies, and enums keep bare labels.
 func TestInfoMetricLabelKeepsTextualColumnsTextual(t *testing.T) {
 	cache := newBGPCache(t)
 

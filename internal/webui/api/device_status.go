@@ -13,15 +13,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/client"
 )
 
-// deviceStatus is the single implementation of "what is this device's status".
-//
-// Both per-device endpoints and the fleet endpoint go through it, so there is
-// one place that decides what the poller was asked, and one place that decides
-// what its refusal meant. The distinctions it draws — no poller configured, a
-// poller that has never heard of the device, a poller that could not be reached
-// — are the same distinctions a fleet view needs per row and a single-device
-// response needs as an HTTP status code, which is why they are returned as
-// typed errors rather than baked into either representation.
+// deviceStatus is the single implementation of a device's status, returning typed errors for each failure.
 func (s *Server) deviceStatus(ctx context.Context, deviceName string) (*client.DeviceStatus, error) {
 	if deviceName == "" {
 		return nil, &DeviceNameRequiredError{}
@@ -41,13 +33,7 @@ func (s *Server) deviceStatus(ctx context.Context, deviceName string) (*client.D
 	return status, nil
 }
 
-// isUnknownToPoller says whether the poller answered that it has no such
-// device, as opposed to failing to answer.
-//
-// The poller signals it with a 404, but the web UI's poller client flattens the
-// response into a message, so this reads the message. It is the predicate the
-// per-device endpoint has always used; it lives here so the fleet endpoint
-// cannot come to a different conclusion about the same error.
+// isUnknownToPoller reports whether the poller answered that it has no such device (its 404 message).
 func isUnknownToPoller(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "not found") || strings.Contains(msg, "404")

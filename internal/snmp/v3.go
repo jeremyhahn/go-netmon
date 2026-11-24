@@ -8,21 +8,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// SNMPv3 user-based security, in one place.
-//
-// There were two implementations of this: the poller's client and the web UI's
-// connectivity tester. They disagreed, which is the usual outcome. The client
-// set MsgFlags to authPriv unconditionally, so a device configured for
-// authentication without encryption — a real and common setting — was refused
-// by gosnmp before a packet left the host, with
-// "securityParameters.PrivacyProtocol is required". The tester, fixed later,
-// derived the flags correctly. A device could therefore pass its connectivity
-// test and still be unpollable.
-//
-// The security level is not a separate setting an operator chooses; it follows
-// from which protocols are configured, and the flags have to agree with the
-// message's actual contents or the agent rejects it before looking at the
-// credentials.
+// SNMPv3 user-based security; the security level and MsgFlags follow from which protocols are configured.
 
 // V3Credentials is what user-based security needs. An empty protocol means that
 // layer is off, which is what makes authNoPriv and noAuthNoPriv expressible.
@@ -45,10 +31,7 @@ func ConfigureV3(conn *gosnmp.GoSNMP, creds V3Credentials) error {
 	return nil
 }
 
-// configureV3 is ConfigureV3 without the passphrases: it validates the
-// security level against which passphrases exist and leaves the connection
-// holding none. A client whose passphrases are sealed installs them for the
-// length of each request; see Client.call.
+// configureV3 validates the security level and leaves the connection without passphrases; see Client.call.
 func configureV3(conn *gosnmp.GoSNMP, creds V3Credentials, hasAuth, hasPriv bool) error {
 	if creds.Username == "" {
 		return &V3ConfigError{Field: "username", Value: "", Reason: "required for SNMPv3"}
@@ -109,15 +92,7 @@ func securityLevel(auth gosnmp.SnmpV3AuthProtocol, priv gosnmp.SnmpV3PrivProtoco
 	}
 }
 
-// The protocol registries. Map-based rather than a switch so that the set a
-// build offers is data, and so that the two build configurations differ by
-// which entries exist rather than by a second copy of the lookup.
-//
-// These hold the FIPS 140-3 approved protocols, which every build has.
-// SNMPv3's MD5 and SHA (which is SHA-1, RFC 3414 §6) and DES are added by
-// v3_legacy.go, compiled only when the fips tag is absent; v3_fips.go instead
-// records them as omitted, so a FIPS build can say what happened to them
-// rather than calling the operator's setting invalid.
+// Protocol registries holding the FIPS-approved protocols; v3_legacy.go adds MD5, SHA-1 and DES outside the fips build.
 var (
 	authProtocols = map[string]gosnmp.SnmpV3AuthProtocol{
 		"":       gosnmp.NoAuth,
@@ -145,11 +120,7 @@ var (
 	omittedProtocols = map[string]string{}
 )
 
-// acceptedNames lists a registry's keys, sorted, with the empty key rendered
-// as the words that describe it. It is derived from the map rather than
-// written out, so the error message cannot claim to accept a protocol the
-// build does not have -- which is exactly what a hardcoded list would do in
-// the FIPS build.
+// acceptedNames lists a registry's keys, sorted, with the empty key described in words.
 func acceptedNames[T comparable](m map[string]T) string {
 	names := make([]string, 0, len(m))
 	for k := range m {
@@ -185,11 +156,7 @@ func authProtocol(name string) (gosnmp.SnmpV3AuthProtocol, error) {
 	return gosnmp.NoAuth, protocolError("auth_protocol", name, key, authProtocols)
 }
 
-// privProtocol maps a name to gosnmp's constant. Empty means no privacy.
-//
-// "AES" is AES128; the wider key sizes are named explicitly because a device
-// configured for AES256 and a poller sending AES128 authenticate and then fail
-// to decrypt, which reads as a wrong passphrase.
+// privProtocol maps a name to gosnmp's constant; empty means no privacy, AES means AES128.
 func privProtocol(name string) (gosnmp.SnmpV3PrivProtocol, error) {
 	key := protocolKey(name)
 	if p, ok := privProtocols[key]; ok {

@@ -183,16 +183,7 @@ func exported(t *testing.T, store *storage.Storage, instanceOIDs ...string) map[
 	return byOID
 }
 
-// TestMetricNameMatchesExporter is the drift gate between the exporter and
-// every consumer that has to name a series it did not produce.
-//
-// Each case names an object through promname -- the single derivation the
-// dashboard generators, query builders and CLI all go through -- and compares
-// it with the name the exporter actually gave a live sample of that object.
-// Both sides have to change together or this fails, which is exactly what the
-// previous arrangement could not do: every consumer asserted against its own
-// local "snmp__" helper, so all of them stayed green while the exporter stopped
-// emitting those names and every dashboard panel went blank.
+// TestMetricNameMatchesExporter checks promname names match what the exporter emits for live samples.
 func TestMetricNameMatchesExporter(t *testing.T) {
 	store := contractStore(t)
 
@@ -275,29 +266,9 @@ func TestQueryBuilderNamesMatchExporter(t *testing.T) {
 	}
 }
 
-// The web UI's half of this gate moved, because the drift it guarded can no
-// longer happen here.
-//
-// It used to generate a dashboard specification from this MIB store and check
-// that every widget named a metric the exporter emits. A panel's metric name is
-// no longer derived from a MIB object at all: it is a name Prometheus told the
-// server it is holding for that device, so a panel naming a metric nothing
-// publishes cannot be constructed.
-//
-// What CAN still drift is the identity join a panel query is built around --
-// the catalog declares which index labels to match on, and if those disagree
-// with the labels the exporter attaches, the join matches nothing and every
-// line on the panel loses its name. That gate is
-// TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches in internal/metrics,
-// which is where the catalog is built and so where the two sides can be
-// compared without a second implementation of either.
+// The identity-join drift gate is TestCatalogIndexLabelsMatchTheLabelsTheExporterAttaches in internal/metrics.
 
-// TestIndexLabelsMatchExporter pins the label names a consumer selects a table
-// row by to the labels the exporter actually attaches.
-//
-// This is the other half of the contract: naming the metric right and then
-// filtering on a label that does not exist selects nothing, which is
-// indistinguishable from the device not reporting the object at all.
+// TestIndexLabelsMatchExporter checks consumers' index label names match the exporter's.
 func TestIndexLabelsMatchExporter(t *testing.T) {
 	store := contractStore(t)
 	samples := exported(t, store, ifInOctetsOID+".10", bgpPrefixOID+".1.4.203.0.113.202")
@@ -380,13 +351,7 @@ func TestInfoMetricNameMatchesExporter(t *testing.T) {
 	}
 }
 
-// TestInfoMetricNameMatchesExporterForATextScalar extends the contract to the
-// other kind of info metric.
-//
-// A scalar whose reading is text used to be dropped by the exporter entirely, so
-// there was nothing for a consumer's name to match and nothing to notice: a
-// missing metric and an empty one look the same from a query. Now that the
-// exporter emits one, the two sides have to keep agreeing on its name.
+// TestInfoMetricNameMatchesExporterForATextScalar extends the contract to text-scalar info metrics.
 func TestInfoMetricNameMatchesExporterForATextScalar(t *testing.T) {
 	store := contractStore(t)
 
@@ -419,12 +384,7 @@ func TestInfoMetricNameMatchesExporterForATextScalar(t *testing.T) {
 	}
 }
 
-// Entity sensor OIDs used by the sensor half of the contract: one Nexus
-// transceiver, named through ENTITY-MIB.
-//
-// The encoding is the one walked from dist-01 on 2026-08-31 -- dBm at scale
-// milli(8) with precision 0, so -7.328 dBm crosses the wire as -7328 -- so no
-// fixture in the tree asserts against an encoding no device produces.
+// Entity sensor OIDs for one Nexus transceiver: dBm at scale milli(8), precision 0, so -7.328 dBm is sent as -7328.
 const (
 	sensorValueOID     = ".1.3.6.1.4.1.9.9.91.1.1.1.1.4.3001"
 	sensorTypeOID      = ".1.3.6.1.4.1.9.9.91.1.1.1.1.1.3001"
@@ -436,12 +396,7 @@ const (
 	entitySensorType = 14 // dBm
 )
 
-// exportedSensor runs the real export path over one complete entity sensor row
-// and returns the scaled sample it produced.
-//
-// It goes through ConvertSNMPResultsWithTableIndexes for the same reason
-// exported does: the contract has to be pinned to what the exporter actually
-// emits, not to a second implementation of the naming that could drift with it.
+// exportedSensor runs the real export path over one entity sensor row and returns its scaled sample.
 func exportedSensor(t *testing.T) *metrics.Sample {
 	t.Helper()
 
@@ -472,13 +427,7 @@ func exportedSensor(t *testing.T) *metrics.Sample {
 	return nil
 }
 
-// TestEntitySensorMetricNameMatchesExporter is the drift gate for the one
-// metric family whose name is not derived from a MIB object name.
-//
-// A consumer cannot reach an entity sensor reading through MetricName: the
-// exporter names it after the unit it scaled the reading into, not after
-// entSensorValue. If these two derivations drift, every optical power panel
-// goes blank in exactly the way the rest of this contract exists to prevent.
+// TestEntitySensorMetricNameMatchesExporter checks the unit-derived entity sensor metric name.
 func TestEntitySensorMetricNameMatchesExporter(t *testing.T) {
 	sample := exportedSensor(t)
 
@@ -553,18 +502,7 @@ func TestEntitySensorMetricNameCoversEveryType(t *testing.T) {
 	}
 }
 
-// TestIdentityLabelMatchesTheLabelTheExporterAttaches pins the derivation a
-// panel names its lines by.
-//
-// The catalog says an interface row's identity lives on snmp_ifdescr_info. A
-// consumer holding the reading does not have to go and get it: the exporter
-// promotes a table's status columns onto its own readings, so the same value is
-// already there as ifdescr. promname.IdentityLabel is the step from the one
-// name to the other, and it is exact rather than a guess only because both are
-// the column name lowercased.
-//
-// If it drifts, every line of every table panel silently falls back to being
-// named after the panel -- forty interfaces all called "IF-MIB - ifInOctets".
+// TestIdentityLabelMatchesTheLabelTheExporterAttaches checks IdentityLabel names the label on the readings.
 func TestIdentityLabelMatchesTheLabelTheExporterAttaches(t *testing.T) {
 	store := contractStore(t)
 
@@ -605,12 +543,7 @@ func TestIdentityLabelMatchesTheLabelTheExporterAttaches(t *testing.T) {
 	}
 }
 
-// TestIdentityLabelRefusesANameItCannotDerive covers the input that is not an
-// info metric at all.
-//
-// A catalog row with no identity metric leaves the field empty, and a renderer
-// must not then be handed "" as a label to read -- every series carries no
-// label called "", so it would match nothing while looking like an answer.
+// TestIdentityLabelRefusesANameItCannotDerive covers a name that is not an info metric.
 func TestIdentityLabelRefusesANameItCannotDerive(t *testing.T) {
 	for _, input := range []string{"", "snmp_ifInOctets", "ifdescr_info", "not a metric"} {
 		if got := promname.IdentityLabel(input); got != "" {

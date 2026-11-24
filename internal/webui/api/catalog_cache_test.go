@@ -7,13 +7,7 @@ import (
 	"testing"
 )
 
-// Holding the catalog between reads.
-//
-// Every dashboard load used to re-read it whole: four Prometheus queries,
-// 12,324 catalog rows and 13,534 enumeration rows, decoded from JSON, per
-// click. Measured on monitor-01 at 4 to 6 seconds to open one device, most of it
-// spent re-downloading a description of the fleet that had not changed since
-// the last time anyone looked.
+// The catalog is cached between reads.
 
 // countingRead is a catalog read that records how often it was asked.
 type countingRead struct {
@@ -90,12 +84,7 @@ func TestRefreshReplacesWhatIsHeld(t *testing.T) {
 	}
 }
 
-// TestAFailedRefreshKeepsTheDescriptionsItHas is the degradation that matters.
-//
-// An unreadable catalog is not an empty one. Replacing what is held with
-// nothing would strip every panel of its units, descriptions and decoded states
-// because one query failed -- the same failure the two-read strategy avoids one
-// layer down, and it would be reintroduced here.
+// TestAFailedRefreshKeepsTheDescriptionsItHas checks a failed refresh keeps the cached catalog.
 func TestAFailedRefreshKeepsTheDescriptionsItHas(t *testing.T) {
 	source := &countingRead{result: describing("snmp_ifInOctets")}
 	cache := newCatalogCache(source.read)

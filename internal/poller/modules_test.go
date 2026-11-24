@@ -16,20 +16,9 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// This file covers the step that makes an operator's MIB assignment take
-// effect. The web UI and the poller keep separate MIB metadata stores, and the
-// web UI tells the poller only the *names* of a device's modules, so a name
-// whose objects the poller has never parsed selects nothing. That is not a
-// theoretical gap: a live install had seventeen modules assigned to a router
-// and polled 38 objects instead of 155, because its store held only the three
-// modules named in config.yaml's mib.auto_load.
-//
-// selection_parity_test.go pins those two numbers against a synthetic catalog.
-// The tests here reproduce them against the repository's real MIB files, which
-// is what makes them evidence about this bug rather than about the fixture.
+// Hydration: the poller parses the modules the web UI assigns by name, tested against the real MIB files.
 
-// coreRouterModules is the seventeen-module "Core Routers" profile, as assigned
-// to core-01 and core-02 on the install where the shortfall was measured.
+// coreRouterModules is a seventeen-module "Core Routers" profile.
 func coreRouterModules() []string {
 	return []string{
 		"CISCO-BGP4-MIB",
@@ -58,12 +47,7 @@ func autoLoadedModules() []string {
 	return []string{"SNMPv2-MIB", "IF-MIB", "CISCO-BGP4-MIB"}
 }
 
-// newHydrationLoader builds a MIB loader whose store starts out holding only
-// the auto-loaded modules, over the repository's real MIB files. extraPaths are
-// searched after the repository's own directories.
-//
-// The store lives in the test's temporary directory, so nothing on the host is
-// written and each test starts from the same state.
+// newHydrationLoader builds a loader over the real MIB files whose temporary store holds only the auto-loaded modules.
 func newHydrationLoader(t *testing.T, autoLoad []string, extraPaths ...string) *loader.Loader {
 	t.Helper()
 
@@ -154,12 +138,7 @@ func TestHydrateModulesLoadsTheModulesADeviceWasAssigned(t *testing.T) {
 	}
 }
 
-// TestHydrateModulesSkipsAModuleThatCannotBeParsed states the degradation rule:
-// one unreadable module costs that module and nothing else.
-//
-// Failing the device instead would take a router that polls sixteen of its
-// seventeen modules perfectly well and stop it polling at all, which is a worse
-// outcome than the one being fixed.
+// TestHydrateModulesSkipsAModuleThatCannotBeParsed checks one unreadable module costs only that module.
 func TestHydrateModulesSkipsAModuleThatCannotBeParsed(t *testing.T) {
 	brokenDir := t.TempDir()
 	writeFixtureMIB(t, brokenDir, "BROKEN-MIB", "BROKEN-MIB DEFINITIONS ::= BEGIN\nnot a MIB at all\n")
@@ -254,15 +233,7 @@ func TestHydrateModulesWithoutAMIBLoader(t *testing.T) {
 	})
 }
 
-// TestHydrateModulesLoadsASharedModuleOnce covers several workers arriving at
-// the same missing module at once, which is what happens when a profile is
-// applied to a fleet.
-//
-// The parser is a facade over gosmi, whose loaded modules are package-global
-// state, so this is also where an unsynchronized load would corrupt that state;
-// running the package under -race is what turns that into a failure. Equal load
-// timestamps across the callers are what shows the module was parsed once
-// rather than once per caller.
+// TestHydrateModulesLoadsASharedModuleOnce checks concurrent workers parse a shared module once.
 func TestHydrateModulesLoadsASharedModuleOnce(t *testing.T) {
 	mibLoader := newHydrationLoader(t, nil)
 	p := newHydrationPoller(t, mibLoader)

@@ -4,17 +4,7 @@ import (
 	"encoding/json"
 )
 
-// ManifestSchema is the manifest version this tool writes.
-//
-// It is unchanged from the shell tooling it replaces:
-//
-//	1: volumes[] and config_files[].
-//	2: adds trees[] - host directories carried as members. A schema-1 restore
-//	   would ignore trees[] entirely and report "restore complete" having left
-//	   the MIB source tree unrestored, so it must refuse the archive instead.
-//
-// Archives written at schema 1 are still restored; they simply carry no trees.
-// Bump this only for a change a previous restore cannot understand.
+// ManifestSchema is the manifest version written: 1 has volumes[] and config_files[], 2 adds trees[].
 const ManifestSchema = 2
 
 // ManifestFile is the manifest's name inside a backup directory.
@@ -30,10 +20,7 @@ const ConsistencyCold = "cold-offline"
 // ToolName identifies this tool in the manifests it writes.
 const ToolName = "netmon-backup"
 
-// Manifest describes everything a backup directory holds.
-//
-// The JSON field names are the schema, and they match what scripts/backup.sh
-// wrote, so an archive from either tool restores with either.
+// Manifest describes a backup directory; the JSON field names are the schema.
 type Manifest struct {
 	SchemaVersion int          `json:"schema_version"`
 	BackupName    string       `json:"backup_name"`
@@ -78,9 +65,6 @@ type VolumeInfo struct {
 }
 
 // TreeInfo describes one host directory carried as an archive member.
-//
-// Host trees are recorded apart from volumes so that nothing in a recovery can
-// mistake a path on the operator's machine for a Docker volume.
 type TreeInfo struct {
 	Component   Component `json:"component"`
 	SourcePath  string    `json:"source_path"`
@@ -113,10 +97,6 @@ type HostInfo struct {
 }
 
 // Member is the integrity record shared by volume and tree members.
-//
-// Verification runs one loop over one list of these. Keeping volumes and trees
-// in separate manifest arrays stops a host path being mistaken for a volume; it
-// must not also mean one of them skips a check.
 type Member struct {
 	Name    string
 	SHA256  string
@@ -167,9 +147,6 @@ func (m *Manifest) Image(service string) (ImageInfo, bool) {
 }
 
 // decodeManifest parses and checks a manifest read from an archive.
-//
-// The checks are the ones a restore depends on being true before it reasons
-// about the archive at all; everything finer is a member check.
 func decodeManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {

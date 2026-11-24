@@ -1,19 +1,4 @@
-// Package metrics turns SNMP readings into Prometheus series.
-//
-// It does three things that have to agree with each other. It names a sample
-// after the MIB object it instantiates and puts the row index in labels
-// (name_index.go, table_index_cache.go); it scales the readings whose raw
-// integer is not the measurement, principally entity sensors (entity_sensor.go);
-// and it publishes a catalog describing what every metric it emits means
-// (catalog.go), so a consumer can render from Prometheus alone without parsing
-// a MIB.
-//
-// The catalog exists because remote write cannot carry metric metadata: the v1
-// protocol this package speaks has a Metadata field that Prometheus's v1
-// receive path never reads. Everything a renderer needs therefore travels as
-// ordinary series, and every one of them is global -- the catalog carries no
-// device label, so its size is the number of distinct metrics published and
-// not a multiple of the fleet.
+// Package metrics turns SNMP readings into Prometheus series: MIB-derived names and index labels, scaled sensors, and the metric catalog.
 package metrics
 
 import (
@@ -53,26 +38,14 @@ type Exporter interface {
 	Close() error
 }
 
-// MIBMetadataRefresher is implemented by exporters whose metric names and index
-// labels derive from a MIB store that can change after construction.
-//
-// It is deliberately not part of Exporter. Exporting samples and tracking MIB
-// metadata are separate capabilities: an exporter with no MIB store -- a
-// file or stdout sink, say -- has nothing to refresh, and would have to carry a
-// no-op method purely to satisfy the interface. Callers that can trigger a
-// refresh type-assert for it, which is how the standard library treats optional
-// capabilities such as http.Flusher.
+// MIBMetadataRefresher is an optional capability of exporters whose names derive from a changing MIB store.
 type MIBMetadataRefresher interface {
 	// RefreshMIBMetadata rebuilds the exporter's MIB-derived state from the
 	// current contents of its MIB store.
 	RefreshMIBMetadata() error
 }
 
-// DeviceForgetter is implemented by exporters that keep per-device state
-// between polls -- the friendly names a device's status columns reported, say
-// -- and must drop it when the device is no longer polled, or it would be held
-// for every device ever seen. Like MIBMetadataRefresher it is an optional
-// capability: the poller type-asserts for it when it retires a device.
+// DeviceForgetter is an optional capability of exporters that keep per-device state, called when a device is retired.
 type DeviceForgetter interface {
 	// ForgetDevice drops everything the exporter holds for the device. It is
 	// called once nothing more can be exported for it.
@@ -93,11 +66,7 @@ var systemInfoOIDs = map[string]string{
 	"1.3.6.1.2.1.1.6.0":  "sys_location",  // sysLocation (without leading dot)
 }
 
-// ConvertSNMPResultsToSamples converts SNMP results to metric samples.
-//
-// It has no access to MIB metadata, so every sample is named after its raw
-// instance OID. Use ConvertSNMPResultsWithTableIndexes, which resolves names
-// against the MIB store, for anything exported to Prometheus.
+// ConvertSNMPResultsToSamples converts SNMP results to raw-OID-named samples; use ConvertSNMPResultsWithTableIndexes for Prometheus.
 func ConvertSNMPResultsToSamples(deviceName string, results []*snmp.Result, extraLabels map[string]string) []*Sample {
 	samples := make([]*Sample, 0, len(results))
 	systemInfo := make(map[string]string) // Collect system text values

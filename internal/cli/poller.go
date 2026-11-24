@@ -239,10 +239,7 @@ func (r learnedTableRow) displayName() string {
 	return firstNonEmpty(r.TableName, r.Key, r.EntryOID)
 }
 
-// learnedTableRows flattens the learner's map into the order the reader sees,
-// which is by displayed name. Sorting before the filter runs keeps --limit on
-// the same tables between refresh frames instead of whichever ones the map
-// iteration happened to yield.
+// learnedTableRows sorts learned tables by displayed name so --limit is stable across refreshes.
 func learnedTableRows(tables map[string]learnedTable) []learnedTableRow {
 	rows := make([]learnedTableRow, 0, len(tables))
 	for key, table := range tables {

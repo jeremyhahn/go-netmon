@@ -11,15 +11,7 @@ import (
 	webuistorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// Page describes which slice of a list a response carries, and how big the list
-// it was cut from was.
-//
-// It exists because a paged answer is dishonest without it. A client that
-// receives fifty objects cannot tell whether the module defines fifty or ten
-// thousand, and one that receives fifty matches cannot tell whether its search
-// found fifty or three hundred. Both numbers are reported, so "51-100 of 293
-// matching, 10,539 in the module" is answerable without the client counting
-// anything itself.
+// Page describes the slice a response carries and the sizes of the list it came from.
 type Page struct {
 	// Total is how many records the endpoint holds before any narrowing: the
 	// module's whole object count, or the whole MIB catalog. It does not move
@@ -39,14 +31,7 @@ type Page struct {
 	Limit  int `json:"limit"`
 }
 
-// listQuery is the narrowing every list endpoint accepts in its query string.
-//
-// Paging is offset and limit rather than a cursor because the web UI needs to
-// jump to an arbitrary page, not only to step forward: page N is offset
-// (N-1)*limit, which a cursor cannot express. The cost of that choice is that
-// the list has to be ordered the same way on every request, which is why every
-// endpoint that takes a listQuery pages an already-ordered list and never
-// re-orders it here.
+// listQuery is the search, offset and limit every list endpoint accepts; lists must be ordered stably.
 type listQuery struct {
 	// Search is the folded search term, "" for no search.
 	Search string
@@ -64,10 +49,7 @@ type listQuery struct {
 	narrowed bool
 }
 
-// parseListQuery reads the search and paging parameters from a query string.
-//
-// It runs before the handler touches the MIB store, so a malformed limit costs
-// a parse rather than a walk of ten thousand objects.
+// parseListQuery reads the search and paging parameters, before any store access.
 func parseListQuery(values url.Values) (listQuery, error) {
 	var q listQuery
 
@@ -115,11 +97,7 @@ func queryCount(values url.Values, name string) (int, bool, error) {
 	return n, true, nil
 }
 
-// queryFlag reads a boolean parameter, reporting whether it was supplied.
-//
-// A value that is not a boolean is refused rather than read as false: a client
-// that sent "pollable=yes" asked a question this server did not answer, and
-// silently returning everything would look like an answer.
+// queryFlag reads a boolean parameter, refusing a non-boolean value.
 func queryFlag(values url.Values, name string) (bool, bool, error) {
 	if !values.Has(name) {
 		return false, false, nil
@@ -135,15 +113,7 @@ func queryFlag(values url.Values, name string) (bool, bool, error) {
 	return flag, true, nil
 }
 
-// selectPage narrows an ordered list to the slice a query asks for, and reports
-// the counts that keep that slice honest.
-//
-// The order it is given is the order it returns: paging is only meaningful over
-// a list whose order does not change between requests, and each endpoint has
-// already decided what that order is. A nil keep means the query narrows
-// nothing, in which case the list is passed through untouched — the same slice,
-// so a request with no parameters is answered with exactly what it was answered
-// with before.
+// selectPage narrows an ordered list to the requested page and reports the counts; a nil keep passes it through.
 func selectPage[T any](items []T, q listQuery, keep func(T) bool) ([]T, *Page, error) {
 	matched := items
 	if keep != nil {
@@ -155,10 +125,7 @@ func selectPage[T any](items []T, q listQuery, keep func(T) bool) ([]T, *Page, e
 		}
 	}
 
-	// An offset past the end is a page that does not exist. Answering it with
-	// an empty list would show an operator a blank table and let them believe
-	// the module is empty; saying so is the only useful answer. Offset zero is
-	// never out of range: page one of an empty result is a legitimate request.
+	// An offset past the end is an error; offset zero never is.
 	if q.Offset > 0 && q.Offset >= len(matched) {
 		return nil, nil, &PageRangeError{
 			Offset: q.Offset, Limit: q.Limit, Matched: len(matched),
@@ -266,12 +233,7 @@ type mibQuery struct {
 	tag string
 }
 
-// parseMIBQuery reads the narrowing for the module catalog.
-//
-// The pre-existing "filter=available" parameter is deliberately not part of it:
-// it is read where it always was, and does not by itself make a request a
-// narrowed one, so the web UI and CLI calls that already use it are answered
-// exactly as before.
+// parseMIBQuery reads the module catalog narrowing; filter=available is read separately.
 func parseMIBQuery(values url.Values) (mibQuery, error) {
 	list, err := parseListQuery(values)
 	if err != nil {
@@ -298,16 +260,7 @@ func (q mibQuery) keep() func(webuistorage.MIB) bool {
 	}
 }
 
-// respondQueryError answers a refused narrowing.
-//
-// Both faults it can report are the client's: it asked for something this
-// server does not offer, or for a page that does not exist. Neither is a server
-// fault and neither must be reported as one, because a 500 sends an operator to
-// the server logs for a typo in a URL.
-//
-// Parsing a query and paging a list produce nothing else, so the handlers that
-// only do those two things can call this with any error they get. A handler
-// that also does other work asks isQueryFault first.
+// respondQueryError answers a refused narrowing as a client error.
 func respondQueryError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusBadRequest)
 }

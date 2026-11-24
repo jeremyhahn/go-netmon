@@ -8,34 +8,11 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// The parser against vendor dialects found on real networks.
-//
-// Everything else here parses Cisco and IETF modules, which are the best-formed
-// MIBs in existence. Real networks do not consist only of those: they include
-// ATEN KVM switches, Raritan KVM switches and Eaton UPSs, and both parser
-// defects found so far came from that direction -- a dependency cached as failed left ATEN-PRODUCTS-MIB
-// with 35 objects that all had empty OIDs, and a malformed IMPORTS list made
-// KNGeneric-MIB store 159 records for 80 objects.
-//
-// Those are fixed and a 170-module set renders, but nothing in
-// `make test` would have caught either one, and nothing would catch the next
-// gosmi upgrade breaking a dialect. Each family below is pinned to the shape it
-// is known to produce.
-//
-// The counts are lower bounds so that a richer MIB file does not fail the
-// suite, while losing objects does. The OID assertion is exact and is the
-// important one: an object with no numeric OID cannot be polled, and a module
-// full of them is precisely what a silently degraded parse looks like.
+// The parser against vendor MIB dialects (ATEN, Raritan, Eaton); object counts are lower bounds, OID resolution is exact.
 
 // vendorModule is one dialect and what it is known to yield.
 type vendorModule struct {
-	// file is the MIB relative to mibs/, and module is the name it declares.
-	//
-	// They differ, which is the point of naming both: gosmi identifies a module
-	// by its file name, so a vendor file shipped as
-	// "KNGeneric-MIB-20200526.MIB" does not load as KNGeneric-MIB until it is
-	// stored under its declared name. That is what the importer does, and this
-	// mirrors it rather than pretending the raw file works.
+	// file is the MIB relative to mibs/, module the name it declares; gosmi loads by file name.
 	file   string
 	module string
 
@@ -47,9 +24,7 @@ type vendorModule struct {
 
 var vendorDialects = []vendorModule{
 	{
-		// The ATEN registration tree: all structure, nothing to poll. It is here
-		// because it is what ATEN-PRODUCTS-MIB imports, and the defect it
-		// exposed was a dependency that failed to resolve.
+		// The ATEN registration tree, which ATEN-PRODUCTS-MIB imports.
 		file: "vendor/KN-MIB-File-v4.5.445/ATEN-SMI.mib", module: "ATEN-SMI",
 		minObjects: 4,
 	},
@@ -92,11 +67,7 @@ func storeUnderModuleName(t *testing.T, dir string, spec vendorModule) {
 
 // TestVendorDialectsParse is the regression net for those vendor dialects.
 func TestVendorDialectsParse(t *testing.T) {
-	// Every dialect is staged together, under its declared name, because that
-	// is the state the importer leaves the store in and because these modules
-	// import one another: ATEN-PRODUCTS-MIB staged without ATEN-SMI beside it
-	// parses to nothing at all, which is the shape of the very defect this file
-	// exists to catch.
+	// Stage every dialect together under its declared name, as the importer does.
 	staged := t.TempDir()
 	for _, spec := range vendorDialects {
 		storeUnderModuleName(t, staged, spec)
@@ -154,10 +125,7 @@ func TestVendorDialectsParse(t *testing.T) {
 	}
 }
 
-// TestUPSMIBCarriesItsUnits covers the Eaton UPSs, whose whole value is
-// quantities: volts, minutes, degrees, percent. A parse that loses UNITS still
-// produces numbers, and a dashboard then plots them without saying what they
-// are -- which is a number, not a reading.
+// TestUPSMIBCarriesItsUnits checks the Eaton UPS MIB keeps its UNITS.
 func TestUPSMIBCarriesItsUnits(t *testing.T) {
 	oids := parseWith(t, "UPS-MIB", allMIBDirs()...)
 
@@ -188,12 +156,7 @@ func TestUPSMIBCarriesItsUnits(t *testing.T) {
 	}
 }
 
-// TestAVendorFileUnderTheWrongNameIsRefused pins the constraint the importer
-// exists to satisfy, so it cannot be forgotten.
-//
-// gosmi identifies a module by its file name, not by the name inside it. A
-// vendor file shipped as "KNGeneric-MIB-20200526.MIB" therefore does not load
-// as KNGeneric-MIB, and the failure is a load error rather than a wrong parse.
+// TestAVendorFileUnderTheWrongNameIsRefused: gosmi identifies a module by file name, so a misnamed file fails to load.
 func TestAVendorFileUnderTheWrongNameIsRefused(t *testing.T) {
 	p := New(allMIBDirs()...)
 	if err := p.Init(); err != nil {

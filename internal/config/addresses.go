@@ -25,12 +25,7 @@ const (
 	KeyDashboardPromURL = "dashboard.prometheus_url"
 )
 
-// The defaults layer. These are the only place an address literal lives; every
-// listener and dialer takes the resolved value from the configuration.
-//
-// 9100 is what prometheus.yml scrapes, what docker-compose publishes and what
-// the shipped configs set, so a deployment that omits the key listens where
-// something is looking.
+// Default addresses; 9100 matches prometheus.yml, docker-compose and the shipped configs.
 const (
 	DefaultAPIListen         = "0.0.0.0:8080"
 	DefaultMetricsListen     = "0.0.0.0:9100"

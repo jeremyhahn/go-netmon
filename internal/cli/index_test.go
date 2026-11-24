@@ -7,12 +7,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// The tests here cover how a series' row is named. The exporter decodes a
-// table's index into labels and attaches enrichment labels beside them —
-// ifname, ifdescr, ifalias, ifadminstatus, ifoperstatus, iftype — and the CLI
-// has to render the first and ignore the second without keeping a list of the
-// second. It does that from the MIB's INDEX clause, which is what these tests
-// pin.
+// A series' row is named from the MIB's INDEX clause; enrichment labels are ignored.
 
 const (
 	ifEntryOID     = ".1.3.6.1.2.1.2.2.1"
@@ -65,8 +60,7 @@ func TestDescribeRendersDecodedIndexes(t *testing.T) {
 			name: "a single-column index renders as the bare value",
 			labels: series("snmp_ifInOctets", ifInOctetsOID+".10", map[string]string{
 				"ifindex": "10",
-				// Enrichment, all of it. None of these is in ifEntry's INDEX
-				// clause, so none of them may reach the rendered name.
+				// Enrichment labels are not in ifEntry's INDEX clause and must not reach the name.
 				"ifname": "GigabitEthernet0/0", "ifdescr": "GigabitEthernet0/0",
 				"ifalias": "uplink", "ifadminstatus": "up", "ifoperstatus": "up",
 				"iftype": "ethernetCsmacd",

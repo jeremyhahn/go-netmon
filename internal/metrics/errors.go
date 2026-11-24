@@ -80,10 +80,7 @@ func (e *SendError) Unwrap() error {
 	return e.Cause
 }
 
-// ClosedError reports an exporter asked to accept samples after it has been
-// closed. Its sender has stopped, so anything accepted now would sit in a queue
-// nothing can drain -- silently, which is the one thing this package must never
-// do with data it has said yes to.
+// ClosedError reports samples offered to a closed exporter.
 type ClosedError struct {
 	Samples int
 }
@@ -92,25 +89,7 @@ func (e *ClosedError) Error() string {
 	return fmt.Sprintf("metrics: exporter is closed; refused %d sample(s) rather than queue them where nothing can send them", e.Samples)
 }
 
-// DroppedError reports samples discarded before they were ever written. It is
-// what a caller waiting on a batch is told when its batch never reached the
-// endpoint, and what Close returns when shutdown gave up on one.
-//
-// Reason is why, and it is the same vocabulary as
-// gonetmon_export_dropped_samples_total{reason}: a reader who finds one of
-// these in a log and that counter on a dashboard is looking at the same event
-// described the same way.
-//
-// It was not carried, and the message named "bound queue memory" whatever had
-// actually happened -- so a poll superseded by a newer one, or a batch the
-// endpoint refused outright, reported backpressure. That is the wrong fault,
-// stated confidently, in a package whose whole claim is that nothing leaves
-// without something observable saying so. Saying so incorrectly is worse than
-// the silence it replaced, because it is acted on.
-//
-// Reason is empty where a discard genuinely has more than one -- a Flush
-// waiting behind several, or a shutdown that gave up on a mixed queue -- and
-// the message then says only what is known rather than picking one.
+// DroppedError reports samples discarded before writing; Reason matches gonetmon_export_dropped_samples_total and is empty when mixed.
 type DroppedError struct {
 	Samples int
 	Reason  string
@@ -136,16 +115,7 @@ func (e *RemoteWriteError) Error() string {
 	return fmt.Sprintf("metrics: remote write to %s failed with status %d: %s", e.URL, e.StatusCode, e.Body)
 }
 
-// The errors below all report one thing: an entity sensor reading that cannot
-// be turned into the quantity it represents. Each carries the reason label it
-// is counted under, so a dropped reading is visible in
-// gonetmon_entity_sensor_dropped_total broken down by cause rather than as an
-// unexplained gap in a graph.
-//
-// They are separate types rather than one type with a code because callers
-// distinguish them: a bad scale is a broken agent, a missing metadata column
-// is a MIB module that was never assigned to the device, and a non-ok status
-// is a sensor correctly reporting that it has nothing to say.
+// Entity sensor conversion errors, one type per cause, each carrying its gonetmon_entity_sensor_dropped_total reason.
 
 // sensorDropError is implemented by every error that ends a sensor reading, so
 // the conversion path can label its counter without a type switch that has to
@@ -221,12 +191,7 @@ func (e *SensorMalformedValueError) Error() string {
 // DropReason implements sensorDropError.
 func (e *SensorMalformedValueError) DropReason() string { return "malformed_value" }
 
-// SensorMetadataError reports a sensor reading whose type, scale or precision
-// the device has not reported, leaving nothing to scale the reading by.
-//
-// In practice this means the sensor table was read without its metadata
-// columns -- a device assigned no entity sensor MIB module, or polled for the
-// value column alone.
+// SensorMetadataError reports a reading whose type, scale or precision the device has not reported.
 type SensorMetadataError struct {
 	Device  string
 	Index   string
@@ -240,10 +205,7 @@ func (e *SensorMetadataError) Error() string {
 // DropReason implements sensorDropError.
 func (e *SensorMetadataError) DropReason() string { return "missing_" + e.Missing }
 
-// SensorStatusError reports a sensor whose operational status is not ok(1).
-// unavailable(2) means the agent cannot presently read the sensor and
-// nonoperational(3) means it believes the sensor is broken; in both cases the
-// value column still holds a number, and that number is not a measurement.
+// SensorStatusError reports a sensor whose status is not ok(1), so its value is not a measurement.
 type SensorStatusError struct {
 	Device string
 	Index  string
@@ -256,16 +218,7 @@ func (e *SensorStatusError) Error() string {
 
 // DropReason implements sensorDropError.
 func (e *SensorStatusError) DropReason() string {
-	// Only the statuses both MIBs declare get their own reason; everything
-	// else collapses to one label.
-	//
-	// This value is a Prometheus label on a counter and would otherwise come
-	// straight from an Integer32 the device chose, so an agent answering a
-	// fresh status per poll could mint unbounded label values -- from
-	// untrusted input, on the very metric that exists to report untrusted
-	// input. It also read "status_status_9", because Status.String() already
-	// prefixes an undeclared value. The exact number stays in Error(), which
-	// is where someone diagnosing one sensor looks.
+	// Only statuses both MIBs declare get their own reason; others share one label to bound cardinality.
 	switch e.Status {
 	case SensorStatusUnavailable, SensorStatusNonoperational:
 		return "status_" + e.Status.String()

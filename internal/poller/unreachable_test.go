@@ -20,16 +20,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// These tests drive a worker against the in-process SNMPv2c agent in
-// internal/testsupport, whose SetSilent and SilenceSubtree switches are a
-// device that has stopped answering and a device with one wedged branch of its
-// MIB. Nothing here mocks the poller's own code, and nothing leaves the
-// machine.
-//
-// The SNMP budget is milliseconds rather than the whole seconds config.yaml
-// deals in, because a test that waited out a production timeout would be as
-// slow as the bug it covers. The budget is the only thing scaled down: the
-// thresholds, the schedule and the code under test are the shipped ones.
+// Workers run against the in-process SNMPv2c agent; only the SNMP time budget is scaled down.
 const (
 	testSNMPBudget  = 60 * time.Millisecond
 	testPollTimeout = 5 * time.Second
@@ -140,13 +131,7 @@ func nextResult(t *testing.T, results <-chan *PollResult) *PollResult {
 	}
 }
 
-// TestSilentDeviceAbandonsTheCycle is the measured bug: a device that answers
-// nothing used to be asked for every one of its selected objects, each at the
-// cost of a full retry budget, so a cycle never finished at all.
-//
-// The assertion is on the agent's request count rather than on elapsed time:
-// what was wrong was the number of requests sent to a device that was never
-// going to answer any of them.
+// TestSilentDeviceAbandonsTheCycle checks a silent device is not asked for every object.
 func TestSilentDeviceAbandonsTheCycle(t *testing.T) {
 	t.Parallel()
 
@@ -230,12 +215,7 @@ func TestTheSilentDeviceIsProbedOnlyOnce(t *testing.T) {
 	}
 }
 
-// TestPartiallyAnsweringDeviceKeepsCollecting is the regression that matters
-// most here. A device that serves its system group and times out on a subtree
-// it half implements is healthy: it must keep its normal schedule, must not be
-// reported unreachable, and must keep collecting everything it does answer.
-// Getting this wrong stops collecting real data, which is worse than the bug
-// this change fixes.
+// TestPartiallyAnsweringDeviceKeepsCollecting checks a device timing out on one subtree stays reachable and collected.
 func TestPartiallyAnsweringDeviceKeepsCollecting(t *testing.T) {
 	t.Parallel()
 
@@ -435,12 +415,7 @@ func TestFirstPollFailureIsReportedAsAFailedPoll(t *testing.T) {
 		t.Error("the failed poll carries no timestamp, so it reads as never having happened")
 	}
 
-	// All three are readable the moment the result arrives, with no wait: the
-	// worker records the cycle's outcome and the retry it earned in one step,
-	// before it reports the result. This used to need awaitScheduledRetry,
-	// because the retry was scheduled after poll returned and NextPoll read as
-	// the zero time until then -- the window that made
-	// TestDeviceStatusReportsAnUnreachableDevice load-dependent.
+	// The worker records the outcome and its retry before reporting the result.
 	status, polling := p.WorkerStatus("bastion")
 	if !polling {
 		t.Fatal("the poller has no worker for bastion, which it was just given")
@@ -455,12 +430,7 @@ func TestFirstPollFailureIsReportedAsAFailedPoll(t *testing.T) {
 		t.Error("WorkerStatus reports no consecutive failures for a device that answered nothing")
 	}
 
-	// The claim is that the failed poll earned a retry, so the retry must fall
-	// after the poll that earned it. Comparing against time.Now() instead would
-	// assert something about the runner: the worker schedules NextPoll one poll
-	// interval out, so a test that stalls longer than that between the result
-	// and this line reports a bug that is not there. That is what turned this
-	// test red on a loaded CI host.
+	// The retry must fall after the poll that earned it; time.Now() would make this load-dependent.
 	if !status.NextPoll.After(result.Timestamp) {
 		t.Errorf("WorkerStatus.NextPoll = %s, want a retry later than the poll that failed at %s",
 			status.NextPoll, result.Timestamp)
@@ -581,19 +551,7 @@ func TestPollResultIsDroppedRatherThanStallingTheLoop(t *testing.T) {
 	}
 }
 
-// TestARetiredPollDoesNotPublishReachability is the out-of-order guard at
-// the line above the export.
-//
-// gonetmon_device_unreachable is labeled by device NAME, and a device update
-// keeps the name: it is a remove followed by an add. A retiring worker that
-// finished its poll after the replacement started would publish "unreachable"
-// over the replacement's reading of the very same device, and a healthy box
-// would show as down until the next poll corrected it.
-//
-// Driven at the worker rather than through the poller, because the window is
-// between the retired poll's publish and the worker's own deferred forget --
-// which is too narrow to observe from outside, and made an earlier version of
-// this test pass with the guard moved below the health commit.
+// TestARetiredPollDoesNotPublishReachability checks a retired worker does not publish over its same-name replacement.
 func TestARetiredPollDoesNotPublishReachability(t *testing.T) {
 	w, results := pollingWorker(t, silentAgent(t), time.Second, scalar(sysUpTimeOID))
 
@@ -617,14 +575,7 @@ func TestARetiredPollDoesNotPublishReachability(t *testing.T) {
 	}
 }
 
-// publishedReachability reports the gonetmon_device_unreachable value for one
-// device, and whether the series exists at all.
-//
-// It gathers rather than calling WithLabelValues, because WithLabelValues
-// CREATES the child if it is missing and initializes it to zero. Reading the
-// gauge that way manufactures the series being asked about: an earlier version
-// of the test below used it, and passed against the very code it was meant to
-// catch.
+// publishedReachability gathers the gauge for one device and reports whether the series exists.
 func publishedReachability(t *testing.T, device string) (float64, bool) {
 	t.Helper()
 
@@ -647,19 +598,7 @@ func publishedReachability(t *testing.T, device string) (float64, bool) {
 	return 0, false
 }
 
-// TestAHealthyDeviceRepublishesItsReachability is what makes the same-name
-// gauge deletion survivable.
-//
-// A worker forgets its device by NAME as it exits, and a device update keeps
-// the name -- so a retiring worker can delete the series its replacement has
-// already published. That race is real and is tracked separately; this is the
-// property that stops it being permanent.
-//
-// Publishing only on the transition out of silence made it permanent: a healthy
-// device sits at zero consecutive failures forever, so the transition never
-// comes round again and the series stays absent until the device breaks and
-// recovers. An alert watching gonetmon_device_unreachable would have nothing to
-// watch, silently.
+// TestAHealthyDeviceRepublishesItsReachability checks a healthy device republishes its gauge every poll.
 func TestAHealthyDeviceRepublishesItsReachability(t *testing.T) {
 	agent := answeringAgent(t)
 	w, results := pollingWorker(t, agent.Addr(), time.Second, scalar(sysUpTimeOID))
@@ -692,19 +631,7 @@ func TestAHealthyDeviceRepublishesItsReachability(t *testing.T) {
 	}
 }
 
-// TestRemovalWaitsForACommitInFlight closes the window between deciding a
-// device is still ours and publishing for it.
-//
-// retired() used to be asked, and then reachability, the export and the report
-// followed. A removal landing in between was not seen: the retired worker wrote
-// its gauge over the replacement's and handed the exporter samples stamped
-// BEFORE the replacement's, which is the out-of-order remote write this branch
-// exists to stop.
-//
-// The window is sub-millisecond, so running device edits and counting proves
-// nothing about it -- a clean result is what you would expect either way. This
-// forces the interleaving instead: with the commit lock held, a removal must
-// wait, which is what makes the check and the publish one step.
+// TestRemovalWaitsForACommitInFlight checks a removal waits while the commit lock is held.
 func TestRemovalWaitsForACommitInFlight(t *testing.T) {
 	p := NewWithExporter(lifecycleConfig(), nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -803,16 +730,7 @@ func (e *blockingExporter) Flush(context.Context) error { return nil }
 
 func (e *blockingExporter) Close() error { return nil }
 
-// TestACommitInProgressHoldsOffRemoval is the half of the barrier that lives in
-// the COMMIT rather than in RemoveDevice.
-//
-// RemoveDevice taking the lock is only worth anything if the commit holds it
-// for the whole of its publishing. A test that takes the lock itself proves the
-// first and says nothing about the second -- which is how an earlier version of
-// this passed with the lock removed from commit entirely.
-//
-// Here the commit is stopped in the middle of its export, where it must already
-// hold the lock, and the removal barrier is shown to be unavailable.
+// TestACommitInProgressHoldsOffRemoval stops a commit mid-export and checks the removal barrier is unavailable.
 func TestACommitInProgressHoldsOffRemoval(t *testing.T) {
 	w, results := pollingWorker(t, silentAgent(t), time.Second, scalar(sysUpTimeOID))
 	exporter := &blockingExporter{
@@ -853,26 +771,14 @@ func TestACommitInProgressHoldsOffRemoval(t *testing.T) {
 	<-results
 }
 
-// TestRemovalDuringAFailingClientInitPublishesNothing covers the path the
-// commit invariant did not.
-//
-// Client initialization failing was handled directly -- health, then report --
-// outside commit. So a removal landing while it failed passed awaitCommit and
-// returned, and the retired worker published an unreachable gauge and a result
-// anyway. Its deferred forget could then delete a same-name replacement's
-// series.
-//
-// That is the original out-of-order defect, alive through an error path. A
-// partial invariant is worse than none: the comments and tests assert that
-// every poll outcome is atomic with removal, so the next reader stops looking.
+// TestRemovalDuringAFailingClientInitPublishesNothing covers the client-init failure path.
 func TestRemovalDuringAFailingClientInitPublishesNothing(t *testing.T) {
 	// An address no client can be built for, so ensureClient fails every time.
 	w, results := pollingWorker(t, "", time.Second, scalar(sysUpTimeOID))
 
 	deviceUnreachable.WithLabelValues(w.device.Name).Set(0)
 
-	// Removed before the poll runs, which is what a poll finishing after its
-	// device was replaced looks like from here.
+	// Removed before the poll runs.
 	w.stop()
 	w.poll(context.Background())
 
@@ -888,30 +794,9 @@ func TestRemovalDuringAFailingClientInitPublishesNothing(t *testing.T) {
 	}
 }
 
-// TestAnExitingWorkerDoesNotDeleteTheReplacementsSeries is the lifecycle race,
-// not the repair for it.
-//
-// A device update is a remove followed by an add, so the replacement worker is
-// usually already publishing by the time the old goroutine reaches its exit. A
-// worker that forgot its device by NAME on the way out therefore deleted the
-// REPLACEMENT's series -- and a missing series is worse than a stale one,
-// because an alert with nothing to evaluate does not fire. Republishing on
-// every poll repairs it, but the next poll can be a whole backoff interval
-// away, and that gap is silent.
-//
-// The existing test covered the repair: delete, poll, see it return. This
-// covers the interleaving, by publishing while the old worker is still inside a
-// poll it cannot finish quickly.
+// TestAnExitingWorkerDoesNotDeleteTheReplacementsSeries publishes while the old worker is mid-poll, then stops it.
 func TestAnExitingWorkerDoesNotDeleteTheReplacementsSeries(t *testing.T) {
-	// The ordering is built rather than timed. The worker polls once and then
-	// parks on its timer; the replacement publishes while it is parked; only
-	// then is it stopped. So the publish provably precedes the exit, which is
-	// the interleaving under test.
-	//
-	// An earlier version stopped the worker first and slept, betting the poll
-	// would still be running. It was not -- the worker had already exited, so
-	// the publish came after the deletion and the test passed with the defect
-	// restored.
+	// The worker polls once and parks; the replacement publishes; then the worker is stopped.
 	w, results := pollingWorker(t, silentAgent(t), time.Hour, scalar(sysUpTimeOID))
 	t.Cleanup(func() { deviceUnreachable.DeleteLabelValues(w.device.Name) })
 
@@ -941,14 +826,7 @@ func TestAnExitingWorkerDoesNotDeleteTheReplacementsSeries(t *testing.T) {
 	}
 }
 
-// TestStoppingThePollerDropsWhatItPublished is the other end of moving cleanup
-// off the worker.
-//
-// A worker no longer forgets its device on the way out, because the name is not
-// its to delete -- a replacement may already be publishing under it. Stopping
-// the poller therefore has to do it, or every device it was watching keeps a
-// reachability series that nothing will ever update again: a gauge frozen at
-// whatever it last read, which is worse than absent because it looks live.
+// TestStoppingThePollerDropsWhatItPublished checks Stop deletes every device's reachability series.
 func TestStoppingThePollerDropsWhatItPublished(t *testing.T) {
 	p := NewWithExporter(lifecycleConfig(), nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())

@@ -20,22 +20,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// gosmiLibrary serializes every use of gosmi.
-//
-// gosmi keeps its loaded modules and search path in package-level state, so a
-// Parser is a handle on one shared library rather than an independent object.
-// Two things follow, and neither was being handled:
-//
-//   - Close calls gosmi.Exit, which discards every loaded module. The web UI
-//     builds a short-lived Parser to generate a dashboard and closes it when
-//     done, so a dashboard generated while a MIB was importing could empty the
-//     library underneath the import.
-//   - Loading a module caches the outcome, including failure. A module imported
-//     before the module it IMPORTS therefore stays unresolved for the life of
-//     the process; see reloadLocked.
-//
-// Every exported method takes this lock and calls an unexported *Locked helper,
-// so the lock is taken exactly once per call.
+// gosmiLibrary serializes every use of gosmi's package-global state; exported methods lock once and call *Locked helpers.
 var gosmiLibrary sync.Mutex
 
 // Parser handles MIB parsing using gosmi
@@ -63,9 +48,7 @@ func (p *Parser) Init() error {
 func (p *Parser) initLocked() {
 	gosmi.Init()
 
-	// Init seeds the path from every existing directory in SMIPATH. Replace
-	// it, so the parser searches exactly the directories it was given and a
-	// module resolves the same way whatever environment the process inherited.
+	// Replace the SMIPATH-seeded path so only the given directories are searched.
 	gosmi.SetPath(strings.Join(p.paths, string(os.PathListSeparator)))
 }
 
@@ -77,15 +60,7 @@ func (p *Parser) Close() {
 	gosmi.Exit()
 }
 
-// Reload discards every loaded module and reopens the library.
-//
-// Loading a module caches its outcome, and a failed lookup is cached like any
-// other. A module imported before the module it IMPORTS therefore keeps
-// resolving to nothing for the life of the process, however many times it is
-// re-imported: the file on disk is right, the cache is not.
-//
-// This is the way out. It costs a re-read of every module the next time one is
-// needed, so it belongs on the import path and nowhere near polling.
+// Reload discards every loaded module and reopens the library, clearing cached failures; for the import path, not polling.
 func (p *Parser) Reload() {
 	gosmiLibrary.Lock()
 	defer gosmiLibrary.Unlock()
@@ -109,11 +84,7 @@ func (p *Parser) LoadModule(moduleName string) (*mib.ModuleInfo, error) {
 
 // loadModuleLocked is LoadModule for a caller already holding the lock.
 func (p *Parser) loadModuleLocked(moduleName string) (*mib.ModuleInfo, error) {
-	// Load the module. The argument is a file name or a module name; the
-	// name gosmi reports back is the one the file declares, which differs
-	// from the argument when a file is not named after its module
-	// (iDRAC-SMIv2.mib declaring IDRAC-MIB-SMIv2). Every later lookup must use
-	// the declared name.
+	// Load by file or module name; later lookups use the name the file declares.
 	declared, err := gosmi.LoadModule(moduleName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load module %s: %w", moduleName, err)
@@ -156,20 +127,13 @@ type ParseReport struct {
 	// Module is the module the report is about.
 	Module string
 
-	// Unresolved names the objects that came out with no OID. An object
-	// without one cannot be polled, stored under its OID, or named in a
-	// metric, so it is discarded rather than kept as a record that looks like
-	// an object and behaves like nothing.
+	// Unresolved names the objects discarded for having no OID.
 	Unresolved []string
 
-	// MissingImports names the modules this one IMPORTS from that could not
-	// be loaded. The module is still parsed; see Err.
+	// MissingImports names the modules this one IMPORTS from that could not be loaded; see Err.
 	MissingImports []string
 
-	// Untyped names the objects that were kept but whose type did not
-	// resolve, nearly always because the module defining it is one of
-	// MissingImports. They poll, but have no Type, Units, DisplayHint or
-	// EnumValues.
+	// Untyped names kept objects whose type did not resolve; they have no Type, Units, DisplayHint or EnumValues.
 	Untyped []string
 }
 
@@ -187,22 +151,7 @@ func (p *Parser) ParseModule(moduleName string) ([]*mib.OIDMetadata, error) {
 	return objects, err
 }
 
-// ParseModuleWithReport parses a module and also reports what it discarded.
-//
-// An object with no OID is dropped. gosmi produces them in two situations, and
-// keeping them served neither:
-//
-//   - A module whose IMPORTS did not resolve yields objects that parse but hang
-//     off a parent identifier gosmi never found. Every one comes out with an
-//     empty OID, and storing them made an unusable module report "imported, 6
-//     objects" -- indistinguishable from one that simply has little in it.
-//   - A module with a malformed IMPORTS list can yield each object twice, once
-//     resolved and once not. KNGeneric-MIB names OBJECT-TYPE in two IMPORTS
-//     clauses and produced 80 usable objects alongside 79 phantoms, so every
-//     count shown for it was roughly double the truth.
-//
-// The report is what keeps the drop from being silent, which is the failure the
-// stored phantoms were standing in for.
+// ParseModuleWithReport parses a module and reports the objects dropped for having no OID (unresolved IMPORTS, duplicate phantoms).
 func (p *Parser) ParseModuleWithReport(
 	moduleName string,
 ) ([]*mib.OIDMetadata, *ParseReport, error) {
@@ -214,15 +163,7 @@ func (p *Parser) ParseModuleWithReport(
 		return nil, nil, err
 	}
 
-	// Nothing resolved, yet the module defines objects: its IMPORTS were looked
-	// up while the modules they name were not on disk yet, and that failure is
-	// cached. Every later attempt reads the same cache and fails identically, so
-	// re-importing does not help and the module looks permanently empty.
-	//
-	// One reload and one retry separates that from a module that genuinely
-	// defines nothing usable. It is bounded to a single extra attempt: if the
-	// dependency really is missing, the second parse returns the same thing and
-	// the caller reports an honest empty module.
+	// Nothing resolved despite defined objects: reload once and retry to clear a cached IMPORTS failure.
 	if len(objects) == 0 && report.UnresolvedCount() > 0 {
 		p.reloadLocked()
 		return p.parseModuleLocked(moduleName)
@@ -263,9 +204,7 @@ func (p *Parser) parseModuleLocked(
 			report.Unresolved = append(report.Unresolved, meta.Name)
 			continue
 		}
-		// A scalar or column always has a SYNTAX. With no type node, the type
-		// it names was never found, and parseNode left Type, Units,
-		// DisplayHint and EnumValues empty.
+		// A scalar or column without a type node has an unresolved type.
 		kind := node.GetRaw().NodeKind
 		if node.SmiType == nil && (kind == types.NodeScalar || kind == types.NodeColumn) {
 			report.Untyped = append(report.Untyped, meta.Name)
@@ -280,13 +219,10 @@ func (p *Parser) parseModuleLocked(
 func (p *Parser) parseNode(node gosmi.SmiNode, moduleName string) *mib.OIDMetadata {
 	raw := node.GetRaw()
 
-	// FIX: Use node.RenderNumeric() instead of raw.Oid.String()
-	// The raw.Oid.String() method returns empty strings for some MIBs (e.g., CISCO-BGP4-MIB)
-	// while node.RenderNumeric() correctly renders the OID in all cases
+	// node.RenderNumeric renders OIDs that raw.Oid.String leaves empty for some MIBs.
 	numericOID := node.RenderNumeric()
 
-	// FALLBACK: If gosmi returns empty OID, try to construct from children.
-	// Table entries are the only node kind observed to hit this.
+	// If gosmi returns an empty OID (table entries), derive it from a child.
 	if numericOID == "" && string(raw.Name) != "" && raw.NodeKind == types.NodeRow {
 		numericOID = p.getOIDFromFirstChild(node, moduleName)
 	}
@@ -318,10 +254,7 @@ func (p *Parser) parseNode(node gosmi.SmiNode, moduleName string) *mib.OIDMetada
 		meta.IsColumn = true
 	}
 
-	// FIX: Improved scalar detection for NodeNode types
-	// A NodeNode should only be marked as scalar if it has a type definition.
-	// Organizational nodes (like "system", "snmp") have NodeKind=Node but no type (SmiType == nil).
-	// Actual leaf scalar nodes have both NodeKind=Node (or NodeScalar) and a type definition.
+	// A NodeNode is a scalar only if it has a type; organizational nodes have none.
 	if raw.NodeKind == types.NodeNode && !meta.IsTable && !meta.IsTableEntry && !meta.IsColumn {
 		// Only mark as scalar if this node has a type definition
 		// Organizational/parent nodes do NOT have a type, they're just containers
@@ -330,16 +263,7 @@ func (p *Parser) parseNode(node gosmi.SmiNode, moduleName string) *mib.OIDMetada
 		}
 	}
 
-	// Parse type, units, enums, ranges and display hint.
-	//
-	// All of these are read from the resolved type (node.SmiType), never from
-	// node.SmiType.GetRaw(). GetRaw returns the type exactly as written in the
-	// SYNTAX clause: for a subtyped textual convention such as
-	// "DisplayString (SIZE (0..255))" that is an anonymous type carrying no
-	// name, no DISPLAY-HINT and no UNITS. gosmi's CreateType walks to the
-	// parent type to fill those in, and CreateTypeFromNode then overlays the
-	// UNITS and DISPLAY-HINT declared on the OBJECT-TYPE itself. Reading the
-	// raw type silently discards both.
+	// Read type, units, enums, ranges and display hint from the resolved node.SmiType, never GetRaw.
 	if node.SmiType != nil {
 		resolved := node.SmiType
 
@@ -432,13 +356,7 @@ func (p *Parser) parseNode(node gosmi.SmiNode, moduleName string) *mib.OIDMetada
 	return meta
 }
 
-// getOIDFromFirstChild derives a table entry's OID from one of its columns,
-// for the MIBs where gosmi renders the row node itself as an empty OID.
-// A column such as .1.3.6.1.4.1.9.9.187.1.2.5.1.1 yields the entry OID
-// .1.3.6.1.4.1.9.9.187.1.2.5.1 by dropping the final sub-identifier.
-//
-// Columns come straight from gosmi's child list rather than a scan of every
-// node in the module, which would cost a node lookup per candidate.
+// getOIDFromFirstChild derives a table entry's OID by dropping a column's final sub-identifier.
 func (p *Parser) getOIDFromFirstChild(entryNode gosmi.SmiNode, _ string) string {
 	columns, order := entryNode.GetColumns()
 
@@ -458,24 +376,13 @@ func (p *Parser) getOIDFromFirstChild(entryNode gosmi.SmiNode, _ string) string 
 	return ""
 }
 
-// indexColumns describes a row's INDEX clause: the name, OID and resolved type
-// of every index column, plus the IMPLIED flag.
-//
-// Types come from the resolved node type (idx.SmiType), never from
-// idx.SmiType.GetRaw(), for the reason spelled out in parseNode: the raw type
-// is the SYNTAX as written, which is anonymous for a subtyped textual
-// convention such as "SnmpAdminString (SIZE (1..32))" and so carries neither a
-// name nor its SIZE constraint. An index column whose type lives in a module
-// that is not on the search path has no resolved type at all; it still gets an
-// entry, with empty Type and BaseType, so callers can fall back to a heuristic
-// rather than mistake the row for having fewer indexes than it does.
+// indexColumns describes a row's INDEX clause from resolved types; unresolved columns get empty types.
 func (p *Parser) indexColumns(row gosmi.SmiNode, indexes []gosmi.SmiNode) []mib.IndexColumn {
 	if len(indexes) == 0 {
 		return nil
 	}
 
-	// IMPLIED applies to the final index column only: it is what lets that
-	// column run to the end of the OID without a length prefix.
+	// IMPLIED applies to the final index column only.
 	implied := row.GetImplied()
 
 	columns := make([]mib.IndexColumn, len(indexes))
@@ -503,10 +410,7 @@ func (p *Parser) indexColumns(row gosmi.SmiNode, indexes []gosmi.SmiNode) []mib.
 	return columns
 }
 
-// fixedOctetLength returns the octet count of a string type constrained to a
-// single exact SIZE, and zero for every other type. A fixed-width string index
-// is encoded without a leading length sub-identifier, so a decoder can only
-// split it if it knows the width up front.
+// fixedOctetLength returns the octet count of a string type with a single exact SIZE, else 0.
 func fixedOctetLength(t *models.Type) int {
 	if t == nil || t.BaseType != types.BaseTypeOctetString || len(t.Ranges) != 1 {
 		return 0
@@ -632,8 +536,7 @@ func (p *Parser) isStaticConfigValue(name, description string) bool {
 		return false
 	}
 
-	// Check NAME for version/type patterns (but not in counter contexts)
-	// These typically indicate static identification, not time-series metrics
+	// Version and type name patterns indicate static identification, outside counter contexts.
 	if strings.Contains(nameLower, "version") && !strings.Contains(nameLower, "badversion") {
 		// Allow version if it's clearly a counter (e.g., "badversions")
 		return true
@@ -900,20 +803,12 @@ func (p *Parser) parseTable(node gosmi.SmiNode, moduleName string) *mib.TableInf
 	return table
 }
 
-// LoadModuleFromFile loads a MIB module from a file path.
-//
-// gosmi resolves a module by filename, so the file has to be named for the
-// module it declares: KNGeneric-MIB-20200526.MIB fails to load a module that
-// calls itself KNGeneric-MIB, however valid the contents.
+// LoadModuleFromFile loads a MIB module from a file, which must be named for the module it declares.
 func (p *Parser) LoadModuleFromFile(path string) (*mib.ModuleInfo, error) {
 	gosmiLibrary.Lock()
 	defer gosmiLibrary.Unlock()
 
-	// The file's directory is searched for this load only, so it and any
-	// module it IMPORTS from beside it resolve. Leaving it on the path would
-	// grow the path by one directory per upload for the life of a long-lived
-	// parser. Taking it off again loses nothing already loaded: gosmi finds an
-	// import among the loaded modules before it searches the path.
+	// Search the file's directory for this load only.
 	dir := filepath.Dir(path)
 	saved := gosmi.GetPath()
 	if !slices.Contains(filepath.SplitList(saved), dir) {

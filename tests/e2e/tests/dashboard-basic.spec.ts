@@ -84,19 +84,7 @@ test.describe('go-netmon WebUI - Basic Dashboard Tests', () => {
     }
   });
 
-  // Removed: "should test IF-MIB dropdowns" and "should test BGP dashboard".
-  //
-  // Both existed to exercise the per-table instance selector -- the dropdown
-  // that chose which row of a table the single-series chart was showing. A
-  // panel draws every row of its table at once now, so there is no dropdown to
-  // select from and no row to choose; the surface those two tests asserted on
-  // does not exist.
-  //
-  // What they were really protecting -- that a MIB's pane renders and carries
-  // readings -- is asserted by render-audit.spec.ts, which classifies every
-  // card on every device, and by widget-values.spec.ts, which checks that the
-  // readings are the right SHAPE: a state by name, a counter as a rate, a unit
-  // on the axis.
+  // Per-table instance selection is covered by render-audit.spec.ts and widget-values.spec.ts.
 
   test('should capture console errors', async ({ page }) => {
     const errors: string[] = [];

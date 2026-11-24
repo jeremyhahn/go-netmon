@@ -100,11 +100,7 @@ func (p *Pool) Remove(deviceName string) error {
 		return nil
 	}
 
-	// Drop the client whether or not the close succeeds. Keeping it would be
-	// worse than losing it: Close leaves conn.Conn set, so IsConnected still
-	// reports true and GetOrCreate would keep handing out a socket that has
-	// already been closed, for as long as the process lives. CloseAll already
-	// clears its map unconditionally for the same reason.
+	// Drop the client whether or not Close succeeds; a closed client still reports connected.
 	delete(p.clients, deviceName)
 
 	if err := client.Close(); err != nil {

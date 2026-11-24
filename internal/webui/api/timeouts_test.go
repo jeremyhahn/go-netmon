@@ -5,14 +5,7 @@ import (
 	"time"
 )
 
-// TestTimeoutBudgetOrdering pins the nesting the web UI's time budget depends
-// on. Each link must fit inside the one outside it; when it does not, a slow
-// device does not produce a slow response, it produces no response at all,
-// because the connection's write deadline expires before the handler writes.
-//
-// This test exists so that an edit which inverts a pair — the failure that
-// originally shipped, a 30s probe inside a 15s write timeout — fails here
-// rather than in the field.
+// TestTimeoutBudgetOrdering pins the nesting of the web UI's time budget.
 func TestTimeoutBudgetOrdering(t *testing.T) {
 	snmpWorstCase := SNMPProbeTimeout * time.Duration(SNMPProbeAttempts)
 

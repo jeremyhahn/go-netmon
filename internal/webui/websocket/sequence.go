@@ -7,45 +7,14 @@ import (
 	"sync"
 )
 
-// Sending what changed, once, to everyone who is up to date.
-//
-// A subscribed query is re-read on every round and its result is usually the
-// same one it read last time, because a device is polled every 30 to 60 seconds
-// and the round is five. When it does change, usually one series in it moved
-// and the rest did not -- a panel of forty interfaces where one is passing
-// traffic sends forty readings to say so.
-//
-// The diff is computed ONCE per query per round, against the previous result,
-// and the same frame is sent to every client that holds that previous result.
-// Diffing per client would be the same work multiplied by the number of people
-// looking, which is exactly backwards: the readings are identical for all of
-// them and it is only what each has already SEEN that differs.
-//
-// What makes that safe is the sequence number. Every result a query has ever
-// produced has one, and a delta names the sequence it must be applied to. A
-// client at that sequence can take the delta; a client at any other sequence --
-// new, behind, or one frame short of an answer that never arrived -- is sent
-// the whole reading instead. There is no path by which a client applies a delta
-// to something other than what it was computed against, so there is no path by
-// which it renders a stale value as a current one.
+// Each query is diffed once per round and the frame shared; a delta names its base sequence, and other clients get a snapshot.
 
-// SnapshotInterval is how many changed frames a query may send as deltas before
-// one is sent whole.
-//
-// It bounds drift that nothing else would catch. A client whose sequence is
-// somehow right while its contents are not -- a rendering bug, a frame the
-// browser accepted and mishandled -- would otherwise never be corrected, since
-// every subsequent frame would be a delta it believes it can apply. Twenty
-// changed frames on a 30-second poll interval is a full reading roughly every
-// ten minutes, which is cheap and is the only thing standing between a subtle
-// client-side bug and a panel that is wrong for as long as the page is open.
+// SnapshotInterval is how many changed frames a query may send as deltas before one is sent whole.
 const SnapshotInterval = 20
 
 // queryState is what one query last read, and what that reading is called.
 type queryState struct {
-	// seq increments when the READING changes, not when the query runs. A
-	// client holding seq N holds the result that produced N, however many
-	// rounds ago that was.
+	// seq increments when the reading changes, not when the query runs.
 	seq uint64
 
 	// byKey is the reading at seq, indexed by series identity.
@@ -62,11 +31,7 @@ type Delta struct {
 	// overwrites its own copy of each by label set.
 	Changed []MetricValue `json:"changed,omitempty"`
 
-	// Removed are series that are no longer in the reading -- an interface
-	// that went away, a table row that was deleted. They carry their full
-	// label set rather than a key, because a key would be a second identity
-	// scheme that the server and the browser would have to agree on
-	// character for character, in two languages, forever.
+	// Removed are series no longer in the reading, carried as full label sets.
 	Removed []map[string]string `json:"removed,omitempty"`
 }
 
@@ -109,9 +74,6 @@ func newQueryStates() *queryStates {
 }
 
 // advance records a new reading and reports what to send for it.
-//
-// This is the once-per-round diff. It runs on the streaming goroutine for one
-// query, and its result is fanned to every client subscribed to that query.
 func (s *queryStates) advance(query string, metrics []MetricValue) update {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -188,11 +150,7 @@ func (s *queryStates) queries() []string {
 	return names
 }
 
-// forget drops a query nobody subscribes to any more.
-//
-// Its sequence goes with it. A query that is subscribed again starts from one,
-// and every client is new to it, so nobody can hold a sequence from before the
-// gap and be told it is still current.
+// forget drops a query with no subscribers, and its sequence.
 func (s *queryStates) forget(query string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,11 +164,7 @@ func diff(previous, current map[string]MetricValue) Delta {
 
 	for key, metric := range current {
 		held, existed := previous[key]
-		// The timestamp is deliberately not compared. An instant query is
-		// stamped at the moment it is asked rather than at the scrape the
-		// value came from, so an unchanged reading arrives with a later
-		// timestamp every five seconds. Comparing it would make every round a
-		// change and the whole mechanism a no-op with extra steps.
+		// Timestamps are not compared: an instant query is stamped at evaluation time.
 		if existed && held.Value == metric.Value {
 			continue
 		}
@@ -243,12 +197,7 @@ func byKey(metrics []MetricValue) map[string]MetricValue {
 	return indexed
 }
 
-// seriesKey identifies one series by its labels.
-//
-// Internal to the server: the browser never sees it, which is why a removal
-// carries its label set instead. Length-prefixed so the encoding is injective
-// -- label values may contain any byte, so no separator can be reserved, and
-// two different series must never key the same.
+// seriesKey identifies a series by its labels, length-prefixed so the encoding is injective.
 func seriesKey(labels map[string]string) string {
 	names := make([]string, 0, len(labels))
 	for name := range labels {

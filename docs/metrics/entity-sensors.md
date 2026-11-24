@@ -316,10 +316,8 @@ Alerting and thresholds are out of scope here.
 
 `internal/metrics/entity_sensor_dom_test.go` runs the varbinds the production
 switches actually put on the wire through the real conversion path. Every row
-was captured by `snmpwalk` on 2026-08-31 rather than derived from the dBm
-figures, which matters: an encoding invented to match a known answer cannot
-fail, and an earlier draft of this fixture guessed the Nexus encoding wrong
-while still passing.
+was captured by `snmpwalk` rather than derived from the dBm figures, so an
+encoding invented to match a known answer cannot pass.
 
 The two families differ by **scale**, not by precision, and between them they
 exercise both halves of the arithmetic against real encodings — the scale

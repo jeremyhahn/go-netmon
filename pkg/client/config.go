@@ -18,14 +18,7 @@ import (
 // half-understanding it.
 const ConfigSchemaVersion = 1
 
-// Config is a go-netmon instance's whole logical configuration: the devices it
-// polls, the profiles that bundle MIBs, and every per-assignment rule that says
-// how each MIB is polled.
-//
-// It is keyed by name throughout, because record IDs are local to one instance.
-// The MIB catalog itself is not configuration; MIBs is the list of modules the
-// configuration depends on, and an export bundle carries their source files
-// alongside this document.
+// Config is an instance's logical configuration keyed by name: devices, profiles, assignment rules and required MIBs.
 type Config struct {
 	SchemaVersion int       `json:"schema_version"`
 	ExportedAt    time.Time `json:"exported_at"`
@@ -176,17 +169,7 @@ type ConfigImportOptions struct {
 	Apply bool
 }
 
-// ExportConfigBundle returns the server's configuration export exactly as the
-// server produced it.
-//
-// The bytes are returned rather than a decoded document on purpose. The bundle
-// is the artifact: writing it out and reading it back must not lose a field this
-// SDK has not been taught about yet, and a build of this SDK older than the
-// server it is talking to would do exactly that if it round-tripped the document
-// through Go structs.
-//
-// With ConfigExportOptions.DocumentOnly the bytes are config.json; otherwise
-// they are a gzipped tar holding config.json and the MIB source files.
+// ExportConfigBundle returns the server's export bytes unchanged: config.json, or a gzipped tar with MIB sources.
 func (c *Client) ExportConfigBundle(ctx context.Context, opts ConfigExportOptions) ([]byte, error) {
 	path := withQuery("/api/config/export", opts.values())
 
@@ -214,11 +197,7 @@ func (c *Client) ExportConfigBundle(ctx context.Context, opts ConfigExportOption
 	return body, nil
 }
 
-// ExportConfig returns the server's configuration as a decoded document.
-//
-// It always asks for config.json alone: a decoded document cannot hold MIB
-// source files, so pretending to have exported them would be worse than not
-// offering them. Use ExportConfigBundle to obtain the self-contained archive.
+// ExportConfig returns the server's configuration as a decoded document, without MIB sources.
 func (c *Client) ExportConfig(ctx context.Context, opts ConfigExportOptions) (*Config, error) {
 	opts.DocumentOnly = true
 
@@ -234,16 +213,7 @@ func (c *Client) ExportConfig(ctx context.Context, opts ConfigExportOptions) (*C
 	return &doc, nil
 }
 
-// ImportConfigBundle sends an export bundle or a bare configuration document to
-// the server and reports what it did, or would do.
-//
-// It is a dry run unless ConfigImportOptions.Apply is set. Applying replaces the
-// server's whole configuration: anything the file does not contain is deleted.
-// The server saves what it replaced first and names the file in the report.
-//
-// The bytes are passed through untouched, so a document an operator has edited
-// by hand reaches the server exactly as written and is judged by the server's
-// rules rather than by this SDK's idea of them.
+// ImportConfigBundle sends a bundle or document unchanged; a dry run unless Apply, which replaces the whole configuration.
 func (c *Client) ImportConfigBundle(
 	ctx context.Context, bundle []byte, opts ConfigImportOptions,
 ) (*ImportReport, error) {
@@ -267,11 +237,7 @@ func (c *Client) ImportConfigBundle(
 	return &report, nil
 }
 
-// ImportConfig sends a configuration document the caller has built in memory.
-//
-// Prefer ImportConfigBundle for a file read from disk: it cannot lose a field
-// this SDK does not know about, and it is the only form that carries MIB source
-// files onto an instance that does not have them.
+// ImportConfig sends an in-memory configuration document; prefer ImportConfigBundle for files.
 func (c *Client) ImportConfig(
 	ctx context.Context, doc Config, opts ConfigImportOptions,
 ) (*ImportReport, error) {
@@ -296,15 +262,7 @@ func contentTypeOf(body []byte) string {
 	return "application/json"
 }
 
-// ConfigDocumentError reports a configuration the server refused, with the
-// detail it supplied.
-//
-// It is distinct from ConfigError, which reports an unusable client setting:
-// this one is about the document, not about this process.
-//
-// The detail is the point: "400 Bad Request" does not say which field of which
-// device is wrong, and "409 Conflict" does not say which MIB modules have to be
-// imported first. Both are lists, and both are actionable only as lists.
+// ConfigDocumentError reports a configuration the server refused, with its detail.
 type ConfigDocumentError struct {
 	StatusCode int
 

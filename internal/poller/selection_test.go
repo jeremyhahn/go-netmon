@@ -10,13 +10,7 @@ import (
 // ifTableOID is the table the IF-MIB columns below belong to.
 const ifTableOID = "1.3.6.1.2.1.2.2"
 
-// selectionFixture is a small IF-MIB/CISCO-PROCESS-MIB slice covering the
-// shapes that matter: readable columns, an entry node, a readable and a
-// not-accessible index column, and a deprecated object.
-//
-// It deliberately contains NO table node, so a test states explicitly whether
-// the table is present — that choice decides whether the columns are walked
-// individually or covered by one walk of the table.
+// selectionFixture is an IF-MIB/CISCO-PROCESS-MIB slice without a table node; tests add it explicitly.
 func selectionFixture() []*mib.OIDMetadata {
 	return []*mib.OIDMetadata{
 		// Readable IF-MIB columns.
@@ -37,9 +31,7 @@ func selectionFixture() []*mib.OIDMetadata {
 		{OID: "1.3.6.1.2.1.2.2.1", Name: "ifEntry", Module: "IF-MIB",
 			Access: "not-accessible", Status: "current", IsTableEntry: true},
 
-		// An index column that IS readable. IF-MIB declares ifIndex
-		// MAX-ACCESS read-only, so it is fetched like any other column when
-		// its table is not being walked — being an index does not make it free.
+		// A readable index column (ifIndex) is fetched like any column when its table is not walked.
 		{OID: "1.3.6.1.2.1.2.2.1.1", Name: "ifIndex", Module: "IF-MIB",
 			Type: "InterfaceIndex", Access: "read-only", Status: "current",
 			IsColumn: true, IsIndex: true, TableOID: ifTableOID},
@@ -96,9 +88,7 @@ func TestSelectModuleOIDsExcludesUnpollableObjects(t *testing.T) {
 	got := selectModuleOIDs(withIfTable(), device)
 	names := selectedNames(got)
 
-	// The table is the walk target. Its own MAX-ACCESS is not-accessible in
-	// essentially every MIB, because that describes the node rather than its
-	// subtree — one walk of it returns every column and row.
+	// The table is the walk target; its own MAX-ACCESS is not-accessible.
 	if !names["ifTable"] {
 		t.Error("ifTable is the walk target and must be selected")
 	}
@@ -353,9 +343,7 @@ func TestSelectModuleOIDsWalksColumnsWhenTheirTableIsAbsent(t *testing.T) {
 	}
 }
 
-// TestSelectModuleOIDsExcludingATableRestoresItsColumns verifies the two
-// mechanisms compose: excluding a table means its columns are no longer
-// covered, so the readable ones are selected on their own.
+// TestSelectModuleOIDsExcludingATableRestoresItsColumns checks excluding a table selects its readable columns.
 func TestSelectModuleOIDsExcludingATableRestoresItsColumns(t *testing.T) {
 	device := &config.Device{
 		Name:    "core-01",

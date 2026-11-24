@@ -1,10 +1,5 @@
 #!/bin/bash
-#
-# Configuration Synchronization Example
-#
-# This script demonstrates how to use the configuration synchronization feature
-# to centralize device configuration management in the WebUI.
-#
+# Configuration synchronization example: centralize device configuration in the web UI.
 
 set -e
 

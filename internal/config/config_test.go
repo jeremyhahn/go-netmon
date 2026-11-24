@@ -77,13 +77,7 @@ logging:
 		t.Errorf("Expected RemoteWriteURL, got %s", config.Prometheus.RemoteWriteURL)
 	}
 
-	// Verify the API block. The fixture's api section also carries enable_cors
-	// and jwt_secret, which APIConfig no longer declares, so this
-	// doubles as the check that a config file written against the old struct
-	// still loads and still yields the settings that do survive.
-	//
-	// The expected value is not the default: see the fixture comment. If this
-	// ever reads "0.0.0.0:8080" the field was defaulted, not parsed.
+	// The fixture's api section has undeclared keys; the expected address is not the default.
 	if config.API.ListenAddress != "127.0.0.1:18080" {
 		t.Errorf("Expected API ListenAddress '127.0.0.1:18080', got %s", config.API.ListenAddress)
 	}
@@ -297,8 +291,7 @@ func TestDevice_Validate(t *testing.T) {
 			device: Device{
 				Name:    "test",
 				Address: "203.0.113.1",
-				// "2" is not a version anything speaks. This case used to be
-				// "1", which is a real version and is supported now.
+				// "2" is not a supported version.
 				SNMPVersion: "2",
 				Community:   "public",
 			},

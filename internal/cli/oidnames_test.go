@@ -259,9 +259,7 @@ func TestOIDIndexDescribeNamesSeries(t *testing.T) {
 		{
 			name: "column carries its index, read from the oid label",
 			labels: series("snmp_ifInOctets", ".1.3.6.1.2.1.2.2.1.10.10", map[string]string{
-				// Every one of these is enrichment the exporter adds. The
-				// row is identified by the oid label, not by guessing which
-				// of them is the table's INDEX.
+				// Enrichment labels; the row is identified by the oid label.
 				"ifindex": "10", "ifname": "GigabitEthernet0/0",
 				"ifdescr": "GigabitEthernet0/0", "ifoperstatus": "up",
 			}),

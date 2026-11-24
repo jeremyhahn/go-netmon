@@ -56,11 +56,7 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 	return client, nil
 }
 
-// NewClientWithCredentials creates an SNMP client for a device whose
-// credentials have already been sealed out of it by SealCredentials.
-//
-// The client borrows creds: it opens them for each request and never destroys
-// them. Their owner destroys them once the client is no longer used.
+// NewClientWithCredentials creates a client that borrows creds sealed by SealCredentials; their owner destroys them.
 func NewClientWithCredentials(
 	device *config.Device, creds *Credentials, timeout time.Duration, retries int,
 ) (*Client, error) {
@@ -98,11 +94,7 @@ func NewClientWithCredentials(
 	// secret here: call installs them for each request and removes them after.
 	switch device.SNMPVersion {
 	case "1":
-		// SNMPv1 is still what a lot of embedded equipment offers — KVMs, PDUs,
-		// older UPSs — and several of them offer nothing else. It differs from
-		// v2c in ways the poller has to respect: there is no GETBULK, and a
-		// walk that runs off the end of the tree is reported as the
-		// NoSuchName error rather than as an endOfMibView marker.
+		// SNMPv1: no GETBULK, and a walk past the end reports NoSuchName.
 		conn.Version = gosnmp.Version1
 	case "2c":
 		conn.Version = gosnmp.Version2c
@@ -125,18 +117,7 @@ func NewClientWithCredentials(
 	}, nil
 }
 
-// call runs op with the device's credentials installed on the connection and
-// removes them before it returns.
-//
-// It holds the client exclusively: the connection carries the secrets for the
-// length of op, and no other request may see them or remove them under it.
-// The secrets are views of locked enclaves that are destroyed when call
-// returns, so nothing gosnmp keeps may still refer to them by then; scrub
-// sees to the connection, and gosnmp's own passphrase cache is disabled (see
-// init).
-//
-// Opening the credentials may wait for locked memory other requests hold;
-// ctx bounds that wait, and its end is returned as a CredentialError.
+// call runs op with the credentials installed on the connection, exclusively, and scrubs them before returning; ctx bounds the wait for locked memory.
 func (c *Client) call(ctx context.Context, op func() error) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -217,17 +198,7 @@ func (c *Client) Connect() error {
 	})
 }
 
-// Close closes the SNMP connection.
-//
-// It takes a read lock, not a write lock. Closing the socket is precisely how a
-// request already in flight is interrupted, so waiting for that request to
-// finish before closing defeats the purpose — and against a device that never
-// answers, that wait is the full timeout × retries budget. Holding the control
-// path behind it is what let one dead device stall device registration and
-// status lookups for every other device.
-//
-// Concurrent readers are exactly the in-flight requests being interrupted; the
-// read lock is there to exclude Connect from swapping the socket underneath.
+// Close closes the connection under a read lock, interrupting a request in flight.
 func (c *Client) Close() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -261,14 +232,7 @@ func (c *Client) Get(oid string) (*Result, error) {
 	}, nil
 }
 
-// GetMultiple performs an SNMP GET for multiple OIDs.
-//
-// An agent that cannot fit the whole response in one PDU answers tooBig: an
-// empty response carrying an error status, not a transport error. When that
-// happens the request is split in half and each half retried, which converges
-// on whatever the device can actually answer without needing to know its limit
-// in advance. Treating tooBig as success is how a device silently returns no
-// scalars at all while every poll still reports success.
+// GetMultiple performs a GET for several OIDs, halving the request on tooBig until the device answers.
 func (c *Client) GetMultiple(oids []string) ([]*Result, error) {
 	return c.GetMultipleContext(context.Background(), oids)
 }
@@ -421,16 +385,7 @@ func (c *Client) Walk(rootOID string, walkFn func(*Result) error) error {
 	})
 }
 
-// bulkWalker reports the walk to use for a table and what to call it.
-//
-// GETBULK does not exist in SNMPv1: gosnmp refuses it outright with "GETBULK
-// not supported in SNMPv1", so a v1 device would fail every table walk with an
-// error about a protocol feature rather than about anything an operator did.
-// The version is known here and nowhere else that matters, so the choice is
-// made here rather than pushed onto every caller.
-//
-// The fallback is a plain WALK, which is GETNEXT one variable at a time. It is
-// slower — that is the whole reason GETBULK exists — but it is what v1 has.
+// bulkWalker returns GETBULK walk, or plain WALK on SNMPv1, and its name.
 func (c *Client) bulkWalker() (walker, string) {
 	if c.conn.Version == gosnmp.Version1 {
 		return c.conn.Walk, "WALK"
@@ -438,8 +393,7 @@ func (c *Client) bulkWalker() (walker, string) {
 	return c.conn.BulkWalk, "BULKWALK"
 }
 
-// BulkWalk performs an SNMP BULKWALK (optimized walk using GETBULK), falling
-// back to a plain walk on SNMPv1, which has no GETBULK.
+// BulkWalk walks with GETBULK, or plain WALK on SNMPv1.
 func (c *Client) BulkWalk(rootOID string, walkFn func(*Result) error) error {
 	return c.call(context.Background(), func() error {
 		walk, op := c.bulkWalker()
@@ -458,8 +412,7 @@ func (c *Client) WalkAll(rootOID string) ([]*Result, error) {
 	return results, err
 }
 
-// BulkWalkAll performs an SNMP BULKWALK and returns all results, falling back
-// to a plain walk on SNMPv1.
+// BulkWalkAll bulk-walks and returns all results, or plain-walks on SNMPv1.
 func (c *Client) BulkWalkAll(rootOID string) ([]*Result, error) {
 	return c.BulkWalkAllContext(context.Background(), rootOID)
 }

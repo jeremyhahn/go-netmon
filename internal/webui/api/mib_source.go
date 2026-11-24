@@ -19,13 +19,7 @@ func (s *Server) uploadedMIBDir() string {
 	return filepath.Join(s.mibStoragePath, uploadedMIBDirName)
 }
 
-// mibSourceCandidates lists, in the order they are tried, the file names a
-// module's source may be stored under in the upload directory.
-//
-// The stored path is consulted only for its base name: the directory it
-// names is whatever the server was configured with when the module was
-// imported, which need not exist any more. Only plain names survive, so
-// nothing derived from a module name can climb out of the directory.
+// mibSourceCandidates lists the plain file names a module's source may have in the upload directory, in try order.
 func mibSourceCandidates(module, storedPath string) []string {
 	names := make([]string, 0, 2+len(mibSourceExtensions))
 	names = append(names, filepath.Base(storedPath), module)
@@ -45,12 +39,7 @@ func mibSourceCandidates(module, storedPath string) []string {
 	return candidates
 }
 
-// readMIBSource reads one module's source file from dir, resolving it at
-// read time from the module name rather than trusting the stored absolute
-// path. It returns the name the file has in dir alongside its content.
-//
-// Every read goes through an os.Root opened on dir, so a name that would
-// leave it, directly or through a symbolic link, is refused by the kernel.
+// readMIBSource reads a module's source from dir through an os.Root, returning its file name and content.
 func readMIBSource(dir, module, storedPath string) (string, []byte, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {

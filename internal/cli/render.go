@@ -13,11 +13,7 @@ import (
 // renderFunc produces one frame of a command's output.
 type renderFunc func(ctx context.Context, out io.Writer) error
 
-// runWithRefresh prints a command's output once, or repeatedly when --refresh
-// is set, clearing the screen between frames, in the manner of watch(1).
-//
-// The interval is measured from the start of each frame, so a slow API call
-// does not make the effective period drift.
+// runWithRefresh prints once, or every --refresh interval measured from frame start, like watch(1).
 func (e *Env) runWithRefresh(render renderFunc) error {
 	if e.Opts.Refresh <= 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), e.Opts.Timeout)
@@ -165,10 +161,7 @@ func untilTime(t time.Time) string {
 	return d.Truncate(time.Second).String()
 }
 
-// untilPhrase renders the same wait as a fragment that reads correctly inside a
-// sentence. A caller writing "retrying " + untilTime(t) produces "retrying in
-// now" once the retry is due, because only the duration case wants the
-// preposition.
+// untilPhrase renders the wait as a sentence fragment ("in 5s" or "now").
 func untilPhrase(t time.Time) string {
 	if t.IsZero() {
 		return "at the next poll"

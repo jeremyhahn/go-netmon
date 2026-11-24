@@ -11,13 +11,7 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-// configKeyPrefixes are every key space a configuration import owns.
-//
-// The MIB catalog (mib: records and their idx:mib: index) is deliberately not
-// here. A module is a library the configuration draws on, not a piece of it: an
-// imported module that nothing references costs nothing and polls nothing, while
-// deleting one would throw away parsed metadata and the operator's tags on the
-// strength of a document that never claimed to describe the catalog.
+// configKeyPrefixes are the key spaces a configuration import owns; the MIB catalog is not one.
 var configKeyPrefixes = []string{
 	PrefixDevice,
 	PrefixProfile,
@@ -28,18 +22,7 @@ var configKeyPrefixes = []string{
 	PrefixNameIndex + "profile:",
 }
 
-// PlanImportConfig reports what importing doc would change, without changing
-// anything.
-//
-// It is the read-only half of ImportConfig and runs the same validation, so a
-// document that survives a dry run is a document the apply will accept for the
-// same reasons.
-//
-// pending names modules the caller is about to import — the source files an
-// export bundle carries — so that a dry run against a fresh instance describes
-// the import that will actually happen rather than failing on modules that are
-// a few seconds away from existing. Nothing else treats them as present: the
-// apply re-checks the catalog for real, after those modules have been imported.
+// PlanImportConfig reports what importing doc would change, treating pending modules as present, without changing anything.
 func (s *Storage) PlanImportConfig(ctx context.Context, doc *Config, pending []string) (*ConfigPlan, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -51,18 +34,7 @@ func (s *Storage) PlanImportConfig(ctx context.Context, doc *Config, pending []s
 	return prepared.plan, nil
 }
 
-// ImportConfig replaces this instance's configuration with doc.
-//
-// Replace, not merge: a device, profile or assignment the document does not
-// contain is deleted. That is the semantic the operator chose, and it is why
-// every caller of this method has to have obtained an explicit confirmation
-// first.
-//
-// The whole change lands in one store batch, so it is all-or-nothing: a failure
-// at any point leaves the previous configuration exactly as it was, and no
-// reader can observe a half-applied fleet. Validation runs to completion before
-// the batch is opened, so a document that is going to be rejected is rejected
-// having read nothing but its own fields.
+// ImportConfig replaces this instance's configuration with doc in one all-or-nothing batch, deleting what doc omits.
 func (s *Storage) ImportConfig(ctx context.Context, doc *Config) (*ConfigPlan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,14 +64,7 @@ type preparedImport struct {
 	plan    *ConfigPlan
 }
 
-// prepareImport validates a document and works out what applying it would do.
-// The caller holds s.mu.
-//
-// The order is the point. The document's own fields are checked first, because
-// that needs no store access and catches the mistakes an operator makes editing
-// a file. The modules it references are checked next, against the catalog this
-// instance actually holds. Only then is a plan computed. Nothing is written by
-// any of it.
+// prepareImport validates a document, then its modules, then plans the import; the caller holds s.mu.
 func (s *Storage) prepareImport(doc *Config, pending []string) (*preparedImport, error) {
 	if err := ValidateConfig(doc); err != nil {
 		return nil, err
@@ -188,10 +153,7 @@ func (s *Storage) writeConfig(prepared *preparedImport) error {
 	return nil
 }
 
-// clearConfigKeys stages the removal of every record the import replaces.
-//
-// The reads happen against the store rather than the batch, which has not been
-// committed, so this sees exactly the state the plan was computed from.
+// clearConfigKeys stages removal of every record the import replaces, reading the uncommitted store.
 func (s *Storage) clearConfigKeys(batch *pebble.Batch) error {
 	for _, prefix := range configKeyPrefixes {
 		err := s.scanPrefix(prefix, func(key string, _ []byte) error {
@@ -207,13 +169,7 @@ func (s *Storage) clearConfigKeys(batch *pebble.Batch) error {
 	return nil
 }
 
-// configWriter stages the desired configuration into a batch, keeping the IDs
-// and creation times of the records that survive.
-//
-// Identity is preserved on purpose: a device that is in both the store and the
-// document is the same device, and giving it a new ID on every import would
-// break every reference held elsewhere and make an unchanged import look like a
-// fleet-wide replacement.
+// configWriter stages the configuration into a batch, keeping IDs and creation times of surviving records.
 type configWriter struct {
 	batch    *pebble.Batch
 	desired  *Config
@@ -421,12 +377,7 @@ func (s *Storage) counterValue(key string) (int64, error) {
 	return int64(binary.BigEndian.Uint64(data)), nil // #nosec G115 -- round-trip of a value written as an int64
 }
 
-// normalized returns the document in the one shape the store and the exporter
-// both produce: ordered by name throughout, with a device's default port filled
-// in and every empty pattern list collapsed.
-//
-// Comparing normalized documents is what makes a re-import of an instance's own
-// export a no-op instead of a diff full of reorderings.
+// normalized returns the document ordered by name, default ports filled and empty pattern lists collapsed.
 func (c *Config) normalized() *Config {
 	normalized := &Config{
 		SchemaVersion: c.SchemaVersion,

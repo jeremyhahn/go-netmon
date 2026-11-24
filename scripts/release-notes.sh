@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
-# Print a release's CHANGELOG section, the body of its GitHub release.
-#
-# Usage: scripts/release-notes.sh <vX.Y.Z[-alpha|-rc.N]>   (from the repository root)
-#
-# Prints everything after the "## [X.Y.Z] - <date>" heading up to the next
-# "## " heading, without leading or trailing blank lines. The heading is
-# matched up to its closing bracket, so a version is never matched by a longer
-# one that starts with it (0.1.4 is not 0.1.40, 0.1.4-rc.1 is not 0.1.4-rc.10).
-# Fails when the section is missing, appears twice, or is empty.
+# Usage: scripts/release-notes.sh <vX.Y.Z[-alpha|-rc.N]> -- prints that version's CHANGELOG section; fails if missing, duplicated or empty.
 
 set -euo pipefail
 

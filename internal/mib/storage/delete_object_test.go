@@ -6,17 +6,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// Deleting an object that has no numeric OID.
-//
-// Objects are keyed by their OID where they have one and by module and name
-// where they do not -- groups, notifications, and anything a module defines that
-// resolved to no identifier. Deletion only ever took an OID, so for the second
-// kind it looked up a key that was never written, removed nothing, and reported
-// failure. Reloading a module accumulated one orphan per such object every time,
-// and no re-import could clear them because the clear had the same blind spot.
-//
-// A live store had 79 orphans for one module: the listing showed 159 records for
-// the 80 objects the module declares.
+// Deleting objects keyed by module and name, which have no numeric OID.
 
 // TestAnObjectWithNoOIDCanBeDeleted is the case that leaked.
 func TestAnObjectWithNoOIDCanBeDeleted(t *testing.T) {

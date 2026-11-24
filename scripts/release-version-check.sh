@@ -1,18 +1,5 @@
 #!/usr/bin/env bash
-# Refuse a release version that does not move forward.
-#
-# Usage: scripts/release-version-check.sh <vX.Y.Z[-alpha|-rc.N]>   (from the repository root)
-#
-# A VERSION file is never lowered and a published
-# tag is never superseded by a lower one -- a backward version silently loses
-# whatever the intervening releases fixed, and Go's MVS keeps selecting the
-# higher one anyway. So the version must be strictly greater, in SemVer
-# precedence, than the VERSION file and than every release tag in the local
-# repository. The release targets run this before they write anything, and
-# auto-release.yml runs it on the merged commit's parent before it tags.
-#
-# Tags of another form (a v0.0.0-placeholder, a -beta) are not release tags
-# and are not compared.
+# Refuse a release version not strictly greater than VERSION and every local release tag. Usage: scripts/release-version-check.sh <vX.Y.Z[-alpha|-rc.N]>
 
 set -euo pipefail
 

@@ -47,12 +47,9 @@ Listening on :8080 — the web UI is ready to serve (startup took 3m23.108s, dur
 
 ## What NOT to do
 
-**Do not judge a deploy on `systemctl is-active` alone with the old unit, and do
-not restart a service that is `activating`.** Before the unit became
-`Type=notify` it reported `active` from the moment the process forked, and a
-deploy of a good binary was read as hung and rolled back on that signal
-(2026-09-06, per the comment in `deploy/go-netmon-webui.service`), doubling the
-outage.
+**Do not judge a deploy on `systemctl is-active` alone, and do not restart a
+service that is `activating`.** A unit that is not `Type=notify` reports
+`active` from the moment the process forks, long before it serves.
 `scripts/deploy.sh` now waits for the port to answer rather than for the unit to
 say it is up.
 

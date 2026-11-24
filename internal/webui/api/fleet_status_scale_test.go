@@ -13,19 +13,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// How the fleet overview costs as the fleet grows.
-//
-// The poller answers GET /api/poller/devices with every device and its status
-// in one response, built entirely from in-memory worker state. The web UI did
-// not use it: it asked GET /devices/{name}/status once per device, so a single
-// fleet refresh cost one HTTP round trip per monitored device.
-//
-// That is invisible on a rack and ruinous on a datacenter. Every browser with
-// the overview open repeats the whole fan-out every 30 seconds, so the load on
-// the poller is devices x sessions, and the 8-second collection budget is
-// shared across all of it -- past a few thousand devices rows start coming back
-// as "poller unavailable" not because anything is wrong but because the budget
-// ran out while they were still queued.
+// Fleet overview cost as the fleet grows: one poller listing call per refresh, not one per device.
 
 // countingPoller answers like a poller on a busy network: each per-device call
 // costs a round trip, while the bulk listing costs one.
@@ -171,14 +159,7 @@ func TestFleetStatusCostsOneCallPerRefresh(t *testing.T) {
 	}
 }
 
-// TestFleetStatusHoldsUpAcrossManySessions is the failure that matters.
-//
-// One operator on a big fleet is survivable: 10,000 sequential round trips at
-// 1ms with 16 in flight finish inside the budget. What does not survive is a
-// room full of operators, because the poller is one process with finite
-// throughput and every browser repeats the whole fan-out every 30 seconds. The
-// requests queue behind each other, the shared budget expires while rows are
-// still waiting, and the overview reports an outage that is not happening.
+// TestFleetStatusHoldsUpAcrossManySessions checks many concurrent overviews stay within the budget.
 func TestFleetStatusHoldsUpAcrossManySessions(t *testing.T) {
 	t.Parallel()
 

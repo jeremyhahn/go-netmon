@@ -1,15 +1,5 @@
 #!/usr/bin/env bash
-# On-target installer for the go-netmon monitoring appliance.
-#
-# Shipped inside the deployment payload by scripts/deploy.sh and run there with
-# sudo. It is not meant to be invoked by hand, but it is safe to: it is
-# idempotent, it converges rather than repeats, and it never touches operator
-# data.
-#
-# WHAT IT WILL NOT OVERWRITE: /etc/go-netmon/config.yaml and prometheus.yml
-# once they exist, and anything under /var/lib. Those are operator data — a
-# migration restores them and a later deploy clobbering them would silently
-# undo it. FORCE_CONFIG=1 overrides that when replacement is actually meant.
+# On-target installer run by scripts/deploy.sh; idempotent, and never overwrites existing config or /var/lib data unless FORCE_CONFIG=1.
 
 set -euo pipefail
 
@@ -58,11 +48,7 @@ fi
 install -d -o "$svc_user" -g "$svc_user" -m 0750 \
     "$data_dir" "$data_dir/poller" "$data_dir/poller/uploaded" \
     "$data_dir/webui" "$data_dir/dashboards"
-# 0755, not 0750 group-owned by the service: two different service accounts
-# read out of this directory, and a group-restricted directory would let
-# whichever one is not in the group fail to traverse it. Nothing secret lives
-# here — device credentials are in the web UI's store under $data_dir, which is
-# 0750. Access is restricted per file below.
+# 0755: two service accounts read this directory; secrets live under $data_dir and files are restricted individually.
 install -d -o root -g root -m 0755 "$conf_dir"
 install -d -o root -g root -m 0755 "$share_dir"
 log "directories under $data_dir and $conf_dir in place"
@@ -72,20 +58,14 @@ if [[ -n "$with_prometheus" ]]; then
     log "directory $prom_data_dir in place"
 fi
 
-# --- binaries ---------------------------------------------------------------
-# install(1) writes through a temporary and renames, so a running service is
-# never reading a half-written file. Replacing a busy binary is fine on Linux:
-# the running process keeps its inode until it restarts.
+# --- binaries: install(1) replaces atomically.
 for b in "$payload_dir"/bin/*; do
     [[ -f "$b" ]] || continue
     install -o root -g root -m 0755 "$b" "$bin_dir/$(basename "$b")"
     log "installed $bin_dir/$(basename "$b")"
 done
 
-# --- bundled standard MIBs --------------------------------------------------
-# The IETF base set, so a fresh appliance with an empty store can still parse
-# the standard modules. Owned by root and read-only to the service: these are
-# shipped artifacts, not the operator's uploaded tree under $data_dir.
+# --- bundled standard MIBs: root-owned, read-only to the service.
 if [[ -d "$payload_dir/mibs/standard" ]]; then
     rm -rf "$share_dir/mibs/standard.new"
     install -d -m 0755 "$share_dir/mibs"
@@ -96,10 +76,7 @@ if [[ -d "$payload_dir/mibs/standard" ]]; then
     log "installed bundled standard MIBs to $share_dir/mibs/standard"
 fi
 
-# --- configuration ----------------------------------------------------------
-# Each config file is group-owned by the account that reads it: config.yaml by
-# the go-netmon services, prometheus.yml by prometheus. Getting this wrong is
-# silent until the service starts and cannot open its own configuration.
+# --- configuration: each file is group-owned by the account that reads it.
 seed_config() {
     local src="$1" dst="$2" group="$3"
     if [[ -e "$dst" && -z "$force_config" ]]; then
@@ -115,10 +92,7 @@ seed_config "$payload_dir/config.yaml" "$conf_dir/config.yaml" "$svc_user"
 if [[ -n "$with_prometheus" ]]; then
     seed_config "$payload_dir/prometheus.yml" "$conf_dir/prometheus.yml" "$prom_user"
 
-    # Alert rules are replaced rather than seeded. They hold no site-specific
-    # settings, so keeping an old copy only means running last release's
-    # alerts; prometheus.yml references them as rules/*.yml, and a glob that
-    # matches nothing is not an error, so a host without them still starts.
+    # Alert rules are replaced, not seeded: they hold no site settings.
     if [[ -d "$payload_dir/rules" ]]; then
         install -d -o root -g "$prom_user" -m 0750 "$conf_dir/rules"
         for rule in "$payload_dir"/rules/*.yml; do
@@ -159,16 +133,7 @@ if [[ -z "$start_services" ]]; then
     exit 0
 fi
 
-# A unit that fails to start is reported here but does not abort the install:
-# deploy.sh checks every unit afterwards and prints the journal for the ones
-# that are down, which is far more use to an operator than this script dying
-# with the reason still sitting in the journal unread.
-#
-# `systemctl restart go-netmon-webui` BLOCKS until the service reports itself
-# ready, because that unit is Type=notify — minutes, on a cold MIB catalog.
-# That wait is the point: "started" here now means "serving", where it used to
-# mean "forked". A restart that appears to hang is the web UI still parsing;
-# `journalctl -fu go-netmon-webui` shows it working.
+# A unit that fails to start is reported, not fatal; deploy.sh checks every unit after. Restarting the Type=notify web UI blocks until it serves.
 start_unit() {
     local u="$1"
     if systemctl restart "$u"; then
@@ -178,11 +143,7 @@ start_unit() {
     fi
 }
 
-# Prometheus first: the poller's remote-write target has to be listening before
-# the poller has anything to write to. Then the web UI, which owns the device
-# registry, and only then the poller that reads it. Neither service hard-depends
-# on another at the unit level, so the ordering is enforced here rather than by
-# a Requires= that would take the whole appliance down with one component.
+# Start order: Prometheus, then the web UI (device registry), then the poller.
 if [[ -n "$with_prometheus" ]]; then
     start_unit prometheus.service
 fi

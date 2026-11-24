@@ -37,14 +37,7 @@ func captureLog(t *testing.T) *syncBuffer {
 	return buf
 }
 
-// TestShutdownSaysWhenSamplesWereLost is the last link in "nothing leaves
-// without something observable saying so".
-//
-// Flush and Close return a typed DroppedError carrying how many samples never
-// reached Prometheus. Reporting that as "Error closing exporter" is true and
-// useless -- it reads like a tidy-up that went wrong rather than telemetry that
-// is gone, and shutdown is the one moment nobody re-reads the logs for. The
-// error was already being logged; what was missing was it saying what it meant.
+// TestShutdownSaysWhenSamplesWereLost checks shutdown logs the samples a DroppedError lost.
 func TestShutdownSaysWhenSamplesWereLost(t *testing.T) {
 	buf := captureLog(t)
 

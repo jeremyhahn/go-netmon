@@ -11,23 +11,10 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/promname"
 )
 
-// maxDefaultNumericColumns bounds how many varying numeric columns a table
-// offers before the reader has to ask for more.
-//
-// Chosen, not derived. IF-MIB contributes 42 columns for one device and no
-// number of them is obviously right; four fits beside the identity and state
-// columns without the table needing horizontal scrolling, which is the failure
-// being fixed. The chooser is the escape hatch, and it is the part that has to
-// be discoverable.
+// maxDefaultNumericColumns bounds the varying numeric columns a table shows by default.
 const maxDefaultNumericColumns = 4
 
-// Table is one indexed group of a device's metrics: the rows share an index,
-// and each metric over that index is a column.
-//
-// A table exists because the metrics agree on their INDEX LABELS, not because
-// anyone declared one. That is what lets a MIB nobody has seen render as a
-// table: the catalog says snmp_ifOperStatus and snmp_ifHCInOctets are both
-// indexed by ifindex, so they are two columns of the same rows.
+// Table is one indexed group of a device's metrics: rows share index labels, each metric is a column.
 type Table struct {
 	// ID is stable across regenerations so a renderer can key selection and
 	// column choices on it.
@@ -35,19 +22,13 @@ type Table struct {
 
 	Module string `json:"module,omitempty"`
 
-	// IndexLabels are the labels whose distinct tuples are the rows, in
-	// INDEX-clause order. Order is part of the meaning.
+	// IndexLabels are the labels whose tuples are the rows, in INDEX-clause order.
 	IndexLabels []string `json:"index_labels"`
 
 	Columns []TableColumn `json:"columns"`
 }
 
-// TableColumn is one metric drawn as a column of a table.
-//
-// It carries no metadata of its own beyond what the column decision needs: the
-// panel it refers to already holds the title, unit, enum decode and query, and
-// duplicating those here would give them two homes and one of them would go
-// stale.
+// TableColumn is one metric drawn as a table column; the panel holds its metadata.
 type TableColumn struct {
 	// PanelID is the panel this column draws, and where its title, unit and
 	// enum decode live.
@@ -59,40 +40,13 @@ type TableColumn struct {
 	// to understand why a column is shown.
 	Kind string `json:"kind,omitempty"`
 
-	// ValueLabel is where this column's reading is when it is not the sample.
-	//
-	// An info metric's sample is ALWAYS 1 and its words are in a label:
-	// snmp_ifalias_info{ifindex="1",value="uplink"} 1. Judging such a column by
-	// its sample finds one distinct value on every row, marks it uniform, and
-	// summarizes it as "1" -- so the column carrying each row's NAME is the
-	// first one dropped from a table whose whole purpose is naming rows.
+	// ValueLabel is the label holding this column's reading when it is not the sample, as for info metrics.
 	ValueLabel string `json:"value_label,omitempty"`
 
-	// Varies says whether the rows disagree about this column's value.
-	//
-	// A column identical on every row differentiates nothing between them, so
-	// it is not a column. It is NOT hidden either: it moves to the table's
-	// SUMMARY LINE, carrying Value, and that distinction is the whole design.
-	//
-	// Hiding would make the layout depend on the data, and then a column's
-	// absence would carry meaning while having three possible causes: uniform,
-	// deselected, or not reported at all. That is the shape that once cost us an incident,
-	// where an absent series read as "the old build is running" while the
-	// binary hash said otherwise.
-	//
-	// Summarizing costs nothing and keeps the answer on screen. ifOperStatus
-	// reading "up" on every interface is uniform AND is the most valuable
-	// thing on the page -- "everything is fine" is what the operator came for
-	// -- and it says exactly that, in one line, without spending 72 rows of
-	// width to repeat one word. When a value stops being uniform the column
-	// MIGRATES from the summary into the table: a visible transition rather
-	// than a silent appearance.
+	// Varies says whether rows disagree; a uniform column moves to the summary line with Value rather than being hidden.
 	Varies bool `json:"varies"`
 
-	// Value is what every row reads, when they all read the same. Empty when
-	// the column varies. It is what the summary line shows, and it is on the
-	// column rather than in a separate list so that a column moving between
-	// the two places is one field changing, not a row moving between arrays.
+	// Value is what every row reads when uniform; empty when the column varies.
 	Value string `json:"value,omitempty"`
 
 	// Default says the column is shown before anyone chooses. Identity and
@@ -100,12 +54,7 @@ type TableColumn struct {
 	Default bool `json:"default"`
 }
 
-// buildTables groups panels into tables by the index they share.
-//
-// Panels with no index labels are scalars and are not table columns: they stay
-// cards. That separation is the catalog's own -- "a scalar has no row and no
-// index" -- and it is what keeps this one rule rather than two modes. Every
-// device gets both sections; a device with nothing indexed simply has no table.
+// buildTables groups indexed panels into tables; scalars stay cards.
 func buildTables(panels []Panel) []Table {
 	byIndex := map[string]*Table{}
 	order := []string{}
@@ -141,18 +90,7 @@ func buildTables(panels []Panel) []Table {
 	return tables
 }
 
-// markVaryingColumns asks Prometheus what each column currently reads on every
-// row, and records which columns the rows disagree about.
-//
-// ONE query for the whole set, not one per column. Every column is a metric
-// name, so a __name__ alternation fetches all of them at once: 42 columns of
-// IF-MIB on dist-01 is one request rather than 42, and the samples returned
-// are the same ones the table needs for its first paint.
-//
-// A read that fails is not fatal. The column decision degrades to "everything
-// varies", which shows more columns than necessary -- the pre-existing
-// behavior -- rather than fewer, because a failed read must never be
-// indistinguishable from "these columns are all the same".
+// markVaryingColumns reads every column in one query and records which vary; a failed read marks all varying.
 func (s *Server) markVaryingColumns(ctx context.Context, device string, tables []Table) {
 	for i := range tables {
 		table := &tables[i]
@@ -167,23 +105,7 @@ func (s *Server) markVaryingColumns(ctx context.Context, device string, tables [
 			continue
 		}
 
-		// Decided PER COLUMN, from that column's own rows.
-		//
-		// Counted as ROWS, not as distinct values: a column of 72 interfaces
-		// all reading 1500 has 72 rows and one value, and reading the second
-		// number as the first makes every uniform column look like a column
-		// too small to judge -- the rule, inverted.
-		//
-		// And counted from the column rather than from the table. A table-wide
-		// row count says nothing about a column that reported one row or none
-		// -- a metric the device carries but has not answered for yet, or a
-		// column populated on some rows only -- and applying the table's count
-		// to it marks it uniform on the strength of its neighbours' data.
-		// "Nothing to compare" and "everything agrees" are different answers
-		// and only the second is a reason to leave a column out.
-		//
-		// Fewer than two rows therefore means shown, which errs toward more
-		// columns rather than fewer, the same way a failed read does.
+		// Decided per column from its own row count: fewer than two rows means shown.
 		for j := range table.Columns {
 			reading := values[table.Columns[j].Metric]
 			table.Columns[j].Varies = reading.rows < 2 ||
@@ -198,20 +120,12 @@ func (s *Server) markVaryingColumns(ctx context.Context, device string, tables [
 	}
 }
 
-// columnReading is what one column currently reads across its rows: how many
-// rows answered, and how many different things they said.
-//
-// Both numbers are needed and neither substitutes for the other. The distinct
-// count decides whether a column differentiates anything; the row count decides
-// whether that question is worth asking at all.
+// columnReading is how many rows a column has and how many distinct values they hold.
 type columnReading struct {
 	rows     int
 	distinct map[string]struct{}
 
-	// unreadable counts rows Prometheus returned that carried no usable value.
-	// They are rows -- so they count toward whether there is anything to
-	// compare -- and they are not values, so they cannot be part of an
-	// agreement.
+	// unreadable counts rows with no usable value: rows, but not values.
 	unreadable int
 }
 
@@ -236,18 +150,7 @@ func (s *Server) columnValues(ctx context.Context, device string, columns []Tabl
 
 	values := map[string]columnReading{}
 
-	// A row Prometheus returned but the decoder could not read -- a NaN, an
-	// infinity, a malformed sample -- is not a row that agrees with the others.
-	// Counting only the survivors turns "three rows, one unreadable" into "two
-	// rows that agree", which is a different claim and a false one: the column
-	// would be summarized as though every row read the same, and the row whose
-	// data is unavailable would vanish from the table.
-	//
-	// NaN is not exotic here. It is how Prometheus encodes an undefined result,
-	// and a division or a counter reset produces one on real devices routinely.
-	//
-	// Recorded per metric rather than for the whole read, so one unreadable row
-	// costs its own column and not the other forty-one.
+	// An unreadable row (NaN, infinity, malformed) counts as a row that does not agree, per metric.
 	for _, labels := range discarded {
 		name := labels[promname.NameLabel]
 		if name == "" {
@@ -286,21 +189,7 @@ func (s *Server) columnValues(ctx context.Context, device string, columns []Tabl
 	return values, nil
 }
 
-// chooseDefaultColumns marks the columns a table shows before anyone chooses.
-//
-// A column that does not vary is not a column: it goes to the summary line,
-// whatever its kind. That is the same rule for a state reading "up" on every
-// interface and an MTU reading 1500 on every interface -- both are one fact,
-// and one fact does not need 72 rows of width to say it.
-//
-// Among the columns that DO vary, kind decides how many are shown. Enums and
-// text are always shown: a state column where some rows disagree is the thing
-// the operator is looking for, and there are only ever a few. Numerics are
-// bounded, because IF-MIB alone contributes 42 and a table needing horizontal
-// scrolling is the failure this replaces.
-//
-// Nothing here can be proved right for a MIB nobody has seen, so the chooser is
-// the escape hatch and the first counter-example refines the rule.
+// chooseDefaultColumns: uniform columns go to the summary line; varying enums and text always show; varying numerics are bounded.
 func chooseDefaultColumns(tables []Table, panels []Panel) {
 	byID := make(map[string]Panel, len(panels))
 	for _, p := range panels {

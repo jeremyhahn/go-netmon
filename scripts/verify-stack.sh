@@ -1,18 +1,5 @@
 #!/usr/bin/env bash
-# Capture and compare the observable state of a deployed go-netmon stack.
-#
-# Used to prove that a backup/restore cycle put the deployment back exactly as
-# it was, and as a general post-deployment sanity check. Everything it reads
-# comes from the running services' HTTP APIs, so it verifies what the stack
-# actually serves rather than what is on disk.
-#
-# Configuration state (devices, profiles, MIB catalog, assignments, poll
-# intervals) must match a previous capture exactly. Metric state is reported
-# with its deltas rather than compared for equality: a live stack keeps
-# scraping, so series and sample counts legitimately grow between captures.
-# What must hold for metric HISTORY is that the oldest retained sample did not
-# move forward - that is what tells you the TSDB came back rather than
-# restarting empty.
+# Capture and compare a deployed stack's served state: configuration must match exactly; metrics report deltas and the oldest sample must not move.
 
 set -euo pipefail
 
@@ -43,10 +30,7 @@ lookback_days="${NETMON_HISTORY_LOOKBACK_DAYS:-30}"
 
 get() { curl -fsS --max-time 60 "$@"; }
 
-# capture_state emits a normalised JSON document describing the stack. Fields
-# that change on every read for uninteresting reasons - record creation
-# timestamps, MIB descriptions - are deliberately excluded so two captures of
-# an unchanged stack are byte-identical in the configuration section.
+# capture_state emits a normalised JSON description of the stack, excluding volatile fields such as creation times and MIB descriptions.
 capture_state() {
     local devices profiles mibs
 
@@ -197,9 +181,7 @@ compare_states() {
     log "    before: $(fmt_unix "$b_old")"
     log "    after:  $(fmt_unix "$a_old")"
 
-    # Metric history is the one thing a restore can silently lose: a stack that
-    # comes back with an empty TSDB looks perfectly healthy and starts scraping
-    # immediately. The oldest retained sample moving forward is the signal.
+    # The oldest retained sample moving forward means metric history was lost.
     if [ "$b_old" = "null" ] || [ "$a_old" = "null" ]; then
         log "  metric history: INCONCLUSIVE (no 'up' series in the window)"
         failed=1

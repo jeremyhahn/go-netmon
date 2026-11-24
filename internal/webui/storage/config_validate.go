@@ -31,9 +31,6 @@ func (e *ConfigStoreError) Error() string {
 func (e *ConfigStoreError) Unwrap() error { return e.Err }
 
 // ConfigSchemaError reports a configuration document this build cannot read.
-//
-// It is raised before any field is examined, so a document from a future build
-// is refused whole rather than read for the parts that happen to still parse.
 type ConfigSchemaError struct {
 	Found     int
 	Supported int
@@ -71,10 +68,6 @@ func (e *ConfigProblem) Error() string {
 }
 
 // ConfigValidationError reports every problem found in one document.
-//
-// Every problem is collected rather than only the first, because an operator
-// fixing an exported file by hand should see the whole list once instead of
-// discovering it one failed import at a time.
 type ConfigValidationError struct {
 	Problems []ConfigProblem
 }
@@ -88,12 +81,7 @@ func (e *ConfigValidationError) Error() string {
 		" problem(s) in the configuration document: " + strings.Join(parts, "; ")
 }
 
-// ConfigMIBMissingError reports modules the document references that this
-// instance cannot supply: neither carried by the bundle nor already imported.
-//
-// It is deliberately fatal to the whole import. Dropping the assignment instead
-// would leave a device polling less than the configuration asked for, with
-// nothing on the screen to say so.
+// ConfigMIBMissingError reports referenced modules neither bundled nor imported; it fails the whole import.
 type ConfigMIBMissingError struct {
 	Modules []string
 }
@@ -117,12 +105,7 @@ func (e *AssignmentFieldError) Error() string {
 	return "assignment: invalid " + e.Field + " " + strconv.Quote(e.Value) + ": " + e.Reason
 }
 
-// ValidateMIBAssignment reports the first filter the poller could not act on.
-//
-// Patterns are compiled here rather than at poll time so that a malformed one is
-// refused at the edge and never reaches a worker. It is the single definition of
-// a usable assignment: the HTTP handlers and the configuration importer both
-// call it, so neither can accept a rule the other would reject.
+// ValidateMIBAssignment reports the first filter the poller could not act on; shared by handlers and importer.
 func ValidateMIBAssignment(a MIBAssignment) error {
 	for _, group := range assignmentPatternGroups(a) {
 		for _, pattern := range group.patterns {
@@ -163,12 +146,7 @@ func assignmentPatternGroups(a MIBAssignment) []patternGroup {
 	}
 }
 
-// ValidateConfig reports everything wrong with a configuration document that can
-// be judged without reading the store.
-//
-// The schema version is checked first and on its own: a document this build
-// cannot read must not have its fields reported as individually invalid, which
-// would send an operator editing a file that is simply from a newer build.
+// ValidateConfig reports everything wrong with a document that needs no store read, schema version first.
 func ValidateConfig(doc *Config) error {
 	if doc == nil {
 		return &ConfigValidationError{Problems: []ConfigProblem{{

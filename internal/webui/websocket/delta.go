@@ -12,32 +12,8 @@ import (
 )
 
 // Recognizing a result the browser already has.
-//
-// A subscription is re-queried on every streaming round, but a device is polled
-// every 30 to 60 seconds, so most rounds read back exactly the reading they
-// read last time. Sending it again costs a serialization, a frame, and a
-// browser wake-up to plot a point the chart is already making.
 
-// fingerprint summarizes a query's result.
-//
-// Equal fingerprints mean the reading has not moved: same rows, same numbers.
-// It is what the backoff below counts, and it answers the same question the
-// delta does -- but it answers it in one number, cheaply, for a query with no
-// subscribers left to diff for.
-//
-// The timestamp is deliberately excluded. An instant query is evaluated at the
-// moment it is asked, and Prometheus stamps the result with that evaluation
-// time rather than with the scrape the value came from -- so the same unchanged
-// reading arrives with a later timestamp every five seconds. Including it made
-// every round look like a change and the filter never fired once.
-//
-// This costs the charts nothing: a steady query is still announced every round
-// by MessageTypeMetricsUnchanged, and the browser carries the reading it holds
-// forward to that tick. What is saved is the numbers, not the notification.
-//
-// Per-series hashes are summed, so the same samples in a different order
-// fingerprint the same: Prometheus does not promise an order, and treating a
-// reordering as a change would defeat the whole thing.
+// fingerprint summarizes a query result as an order-independent sum of per-series hashes, excluding timestamps.
 func fingerprint(metrics []MetricValue) uint64 {
 	// A distinct value for "no samples", so an empty result is not confused
 	// with a result whose series happen to cancel out.
@@ -78,23 +54,10 @@ func fingerprint(metrics []MetricValue) uint64 {
 	return sum ^ (uint64(len(metrics)) * 0x9E3779B97F4A7C15)
 }
 
-// SteadyRoundsBeforeBackoff is how many consecutive rounds a query must read
-// the same thing before it is re-queried at half rate.
-//
-// The tick is 5 seconds and no device here is polled faster than 30, so most
-// rounds ask Prometheus a question whose answer cannot have changed. Backing
-// off halves that.
-//
-// It only ever applies to a reading that has already held still for this many
-// rounds, so a value that is moving is never delayed: the cost falls entirely
-// on values that have demonstrably stopped. When one does change, the query
-// returns to every round immediately.
+// SteadyRoundsBeforeBackoff is how many unchanged rounds a query reads before it is re-queried at half rate.
 const SteadyRoundsBeforeBackoff = 6
 
 // steadyQueryRounds tracks how long each query has read the same thing.
-//
-// It lives on the hub rather than the client because the question -- has this
-// reading moved? -- is about Prometheus, not about who is watching.
 type steadyQueryRounds struct {
 	mu     sync.Mutex
 	rounds map[string]int
@@ -119,13 +82,7 @@ func (s *steadyQueryRounds) due(query string, round int64) bool {
 	return round%2 == 0
 }
 
-// observe records what a query read, and lengthens or ends its steady streak.
-//
-// It returns nothing on purpose. It used to report whether the reading moved,
-// and no caller has ever used that: who receives a frame is decided by
-// queryStates.advance, from the sequence a client holds. Returning it invited
-// the reading that a change here reaches a client -- which it does not -- and
-// that misreading survived a code comment before a mutation caught it.
+// observe records what a query read, extending or ending its steady streak.
 func (s *steadyQueryRounds) observe(query string, reading uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,20 +96,7 @@ func (s *steadyQueryRounds) observe(query string, reading uint64) {
 	s.rounds[query] = 0
 }
 
-// wake puts a query back on every round, because someone has just subscribed
-// to it who has never been sent a value.
-//
-// The backoff is a property of the QUERY -- it has not moved for a while -- but
-// being served is a property of a CLIENT. A new subscriber inherits a backoff
-// it had no part in creating, and on a skipped round it is told the query is
-// "still reading what it already has", which it does not have. Measured: with
-// the round counter odd it receives nothing at all that round.
-//
-// Only the streak is cleared, because the streak is the only thing gating
-// whether the query is asked. The reading is left alone: waking has no business
-// editing what the query last read, and the two are independent -- who receives
-// a frame is decided by states.advance, not by this reading, whose only job is
-// to say whether the streak continues.
+// wake clears a query's steady streak because a new subscriber needs a value.
 func (s *steadyQueryRounds) wake(query string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -160,20 +104,12 @@ func (s *steadyQueryRounds) wake(query string) {
 	delete(s.rounds, query)
 }
 
-// queries returns every query this tracker still holds anything for.
-//
-// It exists so the post-round sweep can check this tracker as well as the
-// sequence states. Two structures that must agree about which queries are live
-// and only one of them swept is a leak by construction, whatever either one
-// does correctly on its own.
+// queries returns every query this tracker holds anything for, for the post-round sweep.
 func (s *steadyQueryRounds) queries() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Both maps, because a query can be in either: last is written every time
-	// a query is asked, rounds only once it has held still. Sweeping on one of
-	// them would leave the other holding the query it was supposed to drop,
-	// which is the bug this exists to fix, one level down.
+	// Both maps: last is written on every ask, rounds only once steady.
 	held := make([]string, 0, len(s.last))
 	seen := make(map[string]struct{}, len(s.last))
 	for query := range s.last {
@@ -199,28 +135,13 @@ func (s *steadyQueryRounds) forget(query string) {
 	delete(s.last, query)
 }
 
-// held is what a client has for one query: the sequence, and the epoch that
-// sequence was recorded in.
-//
-// The epoch is what makes the record safe to write from a streaming goroutine
-// while the client's own read loop can clear it at any moment. A frame is
-// queued and its sequence recorded in two steps, and between them the browser
-// can say it has lost its place: without the epoch, the record written second
-// would quietly overwrite the clearing that happened first, and the server
-// would go on believing a client is current while the browser has already
-// given up on that frame.
+// held is a client's sequence for one query and the epoch it was recorded in, so a resync cannot be overwritten.
 type held struct {
 	seq   uint64
 	epoch uint64
 }
 
-// at reports what this client holds for a query. A zero sequence means it has
-// never been sent one.
-//
-// The record is per client rather than per query because the readings are the
-// same for everyone and only what each has already SEEN differs. It is what
-// decides whether a client can be handed the delta the round already computed
-// or has to be handed the whole reading.
+// at reports what this client holds for a query; zero means never sent.
 func (c *Client) at(query string) held {
 	c.seenMu.Lock()
 	defer c.seenMu.Unlock()
@@ -228,15 +149,7 @@ func (c *Client) at(query string) held {
 	return c.seen[query]
 }
 
-// mark records that a client has been sent a query at a sequence, unless it
-// gave up on that query in the meantime.
-//
-// Optimistic about delivery: the sequence is recorded when the frame is handed
-// to the client's send queue, not when the browser applies it. A frame that
-// cannot be queued calls forget instead, a connection that dies after queueing
-// takes the client with it, and a browser that could not apply a frame says so
-// -- and this is the case that needs the epoch, because that message is
-// processed by another goroutine that may run between the send and this call.
+// mark records a client was sent a query at a sequence, unless it gave up on that query since.
 func (c *Client) mark(query string, at held) {
 	c.seenMu.Lock()
 	defer c.seenMu.Unlock()
@@ -253,17 +166,7 @@ func (c *Client) mark(query string, at held) {
 	c.seen[query] = at
 }
 
-// forget drops what this client was believed to have for a query, so the next
-// round sends it whole.
-//
-// Used when a frame could not be delivered and when a client says it has lost
-// its place. Both mean the same thing: the server no longer knows what this
-// browser is holding, and the only safe answer to that is the entire reading.
-//
-// The entry stays, holding a raised epoch, because a delivery for the previous
-// one may still be on its way to the send queue and must not be able to write
-// itself back in. discard is the version that reclaims the memory, for a query
-// the client has finished with entirely.
+// forget makes the next round send a query whole to this client, raising the epoch.
 func (c *Client) forget(query string) {
 	c.seenMu.Lock()
 	defer c.seenMu.Unlock()
@@ -276,17 +179,7 @@ func (c *Client) forget(query string) {
 	c.seen[query] = held{epoch: c.seen[query].epoch + 1}
 }
 
-// discard drops a query's record entirely.
-//
-// Used when the client subscribes or unsubscribes, both of which mean it is
-// new to the query whatever it held before. Unlike forget it reclaims the
-// entry, which is what stops the record growing for the life of a session as
-// an operator moves between devices all day.
-//
-// A delivery already in flight can recreate the entry after this, leaving one
-// stale record for a query the client never returns to. Subscribing to it again
-// clears it, and it is one map entry either way -- worth naming, not worth
-// serializing the streaming path against the hub lock to prevent.
+// discard drops a query's record entirely, on subscribe or unsubscribe.
 func (c *Client) discard(query string) {
 	c.seenMu.Lock()
 	defer c.seenMu.Unlock()
@@ -295,10 +188,6 @@ func (c *Client) discard(query string) {
 }
 
 // refuse tells a client that some of its subscriptions were declined.
-//
-// Saying so matters: a page whose subscriptions were silently dropped shows
-// cards that wait forever for data nobody is collecting, which reads as a
-// broken device rather than as a limit having been reached.
 func (c *Client) refuse(count int) {
 	data, err := json.Marshal(ServerMessage{
 		Type: MessageTypeError,

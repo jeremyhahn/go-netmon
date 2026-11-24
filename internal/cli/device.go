@@ -76,12 +76,7 @@ func newDeviceListCommand(env *Env) *cobra.Command {
 	return cmd
 }
 
-// newDeviceListFilter builds the search-and-cap filter for a device listing.
-//
-// It is uncapped by default. A device list is the inventory an operator built
-// by hand, and it is read to confirm what is there; hiding part of it would
-// cost more than the flood a cap prevents. --limit is there for the fleet that
-// outgrows a screen.
+// newDeviceListFilter builds the search filter for a device listing, uncapped unless --limit.
 func newDeviceListFilter() *listFilter[client.Device] {
 	return &listFilter[client.Device]{
 		noun:   "devices",
@@ -198,12 +193,7 @@ func renderDeviceDetail(
 	return nil
 }
 
-// renderDeviceMIBTable lists a device's MIBs with where each one comes from and
-// how it is polled. indent prefixes the first column so the same table can sit
-// inside a detail view.
-//
-// The polling state comes from the listing itself, so showing it costs no extra
-// request per module.
+// renderDeviceMIBTable lists a device's MIBs with source and polling state.
 func renderDeviceMIBTable(
 	out io.Writer,
 	page listPage[client.AssignedMIB],
@@ -346,12 +336,7 @@ func newDeviceUpdateCommand(env *Env) *cobra.Command {
 	return cmd
 }
 
-// bindDeviceFlags declares the flags that describe a device.
-//
-// --poll-interval is bound to its own variable rather than to the device,
-// because the device carries the interval as an optional value and 0 on the
-// command line is a request to clear it, not the number zero. applyPollInterval
-// does that translation.
+// bindDeviceFlags declares the device flags; --poll-interval is bound separately so 0 can mean clear.
 func bindDeviceFlags(cmd *cobra.Command, device *client.Device, pollInterval *int) {
 	f := cmd.Flags()
 	f.StringVar(&device.Name, "name", "", "device name (unique)")
@@ -374,12 +359,7 @@ func bindDeviceFlags(cmd *cobra.Command, device *client.Device, pollInterval *in
 		"seconds between polls of this device; 0 uses the server's global default")
 }
 
-// readV3Passwords fills the v3 passphrases from the environment when the flags
-// were not given.
-//
-// A passphrase passed as a flag is in the shell's history and in the process
-// list for anything on the host to read. The environment is not perfect either,
-// but it keeps the secret off both.
+// readV3Passwords fills unset v3 passphrases from the environment, keeping them out of history and ps.
 func readV3Passwords(cmd *cobra.Command, device *client.Device) {
 	if !cmd.Flags().Changed("auth-password") {
 		if value := os.Getenv("NETMON_AUTH_PASSWORD"); value != "" {
@@ -393,12 +373,7 @@ func readV3Passwords(cmd *cobra.Command, device *client.Device) {
 	}
 }
 
-// applyPollInterval puts an explicitly-given --poll-interval onto a device.
-//
-// A flag that was not given leaves the device alone, so "update --name x" does
-// not silently reset a schedule. 0 clears the device's own interval, which is
-// how an operator hands it back to the global default — the same reading
-// --limit 0 has elsewhere in this CLI.
+// applyPollInterval sets an explicitly given --poll-interval; 0 clears it back to the global default.
 func applyPollInterval(cmd *cobra.Command, device *client.Device, seconds int) {
 	if !cmd.Flags().Changed("poll-interval") {
 		return
@@ -438,10 +413,7 @@ func applyDeviceFlagOverrides(cmd *cobra.Command, current *client.Device, flags 
 		current.PrivProtocol = flags.PrivProtocol
 	}
 
-	// A passphrase can arrive from the environment as well as from a flag, so
-	// these are overlaid on whether a value is present rather than on whether
-	// the flag was given. A passphrase left out is left alone, which is what
-	// makes "update --address x" on a v3 device keep working.
+	// Passphrases overlay on presence, so an update that omits them keeps them.
 	if flags.AuthPassword != "" {
 		current.AuthPassword = flags.AuthPassword
 	}
@@ -450,11 +422,7 @@ func applyDeviceFlagOverrides(cmd *cobra.Command, current *client.Device, flags 
 	}
 }
 
-// describePollInterval renders how often a device is polled.
-//
-// A device with no interval of its own is labeled as inheriting and still
-// shows the number, because "default" alone does not tell an operator whether
-// the device is polled every 30 seconds or every 10 minutes.
+// describePollInterval renders a device's interval, marking an inherited one.
 func describePollInterval(d client.Device) string {
 	effective := d.EffectivePollInterval
 	seconds, own := client.PollIntervalOf(d)
@@ -838,10 +806,7 @@ func newDeviceMIBListCommand(env *Env) *cobra.Command {
 	return cmd
 }
 
-// deviceMIBsReport is the --json form of "device mib list". The listing block
-// describes all_mibs, which is the list the command prints and the only one
-// --search and --limit act on; direct_mibs stays whole because the SOURCE
-// column is decided against it.
+// deviceMIBsReport is the --json form of "device mib list"; --search and --limit act on all_mibs only.
 type deviceMIBsReport struct {
 	client.DeviceMIBs
 

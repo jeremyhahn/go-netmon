@@ -888,9 +888,7 @@ func TestExportConfigLeavesOutAnAssignmentWhoseModuleIsGone(t *testing.T) {
 		t.Fatalf("GetDeviceByName: %v", err)
 	}
 
-	// A join row pointing at a module the catalog no longer holds. Carrying it
-	// into the document would produce a file that fails its own validation, so
-	// the export drops it.
+	// A join row to a module no longer in the catalog is dropped from the export.
 	dangling := []byte(PrefixDevMIB + formatID(device.ID) + ":" + formatID(4242))
 	if err := store.db.Set(dangling, []byte{1}, pebble.Sync); err != nil {
 		t.Fatalf("seed dangling assignment: %v", err)

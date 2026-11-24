@@ -7,13 +7,7 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-// MIBAssignment describes how one MIB is polled for the device or profile it is
-// assigned to.
-//
-// It is stored in the value of the existing dev-mib:/prof-mib: join rows. Rows
-// written before this type existed hold a single sentinel byte, which decodes to
-// the default below — enabled with no filters — so existing assignments keep
-// polling exactly as they did.
+// MIBAssignment describes how a MIB is polled for its device or profile; legacy one-byte rows decode to enabled with no filters.
 type MIBAssignment struct {
 	// Enabled reports whether this MIB is polled at all. A disabled assignment
 	// stays attached, so pausing a MIB does not lose its filters.

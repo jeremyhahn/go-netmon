@@ -12,12 +12,7 @@ import (
 // error through.
 const scaleTolerance = 1e-9
 
-// TestSensorScaleExponent pins the exponent of every declared scale, in both
-// modules.
-//
-// The ladder is stated value by value rather than recomputed with the formula
-// under test, so a change to that formula has to be argued with against
-// written-down expectations instead of agreeing with itself.
+// TestSensorScaleExponent pins every declared scale's exponent in both modules.
 func TestSensorScaleExponent(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -72,14 +67,7 @@ func TestSensorScaleExponent(t *testing.T) {
 	}
 }
 
-// TestSensorScaleExponentDiffersOnlyAtFourteenAndFifteen pins the shape of the
-// disagreement itself: exactly two values depend on the module, they are 14
-// and 15, and they are swapped relative to each other.
-//
-// Stating it as a property rather than as more examples is what makes it a
-// guard. A future change that collapses the two modules to one table -- which
-// has been proposed here twice on a plausible-sounding SI argument -- makes
-// the sets equal and fails this immediately.
+// TestSensorScaleExponentDiffersOnlyAtFourteenAndFifteen checks only 14 and 15 differ, swapped.
 func TestSensorScaleExponentDiffersOnlyAtFourteenAndFifteen(t *testing.T) {
 	var differing []SensorScale
 
@@ -136,14 +124,7 @@ func TestSensorScaleExponentStandardTableIsTheArithmeticLadder(t *testing.T) {
 	}
 }
 
-// TestSensorScaleExponentCiscoTableIsNotTheArithmeticLadder is the same
-// property from the other side, and the one that actually matters on this
-// fleet: every Cisco device answers the Cisco table, and two of its values are
-// deliberately not the ladder.
-//
-// The tell is monotonicity. A computed ladder is always monotonic, so a
-// version of this code that passes the ordering check below has silently gone
-// back to computing.
+// TestSensorScaleExponentCiscoTableIsNotTheArithmeticLadder checks the Cisco table is not monotonic.
 func TestSensorScaleExponentCiscoTableIsNotTheArithmeticLadder(t *testing.T) {
 	for scale := SensorScaleYocto; scale <= SensorScaleYotta; scale++ {
 		got, err := scale.Exponent(SensorTableCisco)
@@ -219,13 +200,7 @@ func TestSensorScaleExponentRejectsUndeclared(t *testing.T) {
 	}
 }
 
-// TestSensorPrecisionFractionalDigits covers the whole declared range,
-// including the negative half.
-//
-// The negative cases are the point of this test. A negative precision is an
-// accuracy claim, not a scale factor: CISCO-ENTITY-SENSOR-MIB's own example is
-// a fan reporting 0..10000 with precision -2 whose reading is 10,000 RPM, not
-// 1,000,000. Every negative precision here must therefore divide by nothing.
+// TestSensorPrecisionFractionalDigits covers the declared range; negative precision never divides.
 func TestSensorPrecisionFractionalDigits(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -312,9 +287,7 @@ func TestScaleSensorValue(t *testing.T) {
 		{"celsius tenths", 425, SensorScaleUnits, 1, SensorTableCisco, 42.5},
 		{"celsius whole degrees", 42, SensorScaleUnits, 0, SensorTableCisco, 42},
 
-		// Negative precision changes nothing but the accuracy claim.
-		// CISCO-ENTITY-SENSOR-MIB's fan: 10000 with precision -2 is
-		// ten thousand RPM.
+		// Negative precision is an accuracy claim: the Cisco fan example, 10000 at -2, is 10,000 RPM.
 		{"rpm accurate to hundreds", 10000, SensorScaleUnits, -2, SensorTableCisco, 10000},
 		{"rpm accurate to tens", 9900, SensorScaleUnits, -1, SensorTableCisco, 9900},
 		{"rpm minimum precision", 12345678, SensorScaleUnits, -8, SensorTableCisco, 12345678},
@@ -330,9 +303,7 @@ func TestScaleSensorValue(t *testing.T) {
 		{"kilowatts to hundredths", 1250, SensorScaleKilo, 2, SensorTableCisco, 12500},
 		{"nano with precision", 5000, SensorScaleNano, 3, SensorTableCisco, 5e-9},
 
-		// The scales either side of the exa/peta discontinuity, which no
-		// other case here reaches: an off-by-one on this pair used to be
-		// invisible between the ordinary scales and yocto/yotta.
+		// The scales either side of the 14/15 discontinuity.
 		{"tera", 5, SensorScaleTera, 0, SensorTableCisco, 5e12},
 		{"zetta", 5, SensorScaleZetta, 0, SensorTableCisco, 5e21},
 

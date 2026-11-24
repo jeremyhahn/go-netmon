@@ -7,25 +7,7 @@ import (
 	"testing"
 )
 
-// Only what changed goes on the wire.
-//
-// The hub re-queried every subscription every 5 seconds and sent the whole
-// result each time, whether or not anything in it had moved. Devices are polled
-// every 30 to 60 seconds, so eleven of every twelve frames carried a value the
-// browser already had. Multiplied by the subscriptions a dashboard holds and
-// the sessions watching, that was the bulk of the traffic.
-//
-// The trap: an instant query is stamped with the time it was evaluated, not
-// with the scrape the value came from, so an unchanged reading arrives with a
-// later timestamp every single round. A change test that looks at the timestamp
-// therefore fires every round and saves nothing. Only the rows and the numbers
-// count.
-//
-// What a steady reading still gets is a heartbeat naming its query. The
-// dashboard is a tick-based live view: its charts have to advance while a value
-// holds, or the line stops at the last change and reads as data having stopped.
-// The browser holds the reading already, so the heartbeat carries names, not
-// numbers.
+// Only changed rows and values go on the wire; steady readings get a heartbeat naming their query, and timestamps are not compared.
 
 // readings keeps only the frames that carry data, of either kind.
 func readings(frames []ServerMessage) []ServerMessage {
@@ -143,14 +125,7 @@ func TestUnchangedResultIsNotResent(t *testing.T) {
 	}
 }
 
-// TestALaterEvaluationOfTheSameValueIsNotAChange is the production case, and
-// the one an earlier version of this got wrong.
-//
-// Prometheus evaluates an instant query at the moment it is asked and stamps
-// the result with that time, so a device polled every 60 seconds reports the
-// same number under twelve different timestamps. Measured against the deployed
-// stack, snmp_hrSystemProcesses read 37 at t=1786583794 and 37 again at
-// t=1786583800. If the timestamp counts, nothing is ever unchanged.
+// TestALaterEvaluationOfTheSameValueIsNotAChange checks a re-evaluated instant query with the same value and a later timestamp is unchanged.
 func TestALaterEvaluationOfTheSameValueIsNotAChange(t *testing.T) {
 	at := int64(1786583794)
 	h := NewHub(func(context.Context, string) ([]MetricValue, error) {
@@ -319,12 +294,7 @@ func TestUnsubscribeForgetsWhatTheClientHadSeen(t *testing.T) {
 	}
 }
 
-// TestAMovingValueIsNeverDelayed is the constraint on the backoff.
-//
-// Asking Prometheus less often is only acceptable if it costs nothing an
-// operator can see. A value that is changing must therefore be queried on every
-// single round; only one that has demonstrably stopped may be asked about less
-// often, and the moment it moves again it returns to full rate.
+// TestAMovingValueIsNeverDelayed checks a changing value is queried every round and only a steady one backs off.
 func TestAMovingValueIsNeverDelayed(t *testing.T) {
 	var value float64
 	var asked int
@@ -474,17 +444,7 @@ func TestHeartbeatKeepsTheListWhenOnlySomeSubscriptionsAreSteady(t *testing.T) {
 	}
 }
 
-// TestAHeartbeatToAnUnannouncedBrowserStillNamesEveryQuery is the compatibility
-// half of the all-steady flag, and the reason the flag is negotiated at all.
-//
-// A browser that was loaded before this build exists is running a script whose
-// unchanged-handler reads message.queries and nothing else. Send it a frame
-// that names none of them and it advances none of them: every chart on the page
-// holds its last value, with the socket still open and nothing on screen saying
-// anything is wrong. In a monitoring tool that reads as calm, which is the one
-// failure a monitoring tool must never have. The page cannot be fixed from the
-// server -- it is already loaded -- so the server stays conservative until the
-// browser says otherwise.
+// TestAHeartbeatToAnUnannouncedBrowserStillNamesEveryQuery checks a browser without the all-steady capability gets every query named.
 func TestAHeartbeatToAnUnannouncedBrowserStillNamesEveryQuery(t *testing.T) {
 	h := NewHub(staticQuery([]MetricValue{sample("1", 42, 1700000000)}), nil)
 

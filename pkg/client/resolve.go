@@ -78,18 +78,7 @@ type namedID struct {
 // lister fetches every name→ID pair of one resource kind.
 type lister func(context.Context) ([]namedID, error)
 
-// nameCache memoizes one List endpoint's name→ID mapping for the life of a
-// Client.
-//
-// Resolving a name costs a full listing, and one command resolves many names —
-// "netmon profile mib add core IF-MIB BRIDGE-MIB ENTITY-MIB" resolves four — so
-// without a cache a server holding a few hundred MIB modules serves the whole
-// catalog once per argument.
-//
-// The cache never reports "not found" from memory: a miss re-lists once before
-// concluding the name does not exist, so a resource created after the cache was
-// filled is still found. That leaves only a stale hit, which is why the commands
-// that create, rename or delete something invalidate the kind they changed.
+// nameCache memoizes one List endpoint's name-to-ID map per Client; a miss re-lists, and mutating commands invalidate it.
 type nameCache struct {
 	// mu is held across the listing rather than only across the map write, so
 	// concurrent resolves of the same kind coalesce into one request instead of
@@ -113,10 +102,7 @@ func (c *nameCache) lookup(ctx context.Context, kind, ref string, list lister) (
 		}
 	}
 
-	// Either nothing is cached yet or the name is absent from what is. Both
-	// need a listing: a name the cache has never seen may have been created
-	// since it was filled, and refusing it from memory would make a resource an
-	// earlier command in this process created invisible to the next one.
+	// Nothing cached or the name is absent: list again, since it may have been created since.
 	if err := c.reload(ctx, list); err != nil {
 		return 0, err
 	}

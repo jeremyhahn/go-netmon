@@ -22,30 +22,18 @@ type MIB struct {
 	Tags        []string  `json:"tags,omitempty"`
 	ImportedAt  time.Time `json:"imported_at"`
 
-	// RefreshedAt records when the module's parsed metadata was last replaced
-	// in place by a re-import. It stays absent until the first refresh, which
-	// is what makes it possible to tell, across a few hundred modules, which
-	// ones a re-import actually reached.
+	// RefreshedAt is when a re-import last replaced the parsed metadata; absent until then.
 	RefreshedAt *time.Time `json:"refreshed_at,omitempty"`
 }
 
-// MIBContent is the part of a MIB record that is derived from parsing the
-// module file.
-//
-// Everything else on a MIB — its ID, its name, its tags, and the device and
-// profile assignments that are keyed by its ID — describes how the operator
-// uses the module rather than what the file says, so re-parsing a file must
-// not disturb any of it.
+// MIBContent is the part of a MIB record derived from parsing the module file.
 type MIBContent struct {
 	FilePath    string
 	Description string
 	ObjectCount int
 }
 
-// MIBExistsError reports an attempt to import a module that is already stored.
-//
-// It carries the existing record's ID because the useful next step — refreshing
-// that record in place rather than deleting it — needs to name it.
+// MIBExistsError reports importing a module already stored, with its ID.
 type MIBExistsError struct {
 	Name string
 	ID   int64
@@ -252,17 +240,7 @@ func (s *Storage) UpdateMIB(ctx context.Context, m *MIB) error {
 	return nil
 }
 
-// ReplaceMIBContent refreshes a stored module's parsed metadata in place and
-// returns the resulting record.
-//
-// Only the fields that come from the file change. The record keeps its ID — the
-// device and profile join rows are keyed by it, so a new ID would silently
-// detach the module from everything polling it — along with its name, its tags
-// and its original import time. No join row is read or written here, so every
-// assignment and every per-assignment filter survives by construction.
-//
-// The record is rewritten with a single store write, so a caller that fails
-// mid-refresh leaves the previous record intact rather than a half-updated one.
+// ReplaceMIBContent refreshes a module's parsed metadata in place in one write, keeping ID, name, tags, import time and assignments.
 func (s *Storage) ReplaceMIBContent(ctx context.Context, name string, content MIBContent) (*MIB, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

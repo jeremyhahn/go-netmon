@@ -13,18 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// The client pumps driven over a REAL connection, which only a non-FIPS build
-// can make.
-//
-// dialHub performs an RFC 6455 handshake, and Sec-WebSocket-Accept is a SHA-1
-// digest of the client key and a fixed GUID (section 4.2.2). Under
-// GODEBUG=fips140=only the runtime refuses that hash, so the dial fails on
-// both the server and the client side -- gorilla/websocket computes the same
-// digest in Upgrader.Upgrade and in Dialer.Dial.
-//
-// The Hub itself, its client registry, the delta encoding and the query path
-// touch no non-approved primitive and stay in stream_test.go, covered in both
-// builds. Only the handshake moved.
+// Client pumps over a real connection, non-FIPS only: the RFC 6455 handshake needs SHA-1.
 
 // dialHub starts an HTTP server that upgrades to a hub client and returns the
 // browser side of the connection.

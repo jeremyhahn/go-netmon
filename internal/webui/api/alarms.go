@@ -7,12 +7,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/alarm"
 )
 
-// The bell.
-//
-// Everything the UI said about a fault used to be a toast: shown once, for a
-// few seconds, and then gone. A reader who was not watching the screen at that
-// moment had no way to find out afterwards, and there was nowhere on the page
-// that answered "is anything wrong right now". This is that place.
+// The alarm bell API.
 
 // AlarmsResponse is what the bell reads.
 type AlarmsResponse struct {
@@ -23,16 +18,10 @@ type AlarmsResponse struct {
 	// the list.
 	Count int `json:"count"`
 
-	// Configured is how many rules are loaded. Zero is not a fault -- an
-	// operator who has written no rules has none -- but it is the difference
-	// between "nothing is wrong" and "nothing is being watched", and a bell
-	// that cannot tell them apart is a bell that lies.
+	// Configured is how many rules are loaded.
 	Configured int `json:"configured"`
 
-	// Unevaluated is how many rules could not be asked on the last round.
-	// Their last known alarms are still in the list, so this is what says the
-	// answer is incomplete rather than current -- the difference between a
-	// quiet fleet and a Prometheus that has stopped answering.
+	// Unevaluated is how many rules could not be evaluated last round; their last alarms are still listed.
 	Unevaluated int `json:"unevaluated,omitempty"`
 }
 
@@ -75,12 +64,6 @@ func (s *Server) handleGetAlarms(w http.ResponseWriter, _ *http.Request) {
 }
 
 // ReloadAlarms replaces the alarm rules on a running server.
-//
-// This is the whole of hot reload from the server's side: the config file is
-// re-read by the process that owns it and the rules it yielded arrive here. A
-// file that does not parse or does not validate never reaches this call, so a
-// bad edit leaves the running rules exactly as they were rather than emptying
-// the bell.
 func (s *Server) ReloadAlarms(rules []alarm.Rule) {
 	if s.alarms == nil {
 		return

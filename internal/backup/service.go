@@ -1,34 +1,4 @@
-// Package backup creates and restores cold backups of a deployed go-netmon
-// stack: its Docker volumes, the repository configuration bind-mounted into it
-// and the MIB source tree on the host.
-//
-// # Containment
-//
-// Every filesystem mutation this package makes goes through a Root, which is an
-// os.Root anchored on one explicitly chosen directory. Paths that would leave
-// that directory - "..", absolute paths, symbolic links pointing outside - are
-// refused by the kernel rather than by string inspection, and a path that cannot
-// be expressed inside the root is an error rather than something to sanitize and
-// carry on with. No function in this package takes a caller-supplied path and
-// mutates it; a mutation needs a Root, and a Root has to be opened deliberately,
-// with a stated purpose that appears in the plan and in every error.
-//
-// The one judgement containment cannot make is which directory to anchor on.
-// That choice is derived - from the pinned compose project, from the compose
-// file's own bind mounts - never defaulted to something broad, and it is checked
-// separately, printed in the plan before anything is written, and gated behind
-// an explicit opt-in where it lands in the operator's own working tree.
-//
-// # Consistency
-//
-// Backups are cold: every service in the compose project is stopped, the data is
-// copied at rest, and exactly the services that were running are started again,
-// on every exit path including interruption. The web UI and poller stores are
-// PebbleDB (single-writer, exclusive LOCK) and this deployment's Prometheus runs
-// without --web.enable-admin-api, so there is no supported way to snapshot
-// either while running. A hot copy of them would not be slightly risky, it would
-// be unverifiable: the damage stays invisible until the restore, which is the
-// worst moment to discover it.
+// Package backup makes cold backups and restores of a deployed go-netmon stack, writing only through a Root.
 package backup
 
 import (
@@ -53,10 +23,7 @@ type Config struct {
 	// ComposeFile is the absolute path of the compose file defining the stack.
 	ComposeFile string
 
-	// Project is the compose project the stack occupies. Pinned by the caller,
-	// never inherited: without it, compose derives the project from the working
-	// directory, which is how a command aimed at a test stack reaches the
-	// deployed one.
+	// Project is the compose project, always pinned by the caller.
 	Project string
 
 	// MIBMountTarget is the container path the MIB source tree is mounted at.
@@ -89,10 +56,7 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
-// Service performs backups and restores.
-//
-// It is the only entry point: the command-line tool holds no logic of its own,
-// so the checks below cannot be bypassed by calling something further in.
+// Service performs backups and restores; it is the only entry point.
 type Service struct {
 	cfg Config
 }
@@ -166,11 +130,7 @@ func (s *Service) RepoRoot() string { return s.cfg.RepoRoot }
 // given.
 func (s *Service) DefaultBackupDir() string { return filepath.Join(s.cfg.RepoRoot, "backups") }
 
-// httpClient reports the client the logical export uses.
-//
-// The default carries a timeout: the export runs against a stack that is still
-// serving traffic, and a wedged web UI must not be able to hold a backup open
-// indefinitely.
+// httpClient returns the logical export's client, which has a timeout.
 func (s *Service) httpClient() *http.Client {
 	if s.cfg.HTTPClient != nil {
 		return s.cfg.HTTPClient
@@ -204,11 +164,7 @@ func (s *Service) announce(r *Root) {
 
 // --- shared preflight -----------------------------------------------------
 
-// assertProjectOwnership refuses to continue if the target compose project holds
-// a container the configured compose file did not create.
-//
-// Acting on such a project would mean stopping, and potentially overwriting the
-// data of, a deployment this repository does not own.
+// assertProjectOwnership refuses a project holding a container the compose file did not create.
 func (s *Service) assertProjectOwnership(ctx context.Context) error {
 	foreign, err := s.cfg.Docker.ForeignContainers(ctx)
 	if err != nil {
@@ -224,13 +180,7 @@ func (s *Service) assertProjectOwnership(ctx context.Context) error {
 	}
 }
 
-// assertVolumeOwned refuses to touch a volume that does not carry the pinned
-// project's compose label.
-//
-// This is the check that keeps the tooling away from an unlabelled look-alike:
-// a stray "go-netmon-data" is a different object from the project's
-// "go-netmon_go-netmon-data", and only the label makes that a checked fact
-// rather than a naming convention.
+// assertVolumeOwned refuses a volume without the pinned project's compose label.
 func (s *Service) assertVolumeOwned(ctx context.Context, volume string) error {
 	project, exists, err := s.cfg.Docker.VolumeProject(ctx, volume)
 	if err != nil {
@@ -245,10 +195,7 @@ func (s *Service) assertVolumeOwned(ctx context.Context, volume string) error {
 	return nil
 }
 
-// reportUnmanagedVolumes names volumes that resemble stack volumes but carry no
-// project label, so an operator knows they exist. Nothing acts on them; they are
-// unreachable by every operation in this package, which addresses volumes only
-// by derived name and only after the label check above.
+// reportUnmanagedVolumes names unlabelled look-alike volumes; nothing acts on them.
 func (s *Service) reportUnmanagedVolumes(ctx context.Context) {
 	names, err := s.cfg.Docker.VolumeNames(ctx)
 	if err != nil {

@@ -52,11 +52,7 @@ type RegisterDeviceRequest struct {
 	Profile      string            `json:"profile"`
 	Tags         map[string]string `json:"tags,omitempty"`
 
-	// ModuleFilters narrows what is polled within a module, keyed by module
-	// name. A module with no entry is polled in full, which is what every
-	// module used to be: the web UI stored an operator's filters and pushed
-	// only the module list, so the narrowing never reached the worker that
-	// chooses the OIDs.
+	// ModuleFilters narrows what is polled within a module, keyed by module name; a module with no entry is polled in full.
 	ModuleFilters map[string]config.ModuleFilter `json:"module_filters,omitempty"`
 }
 
@@ -130,18 +126,7 @@ func (h *PollerControlHandler) HandleRegisterDevice(w http.ResponseWriter, r *ht
 	h.respondJSON(w, http.StatusCreated, resp)
 }
 
-// registerFailureStatus is the status a failed registration answers with.
-//
-// A name the poller already polls is a conflict with the state of this
-// resource, not the poller failing: 409 is what that means, and it is the whole
-// difference between "your request cannot apply to what is here" and "something
-// broke, try again". It was a 500, and the cost of that was not cosmetic --
-// the web UI's client declines to retry a 4xx and retries a 5xx three times, so
-// every device the web UI re-registered at start cost three server errors
-// instead of one honest refusal.
-//
-// The poller's answer is unchanged in substance: it still refuses, and it still
-// says why. Only the status code stops overstating it.
+// registerFailureStatus answers 409 for a name already polled, 500 otherwise.
 func registerFailureStatus(err error) int {
 	var exists *poller.DeviceExistsError
 	if errors.As(err, &exists) {
@@ -317,18 +302,7 @@ func (h *PollerControlHandler) HandleGetDeviceStatus(w http.ResponseWriter, r *h
 	h.respondJSON(w, http.StatusOK, status)
 }
 
-// deviceStatus is a device's full runtime status: what its last poll produced,
-// according to the status tracker, and whether the device is answering at all,
-// according to the poller.
-//
-// The two sources answer different questions and neither is sufficient alone. A
-// failed poll is not the same as an unreachable device — a device that answers
-// some objects and errors on others fails polls forever while being perfectly
-// healthy — and a device the poller has registered but never managed to poll
-// has no tracker entry at all, which is a fact about it rather than grounds for
-// reporting it unknown.
-//
-// It returns nil only when neither source has heard of the device.
+// deviceStatus merges the tracker's last poll with the poller's reachability; nil only when neither knows the device.
 func (h *PollerControlHandler) deviceStatus(deviceName string) *DeviceStatus {
 	status := h.statusTracker.GetStatus(deviceName)
 
@@ -359,13 +333,7 @@ func neverPolled(worker poller.WorkerStatus) *DeviceStatus {
 	return status
 }
 
-// applyReachability copies the poller's view of a device onto its status.
-//
-// The interval is copied here rather than only in neverPolled because the
-// status tracker builds its entry from a poll result, which carries no
-// interval — so a device that had polled reported an empty one while a device
-// that never had reported it correctly, which is exactly backwards. The worker
-// is the authority: it is what the interval is actually being applied by.
+// applyReachability copies the poller's view, including the interval, onto a device's status.
 func applyReachability(status *DeviceStatus, worker poller.WorkerStatus) {
 	status.Unreachable = worker.Unreachable
 	status.ConsecutiveFailures = worker.ConsecutiveFailures

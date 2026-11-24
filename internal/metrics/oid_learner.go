@@ -30,12 +30,7 @@ type LearnedTableInfo struct {
 	IndexTypes []string `json:"index_types,omitempty"`
 	ColumnOIDs []string `json:"column_oids"`
 
-	// SampleCount is how many distinct instances the table has been observed
-	// to hold: its distinct index values times its columns. It describes what
-	// the table contains, not how often it has been walked, so it is stable
-	// across poll cycles and SampleCount/len(ColumnOIDs) is the table's row
-	// count. Counting every response instead made this instances x poll
-	// cycles, a number that grew without bound and meant nothing.
+	// SampleCount is distinct index values times columns; SampleCount/len(ColumnOIDs) is the row count.
 	SampleCount int `json:"sample_count"`
 
 	FirstSeen time.Time `json:"first_seen"`
@@ -249,19 +244,7 @@ func (l *OIDLearner) GetAllLearnedTables() map[string]*LearnedTableInfo {
 	return result
 }
 
-// MergeWithMIBMetadata enriches learned tables with MIB metadata.
-//
-// This used to do, for every learned table still missing index info, a full
-// linear scan of every table in indexCache -- an O(learnedTables x
-// cacheTables) cost paid on every single poll of every device (this is
-// called unconditionally from ConvertSNMPResultsWithTableIndexes). Tables
-// discovered from vendor/enterprise OIDs with no corresponding MIB
-// definition can never resolve, so they were rescanned against the entire
-// cache forever. Both operands grow monotonically with process uptime and
-// never shrink, so poll latency degraded a little more on every cycle,
-// eventually starving the exporter of the CPU time it needed to flush on
-// schedule -- with nothing in the pipeline able to detect or report it.
-// Building the lookup once turns this into O(learnedTables + cacheTables).
+// MergeWithMIBMetadata enriches learned tables with MIB metadata using a lookup built once per call.
 func (l *OIDLearner) MergeWithMIBMetadata(indexCache *TableIndexCache) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -302,12 +285,7 @@ func (l *OIDLearner) MergeWithMIBMetadata(indexCache *TableIndexCache) {
 	}
 }
 
-// ExportToIndexCache adds the tables the learner discovered, and no loaded MIB
-// describes, to the index cache. It returns how many were added.
-//
-// The common case -- every learned table already known to the cache -- is
-// answered from the published index alone, so a poll that discovered nothing
-// new never blocks index construction.
+// ExportToIndexCache adds learned tables no MIB describes to the index cache and returns how many.
 func (l *OIDLearner) ExportToIndexCache(indexCache *TableIndexCache) int {
 	if indexCache == nil {
 		return 0

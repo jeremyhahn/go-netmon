@@ -58,11 +58,7 @@ const DROPPED = { id: 2, name: 'dropped-02', address: '198.51.100.102', enabled:
 // afterImport is the device list the rebuilt selector is given, or the name of
 // the read that should fail after the server has already applied the import.
 type Unreadable = 'devices' | 'profiles' | 'mibs';
-//
-// The returned handle reports whether the APPLY call was made. The first
-// version of these tests mocked a plan with no `changed` count, so
-// importConfiguration answered "nothing to import" and returned before doing
-// anything -- and one of the tests passed on that.
+// The returned handle reports whether the apply call was made.
 function mockConfig(page: Page, afterImport: object[] | Unreadable) {
   const calls = { plan: 0, apply: 0 };
   let imported = false;
@@ -82,9 +78,7 @@ function mockConfig(page: Page, afterImport: object[] | Unreadable) {
       }),
     });
   });
-  // A 503 whose BODY is valid JSON: neither loader checked response.ok, so an
-  // error page that happens to parse was accepted as an authoritative empty
-  // list -- the failure mode that reads as "the import removed everything".
+  // A 503 with a JSON body must not be read as an empty list.
   const failed = (route: import('@playwright/test').Route) => route.fulfill({
     status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable' }),
   });
@@ -132,9 +126,7 @@ async function openPage(
   await serveWorkingTree(page);
   const config = mockConfig(page, afterImport);
   await config.ready;
-  // startedOn is what the SESSION began with -- the value loadState reads back
-  // into restoredDeviceId, which is what loadDevices' restore replays. Without
-  // it there is nothing to restore and a test of the restore proves nothing.
+  // startedOn is the session's start device, which loadDevices' restore replays.
   await page.addInitScript(id => {
     try {
       if (id === null) localStorage.removeItem('go-netmon-state');
@@ -163,13 +155,7 @@ test('an import that keeps the open device leaves it open', async ({ page }) => 
   await page.waitForFunction(() => String((window as any).app.currentDashboardDevice) === '2',
     undefined, { timeout: 30000 });
 
-  // Which devices the page asks about from here on. The import must load the
-  // device the reader is ON, and only that one: leaving the restore enabled
-  // also loaded device 1, whose paint the generation guard then threw away.
-  // continue(), not fetch()+fulfill(): fetching the response into the test
-  // leaves a request in flight that fails the run when the page closes under
-  // it ("Target page, context or browser has been closed"). The URL is all this
-  // needs, and continue() reads it without owning the response.
+  // Record which devices the page loads; continue() reads the URL without owning the response.
   const loaded: string[] = [];
   await page.route(/\/api\/devices\/(\d+)\/dashboard$/, route => {
     loaded.push(new URL(route.request().url()).pathname.split('/')[3]);
@@ -191,11 +177,7 @@ test('an import that keeps the open device leaves it open', async ({ page }) => 
   expect(config.calls.apply, 'no configuration was applied, so nothing was tested').toBe(1);
   expect(state.current, 'the import moved the reader off the device they were on').toBe('2');
   expect(state.selected, 'the selector disagrees with the dashboard').toBe('2');
-  // WHICH devices, not how many times. The refresh tick re-reads the open
-  // device's dashboard on its own schedule, so a second load of device 2 is
-  // ordinary and asserting "exactly one" measured that timer instead -- it
-  // passed alone and failed inside the suite. Loading device 1 is the defect,
-  // and that is what leaving the restore on produces: 2, 1, 2.
+  // Assert which devices were loaded, not how often; the refresh tick reloads the open one.
   expect([...new Set(loaded)],
     `the import loaded ${loaded.join(', ')}; only the open device should have been loaded`)
     .toEqual(['2']);
@@ -242,10 +224,7 @@ test('an import that removes the open device returns to the fleet', async ({ pag
 
 test('an import does not reopen the device the session started on', async ({ page }) => {
   test.setTimeout(120_000);
-  // The session STARTED on device 2 -- which is what restoredDeviceId holds --
-  // and the reader has since gone back to the fleet. loadDevices' restore
-  // replays that startup device on every call, so the import used to load and
-  // subscribe to it while it was deciding where the reader should land.
+  // The session started on device 2 and the reader is back on the fleet; the import must not load device 2.
   const config = await openPage(page, [KEPT, DROPPED], '2');
 
   await page.waitForFunction(() => (window as any).app.currentDashboardDevice, undefined,

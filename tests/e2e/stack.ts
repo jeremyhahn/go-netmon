@@ -1,12 +1,4 @@
-// What the e2e suite's target stack holds, found from the stack itself.
-//
-// The disposable stack (target.ts) polls two simulated devices, restored into
-// the web UI with their standard MIB assignments by test/integration/e2e-seed.sh
-// (test/integration/snmp-data/e2e-config.json) and polled per the e2e poller
-// config in docker-compose.test.yml. A spec never hard-codes a device ID or a
-// production device name: it names a seeded device here and asks the stack for
-// its record, so the same spec runs on any stack that seeded these names, and
-// NETMON_DEVICE picks another device on a stack that has one.
+// The e2e target stack's seeded devices, looked up by name; NETMON_DEVICE picks another.
 import type { APIRequestContext } from '@playwright/test';
 import { BASE } from './target';
 

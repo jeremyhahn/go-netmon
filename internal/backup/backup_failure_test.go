@@ -12,12 +12,6 @@ import (
 )
 
 // A backup that cannot finish must not leave one that looks finished.
-//
-// Every step below can fail on a real host -- a daemon that stops answering
-// mid-export, a volume whose size cannot be read, a config file that was moved.
-// What matters is not that the failure is unusual but that it is reported: an
-// archive written from a half-run backup is indistinguishable from a good one
-// at the moment it is needed, and that is the only moment anybody looks.
 
 // failingDocker is a runtime that fails one named operation.
 //
@@ -126,13 +120,7 @@ func TestTheStackIsRestartedEvenWhenTheBackupFails(t *testing.T) {
 	}
 }
 
-// TestAConfigFileThatIsGoneIsWarnedAboutAndNotClaimed covers the config
-// component's deliberate tolerance.
-//
-// Not every config file is present in every deployment, so one that is absent
-// is a warning rather than a failure. What must not happen is the manifest
-// listing it anyway: a restore reads that list, and a file recorded but never
-// archived is one a restore would claim to have put back.
+// TestAConfigFileThatIsGoneIsWarnedAboutAndNotClaimed checks a missing config file is warned about and left out of the manifest.
 func TestAConfigFileThatIsGoneIsWarnedAboutAndNotClaimed(t *testing.T) {
 	h := newHarness(t)
 
@@ -164,20 +152,7 @@ func TestAConfigFileThatIsGoneIsWarnedAboutAndNotClaimed(t *testing.T) {
 	}
 }
 
-// TestABackupIntoAnUnusableDirectoryFails covers the whole write path at once:
-// the archive directory, its members, the config copies and the manifest.
-//
-// A full disk, a path that is not what the operator thought, and a directory
-// owned by someone else all end here, and all of them happen to a backup that
-// runs unattended on a schedule. The one outcome that must not occur is a
-// directory that exists, is named like a backup, and is not one.
-//
-// The destination is blocked by putting a regular file where a directory has to
-// be, rather than by removing write permission. An earlier version of this test
-// used chmod 0500 and asserted "tests do not run as root, so this holds" --
-// which is false in CI, where the job runs as uid 0 and the kernel lets root
-// write through the permission bits. It passed locally and failed in CI on
-// every run. ENOTDIR is refused for root too.
+// TestABackupIntoAnUnusableDirectoryFails blocks the destination with a regular file (ENOTDIR holds for root too) and expects failure.
 func TestABackupIntoAnUnusableDirectoryFails(t *testing.T) {
 	h := newHarness(t)
 

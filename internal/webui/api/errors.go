@@ -28,11 +28,7 @@ func (e *AssignmentValidationError) Error() string {
 	return "assignment: invalid " + e.Field + " " + strconv.Quote(e.Value) + ": " + e.Reason
 }
 
-// SNMPUnreachableError reports that a device's SNMP agent did not answer.
-//
-// It names the device as the operator knows it, the address actually probed and
-// how long the probe was allowed to take, because "no response" is only
-// actionable once you know which box was asked and for how long.
+// SNMPUnreachableError reports a device whose agent did not answer, with the address and timeout used.
 type SNMPUnreachableError struct {
 	Device  string
 	Address string
@@ -85,11 +81,7 @@ func (e *SNMPRequestError) Error() string {
 	return "snmp: invalid " + e.Field + " " + strconv.Quote(e.Value) + ": " + e.Reason
 }
 
-// The errors below classify why a device's status could not be produced. They
-// exist so that the per-device endpoint and the fleet endpoint can draw
-// different conclusions from the same failure without either of them re-reading
-// the poller's error strings: the per-device endpoint maps them to HTTP status
-// codes, the fleet endpoint maps them to a per-device state.
+// Errors classifying why a device's status could not be produced.
 
 // DeviceNameRequiredError reports a status request that named no device.
 type DeviceNameRequiredError struct{}
@@ -106,11 +98,7 @@ func (e *PollerUnconfiguredError) Error() string {
 	return "poller: no poller client is configured"
 }
 
-// DeviceNotPolledError reports that the poller has no record of a device.
-//
-// It is a definite answer, not a failure to get one: the device exists in the
-// web UI's own records but has never been picked up for polling, which is a
-// state a fleet view has to show and an operator has to act on.
+// DeviceNotPolledError reports a device the poller has no record of.
 type DeviceNotPolledError struct {
 	Device string
 	Err    error
@@ -145,12 +133,7 @@ func (e *PollerUnavailableError) Error() string {
 
 func (e *PollerUnavailableError) Unwrap() error { return e.Err }
 
-// PollerStatusMissingError reports that the poller listed a device but carried
-// no status for it.
-//
-// It sits between "not registered" and "the poller is down": the device is
-// being polled, and the poller simply had nothing to say about it this time. A
-// fleet row shows it as unknown, and this is the reason it shows alongside.
+// PollerStatusMissingError reports a device the poller listed without a status.
 type PollerStatusMissingError struct {
 	Device string
 }
@@ -159,14 +142,7 @@ func (e *PollerStatusMissingError) Error() string {
 	return "poller: device " + strconv.Quote(e.Device) + " is registered but the poller holds no status for it"
 }
 
-// QueryParameterError reports a narrowing parameter the server will not act on:
-// a limit that is not a number, a negative offset, a flag that is not a
-// boolean.
-//
-// It is produced before the handler reads anything, so a malformed request
-// costs a parse rather than a walk of a ten-thousand-object module, and it
-// names the parameter and the value so a client can point at what has to
-// change.
+// QueryParameterError reports a malformed narrowing parameter, naming it and its value.
 type QueryParameterError struct {
 	Parameter string
 	Value     string
@@ -177,12 +153,7 @@ func (e *QueryParameterError) Error() string {
 	return "query parameter " + e.Parameter + "=" + strconv.Quote(e.Value) + ": " + e.Reason
 }
 
-// PageRangeError reports a page that lies past the end of the matching records.
-//
-// It cannot be detected before the records are counted, so unlike
-// QueryParameterError it is raised after the list is assembled. Answering it
-// with an empty list instead would show an operator a blank table and let them
-// conclude the module is empty.
+// PageRangeError reports a page past the end of the matching records.
 type PageRangeError struct {
 	Offset  int
 	Limit   int
@@ -195,9 +166,6 @@ func (e *PageRangeError) Error() string {
 }
 
 // ListenError reports that the web UI could not bind its listen address.
-//
-// It is a startup failure and not a request failure: nothing the service does
-// afterwards is reachable, so it is returned rather than logged.
 type ListenError struct {
 	Addr string
 	Err  error
@@ -209,13 +177,7 @@ func (e *ListenError) Error() string {
 
 func (e *ListenError) Unwrap() error { return e.Err }
 
-// PollerDetachError reports that the poller could not be relied on to have
-// stopped polling a device, so the device was not deleted.
-//
-// It is a type, and it is returned rather than logged, because it decides the
-// outcome of the request that produced it. The failure used to be written to
-// the log and dropped while the response stayed a bare 204, so the record went
-// and the polling did not, and the operator was told the delete had succeeded.
+// PollerDetachError reports that the poller may still poll a device, so it was not deleted.
 type PollerDetachError struct {
 	Device string
 	Err    error

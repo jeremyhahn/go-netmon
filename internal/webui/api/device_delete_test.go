@@ -24,15 +24,7 @@ func storedDeviceNames(t *testing.T, s *Server) []string {
 	return names
 }
 
-// TestADeviceIsNotDeletedWhileThePollerStillPollsIt is the regression test for
-// the defect.
-//
-// Deleting used to remove the record first and ask the poller second, and to
-// discard the poller's failure: the response was 204, the device vanished from
-// the device list and the fleet view, and the poller went on polling it
-// indefinitely with nothing left in the UI to act on. The invariant now is that
-// a device is not deleted until nothing is polling it, so a poller that cannot
-// be told to stop leaves the device exactly as it was.
+// TestADeviceIsNotDeletedWhileThePollerStillPollsIt: a poller that cannot be told to stop leaves the device in place.
 func TestADeviceIsNotDeletedWhileThePollerStillPollsIt(t *testing.T) {
 	s := newTestServer(t)
 	poller := &recordingPoller{err: errors.New("poller is down")}
@@ -114,12 +106,7 @@ func TestDeletingADeviceWithNoPollerConfigured(t *testing.T) {
 	}
 }
 
-// TestAStalledPollerCannotHoldADeleteOpen keeps the detach inside the same
-// budget every other push to the poller runs under.
-//
-// Reporting the poller's outcome only helps if the report arrives. A poller
-// that has stopped answering must not hold the delete open until the server's
-// write timeout closes the connection with nothing written.
+// TestAStalledPollerCannotHoldADeleteOpen keeps the detach within the poller push budget.
 func TestAStalledPollerCannotHoldADeleteOpen(t *testing.T) {
 	s := newTestServer(t)
 	s.pollerClient = &recordingPoller{stall: true}

@@ -15,35 +15,13 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/logging"
 )
 
-// MaxQueriesInFlight caps how many Prometheus requests one streaming round has
-// open at once.
-//
-// A round used to open one request per subscribed query simultaneously. A
-// device dashboard subscribes about twenty, so a room of operators on different
-// devices reached into the thousands, all landing on one Prometheus at the same
-// instant. The ceiling turns that into a queue: the same work, at a rate a
-// single Prometheus can actually serve.
+// MaxQueriesInFlight caps how many Prometheus requests one streaming round has open at once.
 const MaxQueriesInFlight = 32
 
-// MaxSubscriptionsPerClient caps how many queries one browser may subscribe to.
-//
-// Every subscription is re-queried on every round on that client's behalf, so
-// an unbounded count lets a single session set the load on Prometheus for
-// everyone. The richest real dashboard measured here holds 179 — core-01
-// across ten modules — so the ceiling is well clear of a legitimate page while
-// still bounding a client that never lets go, or one that is not a browser at
-// all. A refused subscription is answered rather than dropped silently, so the
-// page can say the dashboard is too large instead of quietly missing cards.
+// MaxSubscriptionsPerClient caps how many queries one browser may subscribe to; a refused subscription is answered.
 const MaxSubscriptionsPerClient = 2048
 
-// DefaultStreamInterval is how often a hub re-reads its subscribed queries and
-// pushes what changed, when its caller does not say.
-//
-// It used to be a bare literal in Run. That made it the one cadence in the
-// system nobody could state: the dashboard showed a refresh rate it did not
-// control, the poller ran at per-device intervals of the operator's choosing, and
-// this sat between them at five seconds because five seconds was typed here.
-// Naming it does not change what it does -- it makes the number answerable.
+// DefaultStreamInterval is how often a hub re-reads its subscribed queries and pushes changes when the caller does not say.
 const DefaultStreamInterval = 5 * time.Second
 
 // Hub maintains the set of active clients and broadcasts messages to them
@@ -63,11 +41,7 @@ type Hub struct {
 	// Prometheus query function
 	queryFunc QueryFunc
 
-	// streamInterval is how often Run pushes a round. It is fixed at
-	// construction: every connected browser shares this hub, so a cadence one
-	// viewer could change is a cadence every other viewer gets changed under
-	// them. Per-viewer refresh is the browser's own business and stays in the
-	// browser.
+	// streamInterval is how often Run pushes a round, fixed at construction and shared by every browser.
 	streamInterval time.Duration
 
 	// Subscriptions map: OID -> list of clients
@@ -86,10 +60,7 @@ type Hub struct {
 	// them rather than all falling due at once.
 	round atomic.Int64
 
-	// streaming is held for the duration of a round, so a tick that arrives
-	// while the previous round is still running steps aside instead of piling
-	// another full set of queries on top of it. Without it a Prometheus slower
-	// than the tick made the backlog grow without bound.
+	// streaming is held for a round, so a tick arriving mid-round is skipped.
 	streaming atomic.Bool
 
 	// logger carries the hub's level-gated diagnostics. Streaming runs on a
@@ -114,42 +85,19 @@ type MetricValue struct {
 const (
 	MessageTypeSubscribe   = "subscribe"
 	MessageTypeUnsubscribe = "unsubscribe"
-	// MessageTypeMetricSnapshot carries a query's WHOLE reading, with the
-	// sequence number that names it. It is what a client gets when it is new
-	// to a query, when it has fallen behind, and periodically regardless, so
-	// that nothing can drift indefinitely.
+	// MessageTypeMetricSnapshot carries a query's whole reading and its sequence number.
 	MessageTypeMetricSnapshot = "metric_snapshot"
 
-	// MessageTypeMetricDelta carries only what changed, and names the sequence
-	// it must be applied to. A client at any other sequence must discard it
-	// and ask for a snapshot: applying a delta to something other than what it
-	// was computed against is the one way a stale value could render as a
-	// current one.
+	// MessageTypeMetricDelta carries only what changed and the sequence it applies to; other clients must request a snapshot.
 	MessageTypeMetricDelta = "metric_delta"
 
-	// CapabilityAllSteady is what a browser announces to be sent the collapsed
-	// all-steady heartbeat instead of the full query list. The name is the
-	// field it unlocks, so an older server that has never heard of it ignores
-	// the announcement and a newer one needs no version table.
+	// CapabilityAllSteady is announced by a browser that accepts the collapsed all-steady heartbeat.
 	CapabilityAllSteady = "all_steady"
 
-	// MessageTypeMetricsUnchanged names the queries that were re-read this
-	// round and found to be exactly as the client already has them.
-	//
-	// The dashboard is a tick-based live view: a chart has to keep advancing
-	// while a value holds steady, or its line stops at the last change and
-	// reads as data having stopped. Sending the whole result again to say
-	// "still 37" is what this replaces -- the browser has the reading, so one
-	// frame naming the queries lets it carry every one of them forward.
+	// MessageTypeMetricsUnchanged names the queries re-read this round and found unchanged, so charts can advance.
 	MessageTypeMetricsUnchanged = "metrics_unchanged"
 
-	// MessageTypeResync is a client saying it has lost its place -- a delta
-	// whose base sequence it does not hold. The server forgets what it
-	// believed that client had, and the next round sends the whole reading.
-	//
-	// The server already resends on a frame it could not queue; this is the
-	// half it cannot see, where the frame was queued, the socket accepted it
-	// and the browser never applied it.
+	// MessageTypeResync is a client reporting a delta whose base sequence it does not hold; the next round sends the whole reading.
 	MessageTypeResync = "resync"
 
 	MessageTypeError = "error"
@@ -160,20 +108,7 @@ type ClientMessage struct {
 	Type    string   `json:"type"`
 	Queries []string `json:"queries,omitempty"`
 
-	// Supports names the frame shapes this browser knows how to apply.
-	//
-	// It exists because a page that is ALREADY OPEN cannot be taught anything.
-	// Deploying a server that sends a frame the loaded script does not
-	// understand does not degrade that tab, it silently stops it: the old
-	// handler reads a field that is not there, advances nothing, and every
-	// chart holds its last value while the connection stays up and the page
-	// looks fine. In a monitoring tool a line that stops moving reads as calm.
-	//
-	// So the SERVER is the side that has to be careful, and it is careful by
-	// default: a client that says nothing is sent the frames that have always
-	// worked. Only a browser that announces a shape is sent it. A version
-	// number would not do -- it would have to be checked by the very script
-	// that is too old to know it should look.
+	// Supports names the frame shapes this browser can apply; a client that says nothing gets only the baseline frames.
 	Supports []string `json:"supports,omitempty"`
 }
 
@@ -198,23 +133,14 @@ type ServerMessage struct {
 	// is set, because then the client already knows the whole set.
 	Queries []string `json:"queries,omitempty"`
 
-	// AllSteady says every one of this client's subscriptions was steady this
-	// round. It is the common steady-state case -- a dashboard of a couple
-	// hundred queries none of which moved -- and it lets the frame name none
-	// of them: the client advances every reading it holds. Without it the
-	// heartbeat re-lists every subscribed query string on every round, which
-	// on a large dashboard is the query text of the whole page every five
-	// seconds to say nothing changed.
+	// AllSteady says every subscription of this client was steady this round, so no query is named.
 	AllSteady bool `json:"all_steady,omitempty"`
 
 	Error     string `json:"error,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 }
 
-// NewHub creates a new Hub that reports its stream tracing to logger.
-//
-// A nil logger discards those records, so a caller that has not configured
-// logging pays nothing for them.
+// NewHub creates a Hub that reports its stream tracing to logger; a nil logger discards it.
 func NewHub(queryFunc QueryFunc, logger *slog.Logger, opts ...HubOption) *Hub {
 	h := &Hub{
 		clients:       make(map[*Client]bool),
@@ -238,11 +164,7 @@ func NewHub(queryFunc QueryFunc, logger *slog.Logger, opts ...HubOption) *Hub {
 // HubOption adjusts a Hub at construction.
 type HubOption func(*Hub)
 
-// WithStreamInterval sets how often the hub pushes a round.
-//
-// A non-positive duration is ignored rather than rejected, so a caller wiring
-// an unset configuration field through gets DefaultStreamInterval instead of a
-// hub that spins.
+// WithStreamInterval sets how often the hub pushes a round; a non-positive duration keeps DefaultStreamInterval.
 func WithStreamInterval(d time.Duration) HubOption {
 	return func(h *Hub) {
 		if d > 0 {
@@ -293,12 +215,7 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
-// streamMetrics queries Prometheus and sends updates to subscribed clients.
-//
-// One round runs at a time and at most MaxQueriesInFlight queries run within
-// it. Both bounds exist for the same reason: the number of subscribed queries
-// is set by how many people are watching how many devices, and neither the
-// process nor Prometheus can absorb that number as simultaneous work.
+// streamMetrics queries Prometheus and sends updates, one round at a time with at most MaxQueriesInFlight queries.
 func (h *Hub) streamMetrics(ctx context.Context) {
 	if !h.streaming.CompareAndSwap(false, true) {
 		h.logger.DebugContext(ctx, "skipping stream round: the previous one is still running")
@@ -327,10 +244,7 @@ func (h *Hub) streamMetrics(ctx context.Context) {
 	round := h.round.Add(1)
 
 	for query, clients := range queries {
-		// A reading that has held still for several rounds is asked about at
-		// half rate. Its subscribers are still told it is steady every round,
-		// so their charts advance exactly as before -- what is saved is the
-		// question, not the notification.
+		// A reading steady for several rounds is queried at half rate; subscribers are still told it is steady every round.
 		if !h.steady.due(query, round) {
 			for _, client := range clients {
 				steady.add(client, query)
@@ -358,23 +272,7 @@ func (h *Hub) streamMetrics(ctx context.Context) {
 	h.forgetUnsubscribed()
 }
 
-// forgetUnsubscribed drops the state of queries nobody watches any more.
-//
-// Unsubscribing already does this, but it can happen WHILE the round is
-// running: detach deletes the state, the query that was already in flight
-// returns, and advance puts it back. Nothing would ever take it out again,
-// because the removal only happens on the transition to zero subscribers and
-// that has already been and gone. Sweeping after the round is what makes the
-// bound hold whenever the last reader leaves mid-round.
-//
-// BOTH structures are swept, not just the sequence states. detach clears the
-// steady tracker too, but the same race puts it back: observe records the
-// in-flight query's reading after detach has removed it. Sweeping one and not
-// the other left h.steady holding rounds for a query with no subscribers at
-// all, so a later genuinely-sole subscriber inherited a backoff with nobody
-// else on the query. Two structures that must agree about what is live, and
-// one of them swept, is a leak by construction however carefully the other is
-// maintained.
+// forgetUnsubscribed drops sequence and steady state of queries with no subscribers, covering unsubscribes during a round.
 func (h *Hub) forgetUnsubscribed() {
 	h.mu.RLock()
 	watched := make(map[string]bool, len(h.subscriptions))
@@ -395,11 +293,7 @@ func (h *Hub) forgetUnsubscribed() {
 	}
 }
 
-// steadyQueries collects, per client, the queries a round found unchanged.
-//
-// They are gathered across the whole round and sent as one frame per client
-// rather than one per query: a dashboard holds well over a hundred
-// subscriptions and almost all of them are steady on any given tick.
+// steadyQueries collects per client the queries a round found unchanged, sent as one frame per client.
 type steadyQueries struct {
 	mu       sync.Mutex
 	byClient map[*Client][]string
@@ -418,12 +312,7 @@ func (h *Hub) sendSteady(ctx context.Context, steady *steadyQueries) {
 	steady.mu.Lock()
 	defer steady.mu.Unlock()
 
-	// How many queries each of these clients is subscribed to, read once under
-	// the hub lock. The all-steady decision compares a client's steady count
-	// against its subscription count, and client.subs is guarded by that lock;
-	// reading it here in the send loop, which runs after the round with the
-	// lock released, would race Subscribe and Unsubscribe. Snapshot it, then
-	// send with the lock dropped so a slow client cannot stall the hub.
+	// Snapshot each client's subscription count under the hub lock, then send with it released.
 	h.mu.RLock()
 	subCount := make(map[*Client]int, len(steady.byClient))
 	for client := range steady.byClient {
@@ -438,32 +327,7 @@ func (h *Hub) sendSteady(ctx context.Context, steady *steadyQueries) {
 		}
 
 		msg := ServerMessage{Type: MessageTypeMetricsUnchanged, Timestamp: now}
-		// Every subscription steady means the client already holds the whole
-		// set, so the frame names none of them and the client advances all it
-		// holds. A query that moved got a value frame instead and is absent
-		// from the steady list, so equal counts NORMALLY mean nothing moved.
-		//
-		// Normally, not always. The client list for a query is snapshotted at
-		// the top of the round, so a client that unsubscribes WHILE the round
-		// runs is still in it and can still be added to the steady set. Let it
-		// unsubscribe exactly as many queries as moved for it and the two
-		// counts coincide again -- subs-minus-moved on one side, subs-minus-
-		// unsubscribed on the other -- and the flag is set on a round where
-		// something did move.
-		//
-		// That is harmless, in both of the shapes it can take. The browser
-		// drops a query's held reading when it unsubscribes, so a moved query
-		// is either gone from what the browser holds, or still held and already
-		// updated by the frame it received earlier in this same round. Either
-		// way the client re-advances a CURRENT value; the cost is one duplicate
-		// point on a chart, never a stale reading rendered as a live one.
-		//
-		// When only some were steady, the names are still required so the
-		// client advances those and no others.
-		// Only to a browser that said it can apply it. One that said nothing is
-		// running a script from before the flag existed, and would read a field
-		// that is not there, advance nothing, and hold every chart at its last
-		// value with the connection still up.
+		// All subscriptions steady: send the all-steady flag, only to browsers that announced it; otherwise name the steady queries.
 		if n := subCount[client]; client.supportsAllSteady.Load() && n > 0 && len(queries) == n {
 			msg.AllSteady = true
 		} else {
@@ -485,13 +349,7 @@ func (h *Hub) sendSteady(ctx context.Context, steady *steadyQueries) {
 	}
 }
 
-// streamQuery runs one subscribed query and delivers what changed.
-//
-// The diff happens HERE, once, and the frames it produces are shared by every
-// client that can take them. Diffing per client would be the same work
-// multiplied by the number of people looking, and the readings are identical
-// for all of them: it is only what each has already seen that differs, and that
-// is a sequence number rather than a comparison.
+// streamQuery runs one subscribed query, diffs it once and shares the frames among clients.
 func (h *Hub) streamQuery(ctx context.Context, query string, clients []*Client, steady *steadyQueries) {
 	metrics, err := h.queryFunc(ctx, query)
 	if err != nil {
@@ -506,10 +364,7 @@ func (h *Hub) streamQuery(ctx context.Context, query string, clients []*Client, 
 	next := h.states.advance(query, metrics)
 
 	if !next.Changed {
-		// Nothing moved, so nobody needs a frame -- but every chart still has
-		// to reach this tick, or its line stops at the last change and reads
-		// as data having stopped. The clients that are up to date are told the
-		// query is steady; any that are not still get the reading.
+		// Unchanged: up-to-date clients are told the query is steady; others get the reading.
 		for _, client := range clients {
 			if client.at(query).seq == next.Seq {
 				steady.add(client, query)
@@ -534,11 +389,7 @@ func (h *Hub) streamQuery(ctx context.Context, query string, clients []*Client, 
 			continue
 		}
 
-		// A delta is only ever applied to the reading it was computed
-		// against. Every other client -- new, behind, or one frame short of an
-		// answer that never arrived -- gets the whole thing, which is what
-		// makes it impossible for a dropped frame to leave a stale value
-		// rendering as a current one.
+		// Only clients at the base sequence get the delta; every other client gets the whole reading.
 		if at.seq == next.BaseSeq && !next.Snapshot {
 			if delta == nil {
 				delta = h.encode(ctx, ServerMessage{
@@ -574,10 +425,6 @@ func (h *Hub) streamQuery(ctx context.Context, query string, clients []*Client, 
 }
 
 // sendSnapshot hands one client the whole current reading of a query.
-//
-// Used on the unchanged path, where there is no shared frame to reuse because
-// almost nobody needs one: a client that is behind on a query that has not
-// moved is either newly subscribed or recovering from a dropped frame.
 func (h *Hub) sendSnapshot(ctx context.Context, client *Client, query string, next update) {
 	at := client.at(query)
 	reading := h.states.reading(query)
@@ -608,10 +455,7 @@ func (h *Hub) encode(ctx context.Context, message ServerMessage) []byte {
 	return data
 }
 
-// deliver sends one frame and records what the client now holds.
-//
-// This runs outside the hub lock, so a client may disconnect at any point
-// during the loop; trySend handles that rather than panicking.
+// deliver sends one frame and records what the client now holds; it runs outside the hub lock.
 func (h *Hub) deliver(ctx context.Context, client *Client, query string, at held, frame []byte, kind string) {
 	if client.trySend(frame) {
 		client.mark(query, at)
@@ -649,11 +493,7 @@ func (h *Hub) traceResult(ctx context.Context, query string, metrics []MetricVal
 	}
 }
 
-// Subscribe adds a client to a query subscription, reporting whether it was
-// accepted.
-//
-// The client remembers what it subscribed to, which is what lets it be removed
-// later without walking the whole hub, and lets its total be capped.
+// Subscribe adds a client to a query subscription, reporting whether it was accepted.
 func (h *Hub) Subscribe(client *Client, query string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -673,10 +513,7 @@ func (h *Hub) Subscribe(client *Client, query string) bool {
 	client.subs[query] = struct{}{}
 	h.subscriptions[query] = append(h.subscriptions[query], client)
 
-	// A query steady long enough to be asked at half rate is put back on every
-	// round, because this client has never been sent a value for it and a
-	// skipped round would tell it the reading is unchanged from one it does
-	// not have.
+	// A new subscriber puts a backed-off query back on every round.
 	h.steady.wake(query)
 	return true
 }
@@ -693,13 +530,7 @@ func (h *Hub) Unsubscribe(client *Client, query string) {
 	client.discard(query)
 }
 
-// removeClient drops a client and everything it was subscribed to, returning
-// how many clients remain.
-//
-// It visits only that client's own subscriptions. Walking every subscription in
-// the hub instead — with the write lock held, so streaming and every other
-// connect stalled behind it — made one operator refreshing their browser a
-// fleet-wide pause once the hub carried tens of thousands of queries.
+// removeClient drops a client and its subscriptions, visiting only its own, and returns how many clients remain.
 func (h *Hub) removeClient(client *Client) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -734,10 +565,7 @@ func (h *Hub) detach(client *Client, query string) {
 		if len(clients) == 0 {
 			delete(h.subscriptions, query)
 			h.steady.forget(query)
-			// The sequence goes with the last subscriber. A query subscribed
-			// again starts from one and every client is new to it, so nobody
-			// can hold a sequence from before the gap and be told it is still
-			// current.
+			// The sequence goes with the last subscriber.
 			h.states.forget(query)
 			return
 		}
@@ -752,10 +580,7 @@ type Client struct {
 	conn *websocket.Conn
 	send chan []byte
 
-	// mu guards closed and serializes it against sends. The metric streamer
-	// sends from goroutines that outlive the hub lock, so without this a
-	// client disconnecting mid-stream could be sent to after its channel was
-	// closed, which panics and takes the whole process down.
+	// mu guards closed and serializes it against sends.
 	mu     sync.Mutex
 	closed bool
 
@@ -768,20 +593,12 @@ type Client struct {
 	// by the streaming rounds, so it is atomic rather than under either lock.
 	supportsAllSteady atomic.Bool
 
-	// seen records the sequence of the last reading delivered for each query,
-	// which is what decides whether this client can take a delta or needs the
-	// whole thing. Streaming rounds touch it from several goroutines at once
-	// and the client's own read loop clears it, so it has a lock of its own
-	// rather than sharing the one that guards closing.
+	// seen records the sequence last delivered per query, deciding delta or snapshot; it has its own lock.
 	seenMu sync.Mutex
 	seen   map[string]held
 }
 
-// announce records the frame shapes a browser says it can apply.
-//
-// Announcements only ever ADD: a reconnecting page re-subscribes tab by tab,
-// and a later subscribe carrying no capability list must not retract what an
-// earlier one established.
+// announce records the frame shapes a browser says it can apply; announcements only add.
 func (c *Client) announce(supports []string) {
 	for _, capability := range supports {
 		if capability == CapabilityAllSteady {
@@ -799,11 +616,7 @@ func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 	}
 }
 
-// trySend queues a message for the client, reporting whether it was accepted.
-//
-// It drops the message rather than blocking when the client's buffer is full,
-// since one slow browser must not stall metric streaming for everyone, and
-// reports false once the client has gone away.
+// trySend queues a message without blocking, reporting false when the buffer is full or the client is gone.
 func (c *Client) trySend(data []byte) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

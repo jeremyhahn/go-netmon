@@ -14,14 +14,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
-// TableIndexCache holds the MIB-derived metadata that names and labels the
-// samples of a poll, plus the friendly names observed while polling.
-//
-// The MIB-derived half is rebuilt whenever the set of loaded MIB modules
-// changes and published as one immutable mibIndex (see Refresh), so the poll
-// path reads it without taking a lock. The friendly names are the other half:
-// they are learned from SNMP responses rather than from MIBs, are written on
-// every poll, and so stay behind a mutex.
+// TableIndexCache holds the immutable, lock-free MIB-derived index plus per-device friendly names behind a mutex.
 type TableIndexCache struct {
 	storage *storage.Storage
 
@@ -30,24 +23,14 @@ type TableIndexCache struct {
 	// index instead.
 	published atomic.Pointer[mibIndex]
 
-	// buildMu serializes index construction: a store sweep and a learner
-	// export must not interleave, or one would publish an index missing what
-	// the other just added. It is never held by a reader, so a rebuild --
-	// tens of thousands of object reads -- blocks no poll.
+	// buildMu serializes index construction; readers never take it.
 	buildMu sync.Mutex
 
-	// sweep and learned are the two sources merged into every published
-	// index, guarded by buildMu. Keeping them apart is what lets a rebuild
-	// replace the MIB half without discarding tables the OID learner
-	// discovered, and lets a learner export republish without re-sweeping.
+	// sweep and learned are the MIB and OID-learner sources merged into every published index; guarded by buildMu.
 	sweep   *mibSweep
 	learned *tableSet
 
-	// friendly holds each device's status-column names as its last poll
-	// reported them, keyed by device name, each value a *deviceFriendlyNames
-	// (friendly_names.go). It holds current inventory only: a poll replaces
-	// its device's names for the tables it walked, and ForgetDevice drops a
-	// retired device.
+	// friendly maps device name to *deviceFriendlyNames from its last poll; ForgetDevice drops a retired device.
 	friendly sync.Map
 }
 
@@ -58,23 +41,11 @@ type statusColumnInfo struct {
 	ColumnID  string // Last part of column OID (e.g., "2" for ifDescr)
 	LabelName string // Lowercased name for label (e.g., "ifname", "ifdescr")
 
-	// Meta is what labelValue needs to render the column's values: the
-	// declared type, the DISPLAY-HINT and the enumeration. It is built once
-	// when the index is built, so the poll path allocates nothing to format.
+	// Meta is the type, DISPLAY-HINT and enumeration labelValue renders with, built with the index.
 	Meta *mib.OIDMetadata
 }
 
-// labelValue renders an SNMP result as the Prometheus label value for this
-// status column, and reports whether there was anything to render.
-//
-// Octet strings go through mib.FormatValue, the one formatter the CLI and the
-// web UI also use, so a binary column such as cbgpPeer2LastError becomes
-// readable hex instead of the raw bytes that used to reach the label. Numeric
-// values keep the bare enumeration label, with no "(n)" suffix, because that
-// text is part of an existing series' identity.
-//
-// A column with no metadata still renders, as mib.FormatValue does for a nil
-// meta: a label path must not be the thing that fails a poll.
+// labelValue renders an SNMP result as this status column's label value via mib.FormatValue; enums keep the bare label.
 func (c statusColumnInfo) labelValue(result *snmp.Result) (string, bool) {
 	if octets, err := result.GetStringValue(); err == nil {
 		if octets == "" {
@@ -103,11 +74,7 @@ type TableIndexInfo struct {
 	IndexOIDs  []string // OIDs of index columns
 	IndexTypes []string // Types of index columns (Integer32, IpAddress, etc.)
 
-	// IndexColumns is the MIB-declared description of each index column:
-	// resolved type, base type, IMPLIED flag and fixed width. It is empty
-	// for tables discovered by the OID learner and for metadata stored
-	// before index column types were recorded, in which case the decoder
-	// falls back to IndexTypes and the index name heuristic.
+	// IndexColumns describes each index column from the MIB; empty for learned tables, which fall back to IndexTypes.
 	IndexColumns []mib.IndexColumn
 }
 
@@ -154,17 +121,7 @@ func (c *TableIndexCache) objectNames() *objectNameIndex {
 	return c.index().names
 }
 
-// Refresh rebuilds the MIB-derived index from what the MIB store holds now and
-// publishes it.
-//
-// This is what makes a module loaded after the cache was constructed usable.
-// Without it the index describes only the modules that happened to be in the
-// store at construction, every object of every module loaded since resolves to
-// no MIB definition, and its samples fall back to raw-OID metric names with no
-// index labels -- correct, lossless, and unusable.
-//
-// It is safe to call while devices are polling: the sweep builds a whole new
-// index off to the side and installs it with one pointer store.
+// Refresh rebuilds the MIB-derived index from the store and publishes it with one pointer store; safe during polling.
 func (c *TableIndexCache) Refresh() error {
 	c.buildMu.Lock()
 	defer c.buildMu.Unlock()
@@ -197,13 +154,7 @@ func (c *TableIndexCache) publishLocked() {
 	mibIndexTables.Set(float64(len(index.tables)))
 }
 
-// addLearnedTables merges tables the OID learner discovered into the index and
-// returns how many were new.
-//
-// Learned tables are kept separately from the MIB sweep so that a later Refresh
-// does not discard them, and a table the MIBs already describe is never
-// displaced by a learned one: the MIB definition carries index column types the
-// learner can only infer from column names.
+// addLearnedTables merges learned tables into the index and returns how many were new; MIB definitions win.
 func (c *TableIndexCache) addLearnedTables(discovered []learnedTable) int {
 	if c == nil || len(discovered) == 0 {
 		return 0
@@ -252,20 +203,13 @@ func (c *TableIndexCache) sweepStore() (*mibSweep, error) {
 	}
 
 	sweep := &mibSweep{
-		// The metric name index is built from the same sweep that finds the
-		// tables: a second full scan of the store would double the cost for
-		// metadata already in hand. The catalog is built from it too, below,
-		// once the tables and status columns it needs are known.
+		// The metric name index and catalog are built from the same sweep.
 		names:         newObjectNameIndex(allOIDs),
 		tables:        newTableSet(),
 		statusColumns: make(map[string][]statusColumnInfo),
 	}
 
-	// Group the objects by parent once. Finding a table's columns by scanning
-	// every object, as this did, costs objects x tables per sweep -- on the
-	// order of thirty million comparisons on an install with the vendor MIBs
-	// loaded, paid twice over for the status columns. That was tolerable when
-	// the sweep ran once at startup; it runs on every module load now.
+	// Group objects by parent once instead of scanning all objects per table.
 	childrenByParent := make(map[string][]*mib.OIDMetadata, len(allOIDs))
 	for _, oid := range allOIDs {
 		if oid.Parent != "" {
@@ -299,10 +243,7 @@ func (c *TableIndexCache) sweepStore() (*mibSweep, error) {
 		}
 	}
 
-	// The catalog is built last because it describes each object in terms of
-	// the table it belongs to: its index labels and the info metric that
-	// names its rows are only known once the tables and status columns above
-	// have been found.
+	// The catalog is built last: it needs the tables and status columns found above.
 	sweep.catalog = newCatalogIndex(allOIDs, sweep.tables, sweep.statusColumns)
 
 	return sweep, nil
@@ -417,10 +358,7 @@ func extractColumnID(columnOID, entryOID string) string {
 func (c *TableIndexCache) CacheFriendlyNames(deviceName string, results []*snmp.Result) {
 	index := c.index()
 
-	// Every table with status columns that this poll walked is collected,
-	// even one whose names did not render: the poll's view of a table
-	// replaces the cached one whole, so a row the poll did not name has no
-	// name rather than whatever an earlier row at its index was called.
+	// Collect every walked table with status columns; a poll replaces the cached names for a table whole.
 	polled := make(friendlyNames)
 
 	for _, result := range results {
@@ -480,13 +418,7 @@ func (c *TableIndexCache) CacheFriendlyNames(deviceName string, results []*snmp.
 	c.publishFriendlyNames(deviceName, polled)
 }
 
-// ExtractIndexLabels extracts index values from an OID and returns them as Prometheus labels
-// Also adds friendly name labels if available in cache
-// For example: OID ".1.3.6.1.2.1.2.2.1.10.5" with index ["ifIndex"] returns {"ifindex": "5"}
-// If friendly names are cached, also returns {"ifname": "GigabitEthernet0/0", "ifdescr": "..."}
-// For BGP: OID "1.3.6.1.4.1.9.9.187.1.2.8.1.1.1.4.203.0.113.218.1.1" with indexes
-// ["cbgpPeer2Type", "cbgpPeer2RemoteAddr", "cbgpPeer2RemoteAddrType", "cbgpPeer2AddrFamilyAfi", "cbgpPeer2AddrFamilySafi"]
-// returns labels for peer address, AFI, SAFI, etc.
+// ExtractIndexLabels returns an OID's index values as Prometheus labels, plus cached friendly names (e.g. ifindex, ifname).
 func (c *TableIndexCache) ExtractIndexLabels(deviceName, oid string) map[string]string {
 	return c.extractIndexLabels(c.index(), deviceName, oid)
 }
@@ -501,10 +433,7 @@ func (c *TableIndexCache) extractIndexLabels(index *mibIndex, deviceName, oid st
 		return nil
 	}
 
-	// Extract the index suffix from the OID
-	// The suffix comes after the column OID
-	// For example: column OID is ".1.3.6.1.2.1.2.2.1.10" and full OID is ".1.3.6.1.2.1.2.2.1.10.5"
-	// The suffix is ".5"
+	// The index suffix is what follows the column OID.
 
 	// Find where the entry OID ends in the full OID
 	normalizedOID := normalizeOID(oid)
@@ -550,12 +479,7 @@ func (c *TableIndexCache) extractIndexLabels(index *mibIndex, deviceName, oid st
 	return labels
 }
 
-// buildIndexLabels splits an OID's index suffix into one Prometheus label per
-// index column, named after the lowercased column name.
-//
-// Each column is decoded from its MIB-declared type when the table carries
-// index column metadata. Columns are consumed left to right, so a column that
-// reports the wrong width misaligns every column after it.
+// buildIndexLabels splits an OID's index suffix into one label per index column, decoded left to right by MIB type.
 func buildIndexLabels(tableInfo *TableIndexInfo, indexParts []string) map[string]string {
 	labels := make(map[string]string, len(tableInfo.IndexNames))
 	pos := 0
@@ -571,11 +495,7 @@ func buildIndexLabels(tableInfo *TableIndexInfo, indexParts []string) map[string
 		if i < len(tableInfo.IndexColumns) && tableInfo.IndexColumns[i].BaseType != "" {
 			value, consumed = decodeIndexColumn(indexParts[pos:], tableInfo.IndexColumns[i])
 		} else {
-			// Fallback for tables without index column metadata: those
-			// discovered by the OID learner, and OIDs stored before the
-			// MIB parser recorded index types. The declared type is used
-			// when the index column was found by name, and the name
-			// heuristic when even that failed.
+			// Tables without index column metadata fall back to the declared type found by name, else the name heuristic.
 			indexType := ""
 			if i < len(tableInfo.IndexTypes) {
 				indexType = tableInfo.IndexTypes[i]
@@ -598,18 +518,13 @@ func buildIndexLabels(tableInfo *TableIndexInfo, indexParts []string) map[string
 	return labels
 }
 
-// decodeIndexColumn decodes one index value from the OID sub-identifiers that
-// start at parts[0], using the column's MIB-declared type. It returns the
-// rendered value and the number of sub-identifiers consumed. Truncated input
-// yields an empty value and consumes what is left, since nothing after a
-// truncated column can be located.
+// decodeIndexColumn decodes one index value at parts[0] by its MIB type and returns it with the count consumed; truncated input consumes the rest.
 func decodeIndexColumn(parts []string, column mib.IndexColumn) (string, int) {
 	if len(parts) == 0 {
 		return "", 0
 	}
 
-	// Address types reduce to OCTET STRING but have their own presentation
-	// and, for InetAddress, their own leading address-family sub-identifier.
+	// Address types are OCTET STRING with their own rendering; InetAddress has a leading family sub-identifier.
 	switch column.Type {
 	case "IpAddress", "InetAddress", "InetAddressIPv4", "InetAddressIPv6":
 		return parseIndexValue(parts, column.Type)
@@ -665,14 +580,7 @@ func subIDLength(parts []string) (int, bool) {
 	return length, true
 }
 
-// renderOctets formats the octets of a string index. Text indexes such as
-// interface or partition names render as themselves; binary ones such as MAC
-// addresses render as colon-separated hex, which is how operators read them.
-// The choice is mib.FormatOctets', so an index and a value made of the same
-// octets are shown the same way.
-//
-// Sub-identifiers that are not octets are left as they arrived so a malformed
-// index is visible rather than silently mangled.
+// renderOctets formats a string index via mib.FormatOctets (text or colon hex); non-octet sub-identifiers stay as they arrived.
 func renderOctets(parts []string) string {
 	octets := make([]byte, len(parts))
 
@@ -687,12 +595,7 @@ func renderOctets(parts []string) string {
 	return mib.FormatOctets(octets)
 }
 
-// inferTypeFromName infers the SNMP type from the index name when MIB type is unavailable.
-//
-// This is a guess, kept only as a fallback for tables with no index column
-// metadata: OIDs stored before the parser recorded index types, and tables
-// discovered by the OID learner. Anything with metadata is decoded from its
-// declared type by decodeIndexColumn instead.
+// inferTypeFromName guesses an index's SNMP type from its name, for tables without index column metadata.
 func inferTypeFromName(indexName string) string {
 	lowerName := strings.ToLower(indexName)
 
@@ -746,12 +649,7 @@ func parseIndexValue(parts []string, indexType string) (string, int) {
 		return fmt.Sprintf("%s.%s.%s.%s", parts[0], parts[1], parts[2], parts[3]), 4
 
 	case "InetAddress", "InetAddressIPv4", "InetAddressIPv6":
-		// InetAddress can appear in two formats:
-		// 1. Standalone: type.length.octets (e.g., 1.4.198.51.100.101)
-		// 2. After type index: length.octets (e.g., in CISCO-BGP4-MIB where type is separate index)
-		//
-		// We detect which format by checking if first value is 1 or 2 (types) followed by 4 or 16 (lengths)
-		// vs just starting with 4 or 16 (length only)
+		// InetAddress appears as type.length.octets or, after a separate type index, as length.octets; the first values decide which.
 		if len(parts) < 1 {
 			return "", 0
 		}
@@ -872,15 +770,7 @@ func normalizeOID(oid string) string {
 	return oid
 }
 
-// ConvertStatusColumnsToInfoMetrics creates info metrics for status columns (both string and enum).
-// These metrics have constant value 1.0 with the status value as a "value" label.
-// Example: snmp_ifdescr_info{device="router1", ifindex="3", value="GigabitEthernet0/0"} 1
-// Example: snmp_cbgppeer2state_info{device="router1", cbgppeer2remoteaddr="198.51.100.101", value="established"} 1
-//
-// extraLabels are the device's configured tags. They are attached here exactly
-// as they are to ordinary readings: an info metric is what dashboards and
-// federation join against, so it has to be selectable by the same tags as the
-// series being joined to it.
+// ConvertStatusColumnsToInfoMetrics emits constant-1 info metrics carrying status text in a value label, with the device's tags.
 func ConvertStatusColumnsToInfoMetrics(
 	deviceName string,
 	results []*snmp.Result,
@@ -979,10 +869,7 @@ func ConvertSNMPResultsWithTableIndexes(
 		indexCache.CacheFriendlyNames(deviceName, results)
 	}
 
-	// Read this poll's entity sensor metadata and entity names before any of
-	// its readings are converted. Nothing about a sensor survives the poll it
-	// arrived in (internal/metrics/entity_sensor_poll.go), so this is the
-	// only thing that can interpret or name this poll's readings.
+	// Read this poll's sensor metadata and entity names before converting its readings.
 	pollSensors := observeEntitySensors(results)
 
 	// Learn from OIDs if learner is provided
@@ -1015,10 +902,7 @@ func ConvertSNMPResultsWithTableIndexes(
 		// Try numeric value first
 		value, err := result.GetFloat64Value()
 		if err != nil {
-			// Not a number. It may be one of the system scalars that
-			// snmp_system_info reports as labels, and otherwise it is a text
-			// scalar in its own right -- a power supply or a fan saying how it
-			// is, in words. Those used to be dropped here.
+			// Not a number: a system scalar for snmp_system_info, or a text scalar of its own.
 			recordSystemInfo(systemInfo, result)
 			if sample := textScalarSample(deviceName, result, index, extraLabels); sample != nil {
 				samples = append(samples, sample)
@@ -1026,13 +910,7 @@ func ConvertSNMPResultsWithTableIndexes(
 			continue
 		}
 
-		// An entity sensor's value column is the one reading whose raw
-		// number is not the measurement: it is a fixed-point integer in
-		// some SI scale, and publishing it as read would report a
-		// transceiver at -115 dBm. It is replaced here -- not
-		// supplemented -- by the scaled sample, so the wrong number is
-		// never exported under any name. A reading that cannot be scaled
-		// is dropped and counted rather than published raw.
+		// An entity sensor value is replaced by its scaled sample; one that cannot be scaled is dropped and counted.
 		if key, isSensor := entitySensorValueKey(result.OID); isSensor {
 			scaled, err := sensorSample(deviceName, key, result, extraLabels, pollSensors)
 			if err != nil {

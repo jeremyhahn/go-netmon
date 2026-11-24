@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
-# Tests for scripts/backup.sh and scripts/restore.sh.
-#
-# These run entirely against a stub Docker CLI (scripts/tests/fake-docker) and
-# a throwaway repository tree under $TMPDIR. They never contact a Docker
-# daemon, never read or write the real repository, and never touch a deployed
-# stack - which is the point: tooling that destroys data must be testable
-# without risking data.
-#
-# Usage: run-tests.sh [test-name-substring]
+# Usage: run-tests.sh [test-name-substring] -- tests backup.sh and restore.sh against a stub Docker CLI in $TMPDIR.
 
 set -euo pipefail
 
@@ -36,13 +28,7 @@ assert_ok() {
     "$@" >/dev/null 2>&1 || fail "$desc: expected success, got exit $?"
 }
 
-# expect_failure runs a command that must fail, capturing its combined output
-# into $OUT. It returns non-zero if the command unexpectedly succeeded, so
-# callers can "|| return 1" and stop there.
-#
-# The obvious "out=$(cmd) && fail ..." spelling is a trap: fail() only returns
-# 1, so a later passing assertion in the same test masks it and the test
-# reports PASS while asserting nothing.
+# expect_failure runs a command that must fail, capturing output in $OUT; returns non-zero if it succeeded.
 OUT=""
 expect_failure() {
     local desc="$1"
@@ -85,11 +71,7 @@ assert_no_file() {
     [ ! -e "$2" ] || fail "$1: expected path NOT to exist: $2"
 }
 
-# The archive assertions capture tar's output before they look in it. Written
-# "tar ... | grep -q x" under this file's pipefail, the check FAILS on an archive
-# that holds x as soon as tar writes more than a pipe buffer: grep exits at the
-# match, tar takes SIGPIPE, and pipefail reports tar's 141. A fixture of
-# one file passes; a realistic tree of a few hundred modules inverts it.
+# Archive assertions capture tar output first, avoiding SIGPIPE under pipefail.
 
 # assert_archive_has_member LABEL ARCHIVE MEMBER: the listing names MEMBER.
 assert_archive_has_member() {
@@ -108,36 +90,7 @@ assert_archive_member_holds() {
     assert_contains "$1" "$content" "$4"
 }
 
-# --- the "stack was never stopped" property --------------------------------
-#
-# These assertions back the five tests that check a REFUSED operation left the
-# running stack alone. Originally all five were spelled
-#
-#     assert_contains "stack was never stopped" "$(cat .../actions)" ""
-#
-# whose needle is the empty string. Every string contains the empty string, so
-# none of them could fail -- including on the content they exist to rule out.
-#
-# Two separate things were wrong under that one line, and only the first is
-# obvious:
-#
-# 1. The needle. An assertion on a substring cannot express "and nothing else",
-#    so these assert on the whole value instead.
-#
-# 2. The PROPERTY. Four of the five take a real backup before the operation
-#    under test, and a backup legitimately stops and starts the stack: their
-#    action log already reads "stopped/started" before the refusal is even
-#    attempted. Measured, not assumed -- the log was printed for all five.
-#    So "the log must not contain stopped" is NOT the property, and asserting
-#    it would have turned four passing tests red and read as a production bug.
-#    The property is that the operation under test added nothing.
-#
-# The positive control is $FAKE_DOCKER_ROOT/log, which the stub appends to on
-# EVERY invocation. An empty action log means "nothing touched the stack" only
-# if the stub ran at all; without that check it equally means the fixture never
-# ran, the root was wrong, or the script died before its first docker call.
-# An absence assertion that cannot tell those apart is the empty needle one
-# spelling over.
+# Stack-untouched assertions: the action log is unchanged by the operation, and the stub log proves the stub ran.
 
 stack_actions() {
     [ -s "$FAKE_DOCKER_ROOT/log" ] || {
@@ -216,9 +169,7 @@ new_fixture() {
     printf '%s\n' go-netmon:latest go-netmon-webui:latest \
         prom/prometheus:latest grafana/grafana:latest \
         >"$FAKE_DOCKER_ROOT/images"
-    # The containers the fake models, "<id> <project> <config_files>". The
-    # baseline is a project holding only containers this compose file created,
-    # which is what the ownership check must PERMIT.
+    # Fake containers as "<id> <project> <config_files>"; the baseline is all owned by this compose file.
     printf '%s go-netmon %s\n' ours1 "$NETMON_COMPOSE_FILE" \
         >"$FAKE_DOCKER_ROOT/containers"
 
@@ -246,13 +197,7 @@ new_fixture() {
     printf 'DO NOT TOUCH\n' >"$FAKE_DOCKER_ROOT/volumes/go-netmon-data/data/stray"
 }
 
-# write_services_json renders what "docker compose config --format json" would
-# emit, with the MIB tree bind-mounted at /app/mibs in the two services that
-# mount it. The tooling derives the host MIB directory from exactly this, so
-# the tests drive the same derivation the real deployment does.
-#
-# Called with no argument, it writes a compose rendering with no MIB mount at
-# all, which is how the "cannot locate the tree" path is exercised.
+# write_services_json renders docker compose config JSON with the MIB tree at /app/mibs; with no argument, no MIB mount.
 write_services_json() {
     local mib="${1:-}" mount=""
     [ -n "$mib" ] && mount="$(printf '"volumes":[{"type":"bind","source":"%s","target":"/app/mibs","read_only":true}],' "$mib")"
@@ -356,16 +301,9 @@ test_backup_rejects_unlabelled_target_volume() {
     assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1"
 }
 
-# A container that IS in the project and was created from a DIFFERENT compose
-# file. Described by its labels, not by writing the answer into a "foreign"
-# file: the fake has to be asked the question the code actually asks, or the
-# test passes against a check that cannot refuse -- which is what it did.
+# A project container created from a different compose file, described by its labels.
 test_backup_rejects_foreign_containers_in_project() {
-    # EXITED, deliberately. A foreign container in the project need not be
-    # running, and "docker ps" without -a would not see it -- so this fixture
-    # is what makes the -a in the ownership query load-bearing rather than
-    # decorative. Measured against a real daemon: a stopped container is
-    # returned by "ps -aq" and not by "ps -q".
+    # Exited, so the ownership query needs ps -a to see it.
     printf '%s go-netmon %s exited\n' theirs1 /elsewhere/docker-compose.yml \
         >>"$FAKE_DOCKER_ROOT/containers"
     expect_failure "foreign containers" "$BACKUP" --name b1 || return 1
@@ -373,22 +311,7 @@ test_backup_rejects_foreign_containers_in_project() {
     assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1"
 }
 
-# THE FAKE'S OWN REFUSALS, PINNED.
-#
-# The stub is the instrument these ownership tests are measured with, and it
-# has been wrong three times in the same direction -- each time answering a
-# question it was not asked, so a broken ownership check passed:
-#
-#   returning a canned file whatever filter it was handed;
-#   then falling through to match-all for an unrecognised filter;
-#   then silently ignoring "-f", which is docker's own alias for --filter.
-#
-# Each was found by review and fixed, and none of those fixes left anything
-# behind that would notice the property being lost again. A demonstrated
-# instrument is not a maintained one, so the refusals are asserted here.
-#
-# The valid shapes are asserted too: a stub that refuses everything would pass
-# every case below and make the whole suite vacuous.
+# The fake docker's refusals of unasked questions are asserted, along with the valid shapes.
 test_fake_docker_refuses_queries_it_does_not_understand() {
     local root out failed=0
     root="$(mktemp -d)"
@@ -405,13 +328,7 @@ test_fake_docker_refuses_queries_it_does_not_understand() {
         fi
     done
 
-    # Malformed filters, each paired with a VALID project filter.
-    #
-    # The pairing is load-bearing. Sent alone, a rejected filter leaves no
-    # project set and the stub refuses for that reason instead -- so the
-    # assertion would pass with the filter validation deleted, satisfied by a
-    # different guard. With a good filter present the project IS set, and only
-    # the validation can still refuse.
+    # Malformed filters each paired with a valid project filter, so only filter validation can refuse.
     local bad
     for bad in 'label=com.docker.compose.project.config_files!=/x.yml' \
                'label=com.docker.compose.project_name=go-netmon'; do
@@ -446,13 +363,7 @@ test_fake_docker_refuses_queries_it_does_not_understand() {
         *c2*) ;;
         *) fail "the fake hid a stopped container from 'ps -aq': $out" || failed=1 ;;
     esac
-    # The negative half needs a positive control INSIDE it. Asserting only that
-    # c2 is absent cannot tell "the stub correctly hid the stopped container"
-    # from "the stub failed and printed an error that happens not to contain
-    # c2" -- measured: delete the -q branch, the stub dies on an unknown
-    # argument, and an absence-only assertion passes. So: the command must
-    # SUCCEED, the running container must be listed, and the stopped one must
-    # not be.
+    # The command must succeed, list the running container and omit the stopped one.
     if ! out="$(_fake_ps -q --filter 'label=com.docker.compose.project=go-netmon')"; then
         fail "the fake rejected a valid 'ps -q' query: $out" || failed=1
     else
@@ -465,10 +376,7 @@ test_fake_docker_refuses_queries_it_does_not_understand() {
         esac
     fi
 
-    # The inspect arm's template is compared exactly, not by substring. A key
-    # typo'd to one CONTAINING the real label used to return the correct value
-    # anyway, so the suite could not see it -- verified by mutation at the time
-    # and, until now, pinned by nothing.
+    # The inspect template is compared exactly, not by substring.
     if out="$(FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" inspect \
         --format '{{index .Config.Labels "com.docker.compose.project.config_files_TYPO"}}' c1 2>&1)"; then
         fail "the fake answered a template it does not model: $out" || failed=1
@@ -486,15 +394,7 @@ test_fake_docker_refuses_queries_it_does_not_understand() {
 }
 
 
-# The other half of the fail-closed path, and the half that had no injection
-# point at all until now: "docker ps" listed a container and the "docker
-# inspect" that asks who owns it fails. That happens when a container
-# disappears between the two calls, and on any daemon or permission error.
-#
-# Measured before this existed: swallow the inspect failure in
-# compose_foreign_containers and the whole suite still passed, 54 of 54 as the
-# suite stood then. The branch is the fail-closed guarantee on a path that
-# overwrites volumes, and nothing reached it.
+# Fail closed when docker inspect fails for a container docker ps listed.
 test_backup_refuses_when_a_container_cannot_be_inspected() {
     printf '%s go-netmon %s exited\n' theirs1 /elsewhere/docker-compose.yml \
         >>"$FAKE_DOCKER_ROOT/containers"
@@ -503,14 +403,7 @@ test_backup_refuses_when_a_container_cannot_be_inspected() {
     expect_failure "uninspectable container" "$BACKUP" --name b1 || { rm -f "$FAKE_DOCKER_ROOT/inspect-status"; return 1; }
     rm -f "$FAKE_DOCKER_ROOT/inspect-status"
 
-    # The OUTER message is the same for either docker call failing, so
-    # asserting only it does not prove the inspect branch is what refused --
-    # and "no archive written" is equally true of a backup that stopped one
-    # step earlier. Both are satisfied by the ps-failure path.
-    #
-    # So pin the inner message, which only the inspect branch emits, and
-    # require the ps one to be ABSENT. Together they say which of the two
-    # calls refused, which is the whole point of a test named for one of them.
+    # Pin the inspect-only inner message and require the ps message absent.
     assert_contains "refusal names the cause" "$OUT" "could not establish ownership" || return 1
     assert_contains "the INSPECT branch is what refused" "$OUT" \
         "could not read the compose file behind container" || return 1
@@ -524,10 +417,7 @@ test_backup_refuses_when_a_container_cannot_be_inspected() {
     assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1"
 }
 
-# The second defect, independent of the filter: "2>/dev/null || true" turned a
-# FAILED docker query into an empty result, and empty meant "nothing foreign".
-# A question that could not be asked was answered "yes, it is yours" -- on the
-# path that overwrites volumes.
+# A failed docker query must not read as "nothing foreign".
 test_backup_refuses_when_ownership_cannot_be_established() {
     printf '1\n' >"$FAKE_DOCKER_ROOT/ps-status"
     expect_failure "unanswerable ownership query" "$BACKUP" --name b1 || return 1
@@ -820,11 +710,7 @@ test_restore_warns_when_webui_and_poller_are_split() {
 
 test_restore_rejects_foreign_containers_in_project() {
     make_backup b1 || fail "backup failed" || return 1
-    # EXITED, deliberately. A foreign container in the project need not be
-    # running, and "docker ps" without -a would not see it -- so this fixture
-    # is what makes the -a in the ownership query load-bearing rather than
-    # decorative. Measured against a real daemon: a stopped container is
-    # returned by "ps -aq" and not by "ps -q".
+    # Exited, so the ownership query needs ps -a to see it.
     printf '%s go-netmon %s exited\n' theirs1 /elsewhere/docker-compose.yml \
         >>"$FAKE_DOCKER_ROOT/containers"
     local before out
@@ -861,15 +747,7 @@ test_restore_rejects_conflicting_selectors() {
     assert_contains "explains the conflict" "$out" "mutually exclusive"
 }
 
-# --- tests: the MIB source tree -------------------------------------------
-#
-# The tree is a host directory, not a Docker volume: bind-mounted read-only at
-# /app/mibs, living in the operator's working copy, under no version control.
-# It is the source most of the imported catalog was parsed from, so an archive
-# holding the parsed catalogs without it restores a deployment that resolves
-# until something re-parses. These tests cover that it is carried, that it
-# comes back byte for byte, and that overwriting a populated one cannot happen
-# by accident.
+# Tests for the MIB source tree: carried, restored byte for byte, and not overwritten by accident.
 
 test_backup_includes_the_mib_tree() {
     make_backup b1 || fail "backup failed" || return 1
@@ -931,10 +809,7 @@ test_backup_fails_when_the_mib_tree_is_missing() {
     expect_failure "missing tree" "$BACKUP" --name b1 || return 1
     assert_contains "names the path" "$OUT" "MIB source tree not found" || return 1
     assert_no_file "no output written" "$NETMON_REPO_ROOT/backups/b1" || return 1
-    # The failure has to land in preflight: a backup that discovers a problem
-    # after taking the stack down has caused an outage for nothing. This is the
-    # one of the five with nothing before it, so the action log must be empty
-    # outright rather than merely unchanged.
+    # The failure lands in preflight, so the action log must be empty.
     assert_stack_never_touched "stack was never stopped" || return 1
 }
 
@@ -1070,16 +945,7 @@ test_restore_plan_states_the_tree_overwrite() {
     assert_contains "tells the operator how to proceed" "$out" "Re-run with --yes" || return 1
 }
 
-# The restore plan's "current:" line is the only thing that tells an operator
-# how much data the destructive step is about to replace. It comes from
-# volume_bytes, which runs a helper container and swallows every failure
-# ("2>/dev/null || printf '0'"), so a broken invocation reports a volume holding
-# a year of metrics as 0 B -- and a restore about to destroy it reads as
-# harmless. Nothing asserted the value, so the whole path was invisible: with
-# the fake-docker run arm fixed to refuse an unmodelled invocation, dropping
-# :ro, dropping --network none or changing the helper image on the size probe
-# still left the suite green (the same was measured of six of
-# its nine arms).
+# The restore plan's current: size comes from volume_bytes; assert its value.
 test_restore_plan_reports_what_a_volume_actually_holds() {
     make_backup b1 || fail "backup failed" || return 1
 
@@ -1206,11 +1072,7 @@ test_restore_refuses_an_unsafe_tree_destination() {
     before="$(tree_fingerprint "$MIB_TREE")"
     actions_before="$(stack_actions)" || return 1
 
-    # Deliberately WITHOUT --yes. The check lives in stage 3, before the plan is
-    # even printed, so a dry run proves it fires - and this test can therefore
-    # never reach the code that empties a directory, however the guard is
-    # broken. Naming a real system path and relying on being an unprivileged
-    # user to contain the damage would be the wrong kind of test.
+    # Without --yes: the check fires in stage 3, before any directory is emptied.
     expect_failure "system directory" "$RESTORE" --from "$NETMON_REPO_ROOT/backups/b1" \
         --only mibs --mib-tree /usr || return 1
     out="$OUT"
@@ -1239,11 +1101,7 @@ test_restore_accepts_a_schema_1_backup_without_trees() {
         "$FAKE_DOCKER_ROOT/volumes/go-netmon_webui-data/data/webui.db"
 }
 
-# The manifest records the image id each backup was produced by. Originally the
-# only assertion over .images counted the ENTRIES and never read image_id, so a
-# stub that returned a hash of its own argv -- or, once it started refusing,
-# nothing at all -- was invisible to the suite. A test that counts rows without
-# reading the field the rows exist to carry is a row-count test.
+# The manifest records each image id the backup was produced by.
 test_backup_records_the_image_id_of_every_service() {
     make_backup b1 || fail "backup failed" || return 1
     local dir="$NETMON_REPO_ROOT/backups/b1"
@@ -1254,21 +1112,13 @@ test_backup_records_the_image_id_of_every_service() {
             "$dir/manifest.json")" "4" || return 1
     assert_eq "one id per distinct image" \
         "$(jq -r '[.images[].image_id] | unique | length' "$dir/manifest.json")" "4" || return 1
-    # The id is a function of the IMAGE NAME AND NOTHING ELSE. Distinctness is
-    # not enough to say that: the arm this replaced hashed the whole argv, and
-    # four distinct images still produced four distinct well-formed hashes, so
-    # every assertion above would have passed against it. Pinning the value is
-    # what actually rejects it -- an argv hash covers "inspect", "--format" and
-    # the template too, and cannot equal the hash of the name.
+    # The id depends only on the image name; pin its value.
     assert_eq "the id is the hash of the image name alone" \
         "$(jq -r '.images[] | select(.image == "go-netmon:latest") | .image_id' "$dir/manifest.json")" \
         "sha256:$(printf '%s' 'go-netmon:latest' | sha256sum | cut -c1-64)" || return 1
 }
 
-# ImageID records an image the daemon does not have as an EMPTY id rather than
-# failing the backup -- documented at netmon-stack.sh. Nothing
-# could reach that branch while the stub answered every image inspect
-# unconditionally; this is its first coverage.
+# ImageID records an image the daemon lacks as an empty id; see netmon-stack.sh.
 test_backup_records_an_empty_id_for_an_image_the_daemon_lacks() {
     grep -vxF 'prom/prometheus:latest' "$FAKE_DOCKER_ROOT/images" >"$TEST_TMP/images" &&
         mv "$TEST_TMP/images" "$FAKE_DOCKER_ROOT/images" ||
@@ -1286,19 +1136,12 @@ test_backup_records_an_empty_id_for_an_image_the_daemon_lacks() {
     assert_eq "the absent image records an empty id" \
         "$(jq -r '.images[] | select(.image == "prom/prometheus:latest") | .image_id' \
             "$dir/manifest.json")" "" || return 1
-    # Positive control: the other three still have ids, so an empty field means
-    # THAT image was missing and not that the backup recorded nothing at all.
+    # Positive control: the other three images still have ids.
     assert_eq "the other three still record ids" \
         "$(jq '[.images[] | select(.image_id != "")] | length' "$dir/manifest.json")" "3" || return 1
 }
 
-# The manifest records what produced the backup: the daemon and compose
-# versions. Both are read through templates, and both are wrapped in
-# "|| echo unknown" -- so a query the daemon refuses records the string
-# "unknown" and the backup still succeeds. Nothing asserted these, which is why
-# the version arm could ignore its --format template for the life of the suite.
-# "unknown" is the value a refused query produces, so asserting the real
-# one is what makes the template load-bearing.
+# The manifest records daemon and compose versions; a refused query records "unknown".
 test_backup_records_the_daemon_and_compose_versions() {
     make_backup b1 || fail "backup failed" || return 1
     local m="$NETMON_REPO_ROOT/backups/b1/manifest.json"
@@ -1318,24 +1161,14 @@ test_backup_reports_the_unlabelled_lookalike_volume() {
     out="$("$BACKUP" --name b1 2>&1)" || fail "backup failed" || return 1
     assert_contains "warns about the look-alike" "$out" "go-netmon-data  (project=<none>)" || return 1
     assert_contains "says it is never touched" "$out" "never touched" || return 1
-    # Positive control: a MANAGED volume must not appear in the report, so the
-    # assertion above is the label check working and not the report naming
-    # every volume it enumerated.
+    # Positive control: a managed volume must not appear in the report.
     case "$out" in
     *"go-netmon_webui-data  (project="*)
         fail "the report named a managed volume" || return 1 ;;
     esac
 }
 
-# The "docker run" arm was the last one answering by guesswork: it resolved the
-# volume NAME from the first -v and then matched a marker anywhere in the whole
-# argv, so the mount target, :ro, --network none, --rm, -i and the helper image
-# all decided nothing. Each is present in the production call deliberately, and
-# each could have been dropped without a test noticing.
-#
-# Tested directly as well as through the scripts, because the production paths
-# issue only the three correct shapes: a refusal they never trigger is a
-# refusal nothing shows to be working.
+# The docker run arm checks mount target, :ro, --network none, --rm, -i and helper image.
 test_fake_docker_run_refuses_an_unmodelled_invocation() {
     local root out failed=0
     root="$(mktemp -d)"
@@ -1400,10 +1233,7 @@ test_fake_docker_run_refuses_an_unmodelled_invocation() {
         fail "the fake ignored a flag it does not model: $out" || failed=1
     fi
 
-    # The import writes, so a read-only mount fails inside the container where
-    # the caller cannot see it, and without -i the container gets no stdin: tar
-    # reads EOF and the volume is emptied and LEFT empty. A restore that
-    # destroys data and reports success.
+    # The import needs a writable mount and -i, or the volume is left empty.
     if out="$(_fdr --rm -i --network none -v vol:/dst:ro "$img" \
         sh -c 'find /dst -mindepth 1 -delete && tar -C /dst --numeric-owner -xf -' </dev/null)"; then
         fail "the fake imported through a read-only mount: $out" || failed=1
@@ -1413,11 +1243,7 @@ test_fake_docker_run_refuses_an_unmodelled_invocation() {
         fail "the fake imported with no -i, so the container had no stdin: $out" || failed=1
     fi
 
-    # WHERE the text appears used to decide nothing: the marker was matched
-    # anywhere in "$*". This command CONTAINS "du -sb" and is not the command
-    # production issues -- it drops the 2>/dev/null and the cut, so a real
-    # container would print "<bytes>\t/src" and the caller would read a size of
-    # zero from a tab-separated line it could not parse.
+    # Contains du -sb but is not the production command, so it must be refused.
     if out="$(_fdr --rm --network none -v vol:/src:ro "$img" sh -c 'du -sb /src')"; then
         fail "the fake answered a command that merely contains a modelled marker: $out" || failed=1
     fi
@@ -1431,10 +1257,7 @@ test_fake_docker_run_refuses_an_unmodelled_invocation() {
     return "$failed"
 }
 
-# Refusing AFTER answering, or after acting, is not refusing. Three arms had
-# their validation running too late, or a sentinel a legal input could forge;
-# this is what pins each, and none of it is visible through the production
-# scripts because they never issue these shapes.
+# Stub arms must refuse before answering or acting.
 test_fake_docker_refuses_before_it_answers_or_acts() {
     local root out failed=0
     root="$(mktemp -d)"
@@ -1446,9 +1269,7 @@ test_fake_docker_refuses_before_it_answers_or_acts() {
     _fd()     { FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" "$@" 2>&1; }
     _fd_out() { FAKE_DOCKER_ROOT="$root" "$FAKE_DOCKER" "$@" 2>/dev/null; }
 
-    # 1. An unmodelled "compose up" flag must be refused BEFORE the volumes are
-    #    materialised. Checking only the exit status would pass just as well
-    #    against the version that created them and then died.
+    # 1. An unmodelled compose up flag is refused before volumes are created.
     if out="$(_fd compose -p go-netmon -f /x.yml up --wait)"; then
         fail "the fake accepted a 'compose up' flag it does not model: $out" || failed=1
     fi
@@ -1463,17 +1284,14 @@ test_fake_docker_refuses_before_it_answers_or_acts() {
     if [ -d "$root/volumes" ]; then
         fail "the fake materialised volumes before refusing a trailing argument" || failed=1
     fi
-    # Positive control: the modelled flag DOES create them, so the checks above
-    # are the ordering and not a stub that never creates anything.
+    # Positive control: the modelled flag creates them.
     if ! out="$(_fd compose -p go-netmon -f /x.yml up --no-start)"; then
         fail "the fake rejected 'compose up --no-start': $out" || failed=1
     elif [ ! -d "$root/volumes/go-netmon_webui-data" ]; then
         fail "'compose up --no-start' created no volumes, so the ordering check proves nothing" || failed=1
     fi
 
-    # 2. An EMPTY status filter must not forge the "none seen yet" sentinel and
-    #    let a second one through. The value and the seen-flag are separate for
-    #    exactly this: a sentinel a legal input can produce is not a sentinel.
+    # 2. An empty status filter must not forge the none-seen sentinel.
     if out="$(_fd compose -p go-netmon -f /x.yml ps --services --filter status= --filter status=running)"; then
         fail "the fake accepted two status filters when the first was empty: $out" || failed=1
     fi
@@ -1509,9 +1327,7 @@ test_fake_docker_refuses_before_it_answers_or_acts() {
         fail "the fake did not answer the plain 'config --format json': $out" || failed=1
     fi
 
-    # 5. Every project-scoped arm must REQUIRE -p and -f. Production pins both
-    #    on every call, so a dropped one has to be refused rather than
-    #    answered as if it had been supplied.
+    # 5. Every project-scoped arm requires -p and -f.
     local scoped
     for scoped in "config --format json" "ps --services --filter status=running" "stop go-netmon" "up --no-start"; do
         # shellcheck disable=SC2086  # deliberate: each entry is an argv, not one word
@@ -1523,8 +1339,7 @@ test_fake_docker_refuses_before_it_answers_or_acts() {
             fail "the fake answered '$scoped' with no -f compose file: $out" || failed=1
         fi
     done
-    # Positive control: the same argv WITH both flags is accepted, so the
-    # refusals above are the scope check and not a stub that refuses anything.
+    # Positive control: the same argv with both flags is accepted.
     if ! out="$(_fd compose -p go-netmon -f /x.yml ps --services --filter status=running)" || [ -z "$out" ]; then
         fail "the fake refused a fully scoped ps: $out" || failed=1
     fi
@@ -1534,13 +1349,7 @@ test_fake_docker_refuses_before_it_answers_or_acts() {
         fail "the fake answered 'volume inspect' with no volume named: $out" || failed=1
     fi
 
-    # 6b. "compose start" must refuse a service the compose file does not
-    #     define, exactly as "compose stop" does. It read its service list and
-    #     wrote it straight into the running set, so "start bogus" invented a
-    #     running service and every later assertion about what is running was
-    #     made against a fiction. Reading an argument and VALIDATING it are
-    #     different things -- the two arms were asymmetric, one checked and one
-    #     not, which is why the enumeration that found nine missed this one.
+    # 6b. compose start refuses a service the compose file does not define, as compose stop does.
     if out="$(_fd compose -p go-netmon -f /x.yml start bogus)"; then
         fail "the fake started a service the compose file does not define: $out" || failed=1
     fi
@@ -1558,13 +1367,7 @@ test_fake_docker_refuses_before_it_answers_or_acts() {
         fail "'compose start' did not record the services it was given: $(cat "$root/running")" || failed=1
     fi
 
-    # 7. EVERY TEMPLATE THIS STUB READS MUST BE PINNED BY A REFUSAL, not only
-    #    by a production-side mutation. The distinction is easy to miss and
-    #    review caught it: test_backup_records_the_daemon_and_compose_versions
-    #    goes red when PRODUCTION asks for a template the stub refuses, but the
-    #    old "version" arm printed 27.0.0 unconditionally -- so that test would
-    #    pass just as well against a stub that reads no template at all. One
-    #    mutation direction is not two.
+    # 7. Every template the stub reads is pinned by a refusal.
     mkdir -p "$root/volumes/go-netmon_webui-data/data"
     printf 'go-netmon' >"$root/volumes/go-netmon_webui-data/project"
     printf '%s\n' go-netmon:latest >"$root/images"
@@ -1584,14 +1387,11 @@ image inspect|image inspect --format {{.Bogus}} go-netmon:latest
 compose config value|compose -p go-netmon -f /x.yml config --format yaml
 CASES
 
-    # Positive control for all five: the template production really issues is
-    # answered, and answered with the right VALUE -- otherwise the refusals
-    # above are satisfied by a stub that refuses everything.
+    # Positive control: the production template is answered with the right value.
     if ! out="$(_fd_out version --format '{{.Server.Version}}')" || [ "$out" != "27.0.0" ]; then
         fail "the fake did not answer the version template production uses: $out" || failed=1
     fi
-    # Asserting the VALUE, not merely non-empty output: a listing that returns
-    # something is satisfiable by a stub that returns anything.
+    # Assert the value, not just non-empty output.
     if ! out="$(_fd_out volume ls --format '{{.Name}}')" \
         || [ "$(printf '%s' "$out" | tr '\n' ' ')" != "go-netmon_go-netmon-data go-netmon_webui-data" ]; then
         fail "'volume ls --format {{.Name}}' did not list the fixture's volumes: $out" || failed=1
@@ -1627,10 +1427,7 @@ test_assert_contains_refuses_an_empty_needle() {
     assert_contains "a real needle still matches" "any haystack at all" "haystack" || return 1
 }
 
-# A real MIB tree is hundreds of modules, so its listing is far past a pipe
-# buffer. The member sought is archived FIRST, which is the case that inverted
-# "tar -tzf | grep -q": the match comes while tar still has most of the listing
-# to write.
+# The sought member is archived first, with a listing larger than a pipe buffer.
 test_archive_assertions_hold_on_a_large_archive() {
     local src="$TEST_TMP/large" archive="$TEST_TMP/large.tar.gz" i
     mkdir -p "$src/fill"

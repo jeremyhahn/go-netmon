@@ -13,9 +13,7 @@ const (
 	ifEntryOID = "1.3.6.1.2.1.2.2.1"
 )
 
-// planFixture is a small IF-MIB/CISCO-PROCESS-MIB slice covering the shapes
-// that matter: a table node, its entry, readable columns, a readable and a
-// not-accessible index column, a deprecated object and a scalar.
+// planFixture is an IF-MIB/CISCO-PROCESS-MIB slice: table, entry, columns, indexes, a deprecated object and a scalar.
 func planFixture() []*mib.OIDMetadata {
 	return []*mib.OIDMetadata{
 		{OID: ifTableOID, Name: "ifTable", Module: "IF-MIB",
@@ -125,9 +123,7 @@ func TestPlanWalksColumnsWhenTheirTableIsAbsent(t *testing.T) {
 	assertDecision(t, byName, "ifRcvAddressAddress", false, ReasonNotAccessible)
 }
 
-// TestPlanExcludingATableRestoresItsColumns verifies the two mechanisms
-// compose: excluding the table means its columns are no longer covered, so the
-// readable ones are fetched on their own.
+// TestPlanExcludingATableRestoresItsColumns verifies an excluded table's readable columns are fetched individually.
 func TestPlanExcludingATableRestoresItsColumns(t *testing.T) {
 	filters := map[string]config.ModuleFilter{
 		"IF-MIB": {ExcludeNames: []string{"^ifTable$"}},
@@ -249,9 +245,7 @@ func TestPlanMalformedPatternIsIgnored(t *testing.T) {
 	assertDecision(t, byName, "ifInOctets", true, ReasonPolled)
 }
 
-// TestPlanEmptyInput covers a module with no objects at all, which is what
-// SNMPv2-TC and SNMPv2-CONF are: textual conventions and conformance
-// statements define nothing to poll.
+// TestPlanEmptyInput covers a module with no objects, such as SNMPv2-TC.
 func TestPlanEmptyInput(t *testing.T) {
 	if got := Plan(nil, []string{"SNMPv2-TC"}, nil); len(got) != 0 {
 		t.Errorf("got %d decisions for a module with no objects, want 0", len(got))
@@ -399,10 +393,7 @@ func TestFetchableRules(t *testing.T) {
 			false, ReasonNotCurrent,
 		},
 		{
-			// An object whose module was parsed without one of the modules its
-			// IMPORTS names. It looks readable and current and has no OID, so
-			// there is nothing to ask a device for; calling it deprecated would
-			// send a reader after the wrong problem entirely.
+			// An object with no OID from unresolved IMPORTS; not to be reported as deprecated.
 			"readable and current but unresolved to any OID",
 			&mib.OIDMetadata{IsScalar: true, Access: "read-only", Status: "current"},
 			false, ReasonUnresolved,

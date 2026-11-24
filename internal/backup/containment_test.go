@@ -10,13 +10,7 @@ import (
 	"testing"
 )
 
-// This file is a lint of this tool's own source, run as a test.
-//
-// The containment in root.go is only worth anything if nothing goes around it.
-// A comment asking future contributors not to call os.RemoveAll is not a
-// guarantee; a failing test is. Everything below is checked mechanically, so
-// adding a call that reaches the filesystem outside a Root, or that hands a
-// command line to a shell, breaks the build rather than shipping.
+// Lints this package's source: filesystem access must go through a Root and nothing may invoke a shell.
 
 // sourceDirs are the packages this rule covers, relative to the repository root.
 //
@@ -185,12 +179,7 @@ func repoSource(t *testing.T) *Root {
 	return root
 }
 
-// parseDir parses one source directory, read through the root rather than off
-// the filesystem directly.
-//
-// parser.ParseDir would be the obvious call and is deprecated: it groups files
-// into packages without consulting build tags, and it names paths to the os
-// package itself. This rule is per-file and needs neither.
+// parseDir parses one source directory through the root; parser.ParseDir is deprecated.
 func parseDir(t *testing.T, root *Root, dir string, includeTests bool) []parsedFile {
 	t.Helper()
 	fset := token.NewFileSet()

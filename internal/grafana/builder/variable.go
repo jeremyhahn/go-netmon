@@ -49,12 +49,7 @@ func (vg *VariableGenerator) GenerateDeviceVariable(_ string) grafana.Variable {
 	}
 }
 
-// GenerateTableIndexVariable creates a variable for table row selection.
-//
-// The rows of a table are told apart by the index column's label, so the
-// variable lists that label's values on the column's own metric. It takes the
-// column and its index column rather than the table OID because neither the
-// metric name nor the label name can be derived from an OID.
+// GenerateTableIndexVariable creates a row selector from the index column's label values.
 func (vg *VariableGenerator) GenerateTableIndexVariable(column *mib.OIDMetadata, indexColumnName string) grafana.Variable {
 	label := promname.IndexLabel(indexColumnName)
 	query := fmt.Sprintf("label_values(%s, %s)", vg.metricName(column), label)

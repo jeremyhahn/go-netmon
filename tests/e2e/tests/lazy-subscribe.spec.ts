@@ -2,17 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Lazy per-tab subscription.
-//
-// A device used to subscribe every module's panels the moment it was opened --
-// on a switch with a full catalog that is ~200 queries and a multi-megabyte
-// snapshot burst, most of it for tabs nobody had opened. Now a device opens by
-// loading only the tab the reader lands on; each other tab loads on its first
-// activation and stays subscribed after, so returning to it is instant.
-//
-// This asserts the wire behavior against the deployed backend: one tab
-// subscribed on open, a fresh subscribe on first activation of another, and
-// NOTHING on return to a tab already open.
+// Lazy per-tab subscription: one tab on open, a subscribe on first activation of another, nothing on return.
 
 import { BASE } from '../target';
 import { deviceByName } from '../stack';
@@ -55,8 +45,7 @@ async function openDeviceById(page: Page, deviceId: number) {
   await page.evaluate(id => (window as any).app.openFleetDevice(id), deviceId);
 }
 
-// watchSubscribes records every subscribe/unsubscribe the browser SENDS, with a
-// timestamp, so a phase of the test can count what crossed the wire during it.
+// watchSubscribes records every subscribe and unsubscribe the browser sends, with a timestamp.
 type SentFrame = { t: number; type: string; queries: number };
 function watchSubscribes(page: Page, sent: SentFrame[]) {
   page.on('websocket', ws => {

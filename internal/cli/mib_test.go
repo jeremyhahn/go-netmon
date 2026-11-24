@@ -366,9 +366,7 @@ func importHandler(t *testing.T, seen *[]string, tags *string) http.HandlerFunc 
 			return
 		}
 
-		// The real server refuses an already-stored module unless the caller
-		// opted in, and reports a refresh as a replacement rather than a
-		// create. "STORED-MIB" stands in for a module that is already there.
+		// The server refuses an already-stored module without opt-in; STORED-MIB stands for one.
 		name := strings.TrimSuffix(header.Filename, ".mib")
 		replace := r.URL.Query().Get("replace") == "true"
 		if name == "STORED-MIB" && !replace {

@@ -7,15 +7,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// The security level is not a setting an operator picks; it follows from which
-// protocols are configured, and the message flags have to agree with the
-// message's contents or the agent rejects it before looking at the credentials.
-//
-// This was implemented twice and the two disagreed. The poller's client set
-// authPriv unconditionally, so a device configured for authentication without
-// encryption was refused by gosnmp before a packet left the host:
-// "securityParameters.PrivacyProtocol is required". The ATEN KVM is exactly
-// that device, and it read as unreachable.
+// The v3 security level follows from the configured protocols and must match the message flags.
 
 func TestConfigureV3DerivesTheSecurityLevel(t *testing.T) {
 	tests := []struct {

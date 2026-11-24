@@ -10,12 +10,7 @@ import (
 // so that the list is not itself a member of the tree it covers.
 const checksumsTemp = ".checksums.sha256.partial"
 
-// writeChecksums records the SHA-256 of every file in a backup.
-//
-// The list covers the manifest too, so tampering or bit rot anywhere in the
-// archive is detectable with "sha256sum -c checksums.sha256" alone, without this
-// tool. The format is sha256sum's own, and the paths keep its "./" prefix, so
-// that stays true.
+// writeChecksums records the SHA-256 of every file, the manifest included, in sha256sum format.
 func writeChecksums(root *Root) error {
 	paths, err := archiveFiles(root)
 	if err != nil {
@@ -38,12 +33,7 @@ func writeChecksums(root *Root) error {
 	return root.Rename(checksumsTemp, ChecksumFile)
 }
 
-// verifyChecksums checks every digest in a backup's checksum list and refuses
-// an archive holding a file the list does not cover.
-//
-// The extra-file check is not in sha256sum: a member added to an archive after
-// the fact passes "sha256sum -c" untouched, and a restore must not read anything
-// nobody vouched for.
+// verifyChecksums checks every digest and refuses any file the list does not cover.
 func verifyChecksums(root *Root) error {
 	data, err := root.ReadFile(ChecksumFile)
 	if err != nil {

@@ -11,16 +11,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// instanceOIDFromLabels returns the instance OID a series was read from.
-//
-// The exporter puts it in the "oid" label of every SNMP sample
-// (internal/metrics/table_index_cache.go), which is the only part of a series
-// that identifies its instance exactly. The metric name does not: it names the
-// MIB object, so every row of a table column carries the same one.
-//
-// A series without the label falls back to decoding the name, which still works
-// for the one case that keeps a raw-OID name — an instance OID no loaded MIB
-// describes.
+// instanceOIDFromLabels returns a series' instance OID from its oid label, else decodes the metric name.
 func instanceOIDFromLabels(labels map[string]string) string {
 	if oid := normalizeOID(labels[promname.OIDLabel]); oid != "" {
 		return oid
@@ -28,25 +19,7 @@ func instanceOIDFromLabels(labels map[string]string) string {
 	return oidFromMetricName(labels[seriesNameLabel])
 }
 
-// oidFromMetricName recovers the OID a metric name was derived from, or ""
-// when the name did not come from one.
-//
-// This is the fallback path, not the primary one: the exporter names a metric
-// after the MIB object it instantiates, so only an instance OID that no loaded
-// MIB describes still reaches Prometheus under a raw-OID name. Those names are
-// the sanitized form of "snmp_" + the OID (internal/metrics/name_index.go),
-// which replaces every character outside [a-zA-Z0-9_:] with "_". An OID is
-// nothing but digits and dots, so the sanitized form is digits and underscores,
-// and the mapping inverts exactly:
-//
-//	snmp__1_3_6_1_2_1_2_2_1_10_10 -> 1.3.6.1.2.1.2.2.1.10.10
-//
-// The doubled underscore is the leading dot the poller carries on its OIDs;
-// OIDs written without one produce a single underscore, so at most one leading
-// underscore is dropped. Every remaining underscore was a dot, because a
-// component of an OID cannot be anything but digits — which is also what makes
-// names the exporter builds from text, such as "snmp_system_info", recognizable
-// as not being OIDs.
+// oidFromMetricName inverts a raw-OID metric name (snmp__1_3_6 -> 1.3.6), or returns "" when the name is not OID-derived.
 func oidFromMetricName(metric string) string {
 	rest, ok := strings.CutPrefix(metric, snmpMetricPrefix)
 	if !ok {
@@ -79,17 +52,11 @@ func isDigits(s string) bool {
 	return true
 }
 
-// oidIndex resolves an OID to the MIB object that defines it.
-//
-// A sample's OID is an object's OID followed by an instance — ".0" for a
-// scalar, the row's index for a column — so resolution is a longest-prefix
-// match and the leftover sub-identifiers are the instance.
+// oidIndex resolves an OID to its defining MIB object by longest prefix; the rest is the instance.
 type oidIndex struct {
 	objects map[string]client.MIBObject
 
-	// indexColumns maps a conceptual row's OID to the names of its INDEX
-	// columns, in INDEX order. It is what turns a sample's labels into a
-	// readable row identity: see decodedIndex.
+	// indexColumns maps a row's OID to its INDEX column names, in INDEX order.
 	indexColumns map[string][]string
 }
 
@@ -122,13 +89,7 @@ func newOIDIndex(objects []client.MIBObject) *oidIndex {
 	return ix
 }
 
-// rowIndexColumns returns the INDEX columns of the conceptual row obj is a
-// column of, in INDEX order, or nil when obj is not a column or no loaded MIB
-// describes its row.
-//
-// A column's row is its parent: ifInOctets is .1.3.6.1.2.1.2.2.1.10, ifEntry is
-// .1.3.6.1.2.1.2.2.1. That is how the MIB parser derives the relationship in
-// the first place, so deriving it back costs nothing on the wire.
+// rowIndexColumns returns the INDEX columns of obj's row (its parent OID), or nil.
 func (ix *oidIndex) rowIndexColumns(obj client.MIBObject) []string {
 	if !obj.IsColumn {
 		return nil
@@ -146,12 +107,7 @@ func parentOID(oid string) string {
 	return oid[:cut]
 }
 
-// lookup returns the object whose OID is the longest prefix of oid, together
-// with the sub-identifiers left over as the instance.
-//
-// Matching walks whole sub-identifiers rather than characters: column
-// 1.3.6.1.2.1.2.2.1.2 must not claim a sample of 1.3.6.1.2.1.2.2.1.20, which a
-// string prefix test would hand it.
+// lookup returns the object whose OID is the longest whole-sub-identifier prefix of oid, and the leftover instance.
 func (ix *oidIndex) lookup(oid string) (client.MIBObject, string, bool) {
 	normalized := normalizeOID(oid)
 	if normalized == "" {
@@ -167,24 +123,7 @@ func (ix *oidIndex) lookup(oid string) (client.MIBObject, string, bool) {
 	return client.MIBObject{}, "", false
 }
 
-// Describe names a series the way a MIB browser would and returns the metadata
-// needed to format its value, e.g. "ifInOctets[10]" for a sample of
-// .1.3.6.1.2.1.2.2.1.10.10.
-//
-// It takes the whole label set because the instance is a label, not part of the
-// name: the exporter names a metric after the MIB object and puts the row index
-// in labels, so snmp_ifInOctets alone says nothing about which interface a
-// sample belongs to. The exact instance comes from the "oid" label, which names
-// the object; the row's identity comes from the index labels beside it, which
-// the exporter has already decoded -- "203.0.113.218" rather than the 4.203.0.113.218
-// the OID carries. Which labels those are is read from the MIB's INDEX clause
-// and not guessed, so the enrichment labels the exporter adds alongside them --
-// ifname, ifdescr, ifalias and the rest -- are never mistaken for part of the
-// row.
-//
-// The reported ok is false when the series is not OID-derived or when no loaded
-// MIB defines it; the label is then the series' full PromQL identity, so a
-// caller can render every row without a second code path.
+// Describe names a series MIB-browser style, e.g. ifInOctets[10], and returns value metadata; ok is false when no MIB defines it.
 func (ix *oidIndex) Describe(labels map[string]string) (string, *mib.OIDMetadata, bool) {
 	if ix == nil {
 		return formatSeries(labels), nil, false
@@ -200,16 +139,7 @@ func (ix *oidIndex) Describe(labels map[string]string) (string, *mib.OIDMetadata
 	return instanceLabel(obj, instance, labels, ix.rowIndexColumns(obj)), objectMetadata(obj), true
 }
 
-// instanceLabel names one instance of a MIB object. A scalar has exactly one
-// instance, ".0", which carries no information and is left off; a column's
-// index is what tells two interfaces apart, so it is kept.
-//
-// The index is rendered from the decoded values the exporter put in labels when
-// the MIB says which labels those are, and from the raw OID sub-identifiers
-// when it does not. The difference is the difference between
-// cbgpPeer2AdminStatus[cbgpPeer2Type=1,cbgpPeer2RemoteAddr=203.0.113.218] and
-// cbgpPeer2AdminStatus[1.4.203.0.113.218], which carry the same information and
-// are not equally readable.
+// instanceLabel names one instance of an object: scalars drop .0, columns render their decoded index or raw sub-identifiers.
 func instanceLabel(
 	obj client.MIBObject,
 	instance string,
@@ -225,23 +155,7 @@ func instanceLabel(
 	return obj.Name + "[" + instance + "]"
 }
 
-// decodedIndex renders a row's index from the labels the exporter decoded it
-// into, or "" when it cannot be rendered whole.
-//
-// The columns are the row's INDEX clause, so every label read here is part of
-// the row's identity by definition; a blocklist of the exporter's enrichment
-// labels would instead have to be kept in step with the exporter forever, and
-// would still be wrong for the next label it learns to attach.
-//
-// A single-column index renders as the bare value: the object already names its
-// table, so "ifInOctets[10]" says everything "ifInOctets[ifIndex=10]" does. A
-// composite index names each column, because position alone does not say which
-// of four values is the peer address.
-//
-// A column the exporter did not decode -- an index type it could not split, a
-// table it learned rather than read from a MIB -- leaves the row only partly
-// identified, and half an index is worse than the raw sub-identifiers, which at
-// least identify the row exactly. That is when "" is returned.
+// decodedIndex renders a row's index from the exporter's decoded INDEX labels, or "" if any column is undecoded.
 func decodedIndex(columns []string, labels map[string]string) string {
 	if len(columns) == 0 {
 		return ""
@@ -294,14 +208,7 @@ func normalizeOID(oid string) string {
 // larger is beyond both int64 and a Counter64, so it cannot be an SNMP value.
 const maxInt64Float = 9.2e18
 
-// formatSeriesValue renders a sample value, using MIB metadata when there is
-// any: enumerations become labels, TimeTicks become durations, and a UNITS
-// clause is appended.
-//
-// Prometheus carries every sample as a float64. A value that is not a whole
-// number in int64 range cannot be an SNMP integer, so it keeps the numeric
-// rendering the metrics commands use rather than being mangled by a formatter
-// that expects one.
+// formatSeriesValue renders a sample with MIB metadata: enum labels, TimeTicks durations and UNITS.
 func formatSeriesValue(meta *mib.OIDMetadata, value float64) string {
 	if meta == nil || value != math.Trunc(value) || math.Abs(value) >= maxInt64Float {
 		return formatValue(value)
@@ -309,17 +216,10 @@ func formatSeriesValue(meta *mib.OIDMetadata, value float64) string {
 	return mib.FormatValueWithUnits(meta, int64(value))
 }
 
-// mibFetchConcurrency bounds how many MIB modules are fetched at once. A
-// device commonly polls a dozen or more and each is its own round trip, so
-// fetching them one at a time is what makes the view feel slow; fetching all
-// of them at once would instead stampede the API.
+// mibFetchConcurrency bounds concurrent MIB module fetches.
 const mibFetchConcurrency = 6
 
-// deviceOIDIndex returns the OID index for a device, building it on first use.
-//
-// MIB definitions do not change while netmon runs, so a --refresh loop pays
-// for the index once instead of on every frame. Commands render on a single
-// goroutine, so the cache needs no synchronization.
+// deviceOIDIndex returns a device's OID index, cached for the process; single goroutine only.
 func (e *Env) deviceOIDIndex(ctx context.Context, api *client.Client, deviceID int64) *oidIndex {
 	if ix, ok := e.oidIndexes[deviceID]; ok {
 		return ix
@@ -333,12 +233,7 @@ func (e *Env) deviceOIDIndex(ctx context.Context, api *client.Client, deviceID i
 	return ix
 }
 
-// fetchDeviceMIBObjects collects the objects of every MIB a device polls,
-// directly or through a profile.
-//
-// A module that cannot be loaded is skipped rather than reported: a partial
-// index still names most of a view, and no naming problem is worth failing a
-// command whose numbers are all correct.
+// fetchDeviceMIBObjects collects the objects of every MIB a device polls, skipping modules that fail to load.
 func fetchDeviceMIBObjects(
 	ctx context.Context,
 	api *client.Client,

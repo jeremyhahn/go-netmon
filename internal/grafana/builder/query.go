@@ -128,12 +128,7 @@ func (qb *QueryBuilder) BuildGaugeQuery(oid *mib.OIDMetadata, useDeviceVariable 
 	return qb.BuildScalarQuery(oid, useDeviceVariable)
 }
 
-// BuildTableQuery builds a query for the given columns of one table.
-//
-// Several columns still need a __name__ alternation, because PromQL has no
-// other way to name more than one metric in a single selector. It is an
-// alternation of whole names rather than a prefix pattern, so Prometheus
-// resolves it against the name index instead of scanning every series.
+// BuildTableQuery builds a query for the given columns of one table using a whole-name __name__ alternation.
 func (qb *QueryBuilder) BuildTableQuery(_ string, columns []*mib.OIDMetadata) string {
 	if len(columns) == 0 {
 		return ""
@@ -324,13 +319,7 @@ func (qb *QueryBuilder) BuildLabelValuesForMetricQuery(metricName, labelName str
 	return fmt.Sprintf("label_values(%s, %s)", metricName, labelName)
 }
 
-// columnFilters returns the label matchers that select the rows a panel shows.
-//
-// A table column's rows all share one metric name, so the row is selected by
-// label. The interface variable is applied to every column because it is the
-// only row selector these dashboards offer; a table with no ifname label is
-// unaffected while $interface is "All", since an empty label value still
-// matches ".*".
+// columnFilters returns the label matchers that select a panel's rows, including the interface variable.
 func (qb *QueryBuilder) columnFilters(oid *mib.OIDMetadata, useDeviceVariable bool) []string {
 	filters := make([]string, 0, 2)
 	if useDeviceVariable {
@@ -342,10 +331,7 @@ func (qb *QueryBuilder) columnFilters(oid *mib.OIDMetadata, useDeviceVariable bo
 	return filters
 }
 
-// metricName returns the metric name the exporter gives every instance of an
-// object. It is derived from the object's name, never from its OID: the OID of
-// a sample identifies one table row, and naming a metric after it would give
-// Prometheus one metric name per row.
+// metricName returns the exporter's metric name for an object, derived from its name, never its OID.
 func (qb *QueryBuilder) metricName(oid *mib.OIDMetadata) string {
 	return promname.NameWithPrefix(qb.metricPrefix, oid.Name)
 }
@@ -362,13 +348,7 @@ func (qb *QueryBuilder) isOctetCounter(oid *mib.OIDMetadata) bool {
 		strings.Contains(name, "hcout")
 }
 
-// ObjectMetricName returns the Prometheus metric name of a MIB object, for
-// callers outside this package that need to name a series without building a
-// whole query. An empty prefix means the exporter's own.
-//
-// It takes the object's name rather than its OID because that is what the
-// exporter names a metric after. An OID alone cannot answer the question: it
-// takes the loaded MIBs to say which object an OID belongs to.
+// ObjectMetricName returns the Prometheus metric name of a MIB object; an empty prefix means the exporter's own.
 func ObjectMetricName(objectName, prefix string) string {
 	return promname.NameWithPrefix(prefix, objectName)
 }

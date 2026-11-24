@@ -7,44 +7,9 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
-// This file is the verification the whole change is judged by: the readings
-// the four production transceivers reported on 2026-08-31, measured from the
-// transceivers' own DOM, put through the real conversion path and compared to
-// what the switches themselves print.
-//
-// Every row below was captured by snmpwalk against the production switches on
-// 2026-08-31, not derived from the dBm figures. That matters: an encoding
-// invented to match a known answer cannot fail, and an earlier draft of this
-// fixture guessed the Nexus encoding wrong while still "passing".
-//
-// The two families encode the same quantity differently, and it is SCALE that
-// separates them, not precision:
-//
-//	Nexus 9000 (dist-01/02)   scale milli(8), precision 0 -- milli-dBm
-//	                             "Ethernet1/3 Lane 1 Transceiver Receive Power Sensor"
-//	                             raw -7328 -> -7.328 dBm
-//	Catalyst C9300 (access-01) scale units(9), precision 1 -- tenths of a dBm
-//	                             "Te1/1/1 Receive Power Sensor"
-//	                             raw -75 -> -7.5 dBm
-//
-// Read with the wrong scale a reading lands a factor of a thousand out; with
-// the wrong precision, a factor of ten. Either is a plausible-looking number on
-// a link that is fine, in the same range as the 5.9 dB fault that started this.
-//
-// Both families answer the CISCO table. The standard ENTITY-SENSOR-MIB at
-// .1.3.6.1.2.1.99.1.1.1 returns "No Such Object" on the Nexus AND the Catalyst,
-// so the standard-table decoder is exercised by the unit tests rather than
-// here. It is kept because other vendors do answer it, not because these do.
+// Real transceiver walks through the conversion: Nexus 9000 uses scale milli(8) precision 0, Catalyst C9300 scale units(9) precision 1.
 
-// domTolerance is how far a collected reading may sit from the dBm computed
-// from its own varbinds. The scaling is exact, so this absorbs only the last
-// binary digit; a real precision or scale error is orders of magnitude larger.
-//
-// It is deliberately NOT a tolerance against the switch CLI. Optical power
-// drifts by a few tenths of a dB between samples -- the walk below and the CLI
-// reading minutes earlier differ by up to 0.5 dB on a healthy link -- so
-// pinning to the CLI would make this test flap. What is pinned is the
-// arithmetic: these varbinds must produce these dBm.
+// domTolerance absorbs binary rounding only; it is not a tolerance against the switch CLI.
 const domTolerance = 0.001
 
 // opticalReading is one transceiver's measured Tx or Rx power and the varbinds
@@ -92,10 +57,7 @@ var referenceReadings = []opticalReading{
 		"Te1/1/2 Receive Power Sensor", -6.9},
 }
 
-// entityName is what ENTITY-MIB actually reports for the sensor. The two
-// families word it differently -- the Nexus includes "Lane 1 Transceiver", the
-// Catalyst says only "<port> <direction> Power Sensor" -- so it is captured per
-// row rather than composed, which is what a walk shows.
+// entityName is the ENTITY-MIB sensor name as walked, per row.
 func (r opticalReading) entityName() string {
 	return r.sensorName
 }
@@ -152,17 +114,9 @@ func TestOpticalDOMMatchesMeasuredValues(t *testing.T) {
 	}
 }
 
-// TestOpticalDOMWouldCatchTheAccessFault is the regression the issue is
-// actually asking for: a link that is up, error-free, and 5.9 dB below where
-// it should be has to show up as a number that differs from the good link's.
-//
-// It is the same assertion as the table above seen from the other side --
-// nothing here is special-cased for a fault -- but it states the failure the
-// collection exists to catch, so a future change that flattens every reading
-// to a constant fails a test that says why that matters.
+// TestOpticalDOMWouldCatchTheAccessFault checks a 5.9 dB low link reads differently from a good one.
 func TestOpticalDOMWouldCatchTheAccessFault(t *testing.T) {
-	// The walked Te1/1/1 receive sensor: CISCO table, entity index 1109,
-	// dBm at units scale in tenths.
+	// The Te1/1/1 receive sensor: Cisco table, entity index 1109, tenths of a dBm.
 	const (
 		sensorIndex = "1109"
 		goodRaw     = -75  // -7.5 dBm, the re-terminated link, as walked
@@ -189,13 +143,7 @@ func TestOpticalDOMWouldCatchTheAccessFault(t *testing.T) {
 	}
 }
 
-// TestOpticalDOMSuppressesRawSensorValues checks that the integer the device
-// put on the wire is never exported under any metric name.
-//
-// This is the half of the issue that a passing value assertion does not cover.
-// If the generic conversion also emitted snmp_entsensorvalue = -115 alongside
-// the scaled sample, every assertion above would still pass while Prometheus
-// held a second series reporting the transceiver 114 dB hot.
+// TestOpticalDOMSuppressesRawSensorValues checks the raw integer is never exported.
 func TestOpticalDOMSuppressesRawSensorValues(t *testing.T) {
 	reading := referenceReadings[0]
 
@@ -270,16 +218,7 @@ func TestOpticalDOMDropsUnscalableReadingsFromConversion(t *testing.T) {
 	}
 }
 
-// TestOpticalDOMScalesWithoutAnIndexCache checks the degenerate wiring: a
-// conversion with no index cache still scales and names its readings
-// correctly, because everything they need arrived with them.
-//
-// This assertion has been inverted twice as the design tightened. It first
-// said nothing was exported at all, which was right while metadata lived only
-// in a cache; then that the reading was scaled but unnamed, which was right
-// while names alone were cached. Now neither is cached and the degenerate
-// wiring costs nothing at all. What has not changed through any of it is the
-// part that matters: the raw integer never reaches Prometheus under any name.
+// TestOpticalDOMScalesWithoutAnIndexCache checks readings scale and are named without an index cache.
 func TestOpticalDOMScalesWithoutAnIndexCache(t *testing.T) {
 	reading := referenceReadings[0]
 

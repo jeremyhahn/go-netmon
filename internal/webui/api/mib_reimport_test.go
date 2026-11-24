@@ -23,10 +23,7 @@ import (
 	webuistorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// sensorMIB is a self-contained module whose first object carries a UNITS
-// clause. Units is the metadata the re-import exists to repair: a module parsed
-// before the parser read UNITS is stored without it, and nothing in the UI or
-// the CLI can append a unit until the module is parsed again.
+// sensorMIB is a self-contained module whose first object has a UNITS clause.
 const sensorMIB = `TEST-SENSOR-MIB DEFINITIONS ::= BEGIN
 
 IMPORTS
@@ -167,10 +164,7 @@ func decodeImportResponse(t *testing.T, w *httptest.ResponseRecorder) importedMI
 	return got
 }
 
-// seedStaleModule reproduces the state a module is left in by an older parser:
-// a record that exists and objects that are stored, but with the metadata the
-// old parser never extracted missing, plus an object the module no longer
-// defines.
+// seedStaleModule stores a module missing newer metadata, plus an object it no longer defines.
 func (f *reimportFixture) seedStaleModule(t *testing.T, module string) *webuistorage.MIB {
 	t.Helper()
 
@@ -278,9 +272,7 @@ func TestReimportRefreshesObjectMetadata(t *testing.T) {
 	}
 }
 
-// TestReimportDropsObjectsTheModuleNoLongerDefines checks a retired OID does
-// not linger. A stale object still looks pollable to the selector, so leaving
-// it would keep an OID that no longer exists in the polling set.
+// TestReimportDropsObjectsTheModuleNoLongerDefines checks a retired OID does not linger.
 func TestReimportDropsObjectsTheModuleNoLongerDefines(t *testing.T) {
 	f := newReimportFixture(t)
 	f.seedStaleModule(t, sensorModule)
@@ -930,18 +922,7 @@ func uploadRoot(t *testing.T, dir string) *os.Root {
 	return root
 }
 
-// TestUploadCannotWriteThroughASymlink is the reason the upload directory is
-// held open as an os.Root rather than addressed by path.
-//
-// filepath.Base stops "../" and was the whole of the previous defense, with
-// #nosec annotations asserting it was enough. It is not: a base name is still
-// followed through a symbolic link, so a link planted in the upload directory
-// would have had os.Create write through it to wherever it pointed. Resolving
-// the name against the open directory makes the kernel refuse it.
-//
-// The test asserts on the target being untouched as well as on the error. An
-// implementation that wrote the file and then complained would satisfy an
-// error-only check.
+// TestUploadCannotWriteThroughASymlink checks a planted symlink is refused and its target untouched.
 func TestUploadCannotWriteThroughASymlink(t *testing.T) {
 	uploadDir := t.TempDir()
 	outsideDir := t.TempDir()

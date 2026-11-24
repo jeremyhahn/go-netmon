@@ -1,13 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-// Every configured device reaches the screen.
-//
-// The API listing every device is not the same as the operator seeing them: the
-// fleet table pages, and the dashboard's device picker is built separately from
-// it. This opens the deployed app in a browser and counts what is actually
-// there, against what the API says exists.
-//
-// No route interception: the point is what the running container serves.
+// Every configured device reaches the screen; no route interception.
 
 import { BASE } from '../target';
 

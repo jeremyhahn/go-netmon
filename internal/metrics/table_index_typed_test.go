@@ -26,11 +26,7 @@ func newCacheWithOIDs(t *testing.T, oids ...*mib.OIDMetadata) *TableIndexCache {
 	return NewTableIndexCache(store)
 }
 
-// TestExtractIndexLabelsImpliedStringIndex proves the fix for an IMPLIED
-// string index. snmpTargetAddrEntry is indexed by IMPLIED snmpTargetAddrName,
-// so the whole OID remainder is the name with no length prefix. The old
-// name-substring heuristic classified "snmpTargetAddrName" as an integer index
-// and returned the first octet of the name.
+// TestExtractIndexLabelsImpliedStringIndex checks an IMPLIED string index (snmpTargetAddrName) decodes without a length prefix.
 func TestExtractIndexLabelsImpliedStringIndex(t *testing.T) {
 	entryOID := "1.3.6.1.6.3.12.1.2.1"
 

@@ -13,15 +13,7 @@ import (
 // caller that only needs to know a module loaded degraded can use errors.Is.
 var ErrUnresolvedImports = errors.New("mib module has unresolved imports")
 
-// UnresolvedImportsError says a module parsed, but not completely: some of
-// the modules its IMPORTS name could not be found, and the objects that take
-// their type from one of them came out with no type.
-//
-// It is a warning, not a load failure. The module's objects are still
-// returned and still pollable by OID; what they lose is everything read from
-// the type -- Type, Units, DisplayHint and EnumValues -- so an enumerated
-// status polls as a bare integer. Getting this as a value, rather than a
-// module that silently looks fine, is the point.
+// UnresolvedImportsError warns that some IMPORTS were not found, leaving dependent objects untyped; the module still loads.
 type UnresolvedImportsError struct {
 	// Module is the module that was parsed.
 	Module string
@@ -65,11 +57,7 @@ func (r *ParseReport) Err() error {
 	}
 }
 
-// missingImports names the modules module imports from that are not loaded.
-//
-// gosmi loads a module's imports with it and carries on when one cannot be
-// found, so a module that is absent from every search path is simply not
-// there afterwards. Each name appears once, sorted.
+// missingImports names, sorted and once each, the modules module imports from that are not loaded.
 func missingImports(module gosmi.SmiModule) []string {
 	seen := make(map[string]bool)
 	var missing []string

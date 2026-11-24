@@ -1,53 +1,5 @@
 #!/usr/bin/env bash
-# Back up a deployed go-netmon stack: every Docker volume it owns, the
-# repository configuration bind-mounted into it, and a logical export of the
-# web UI's records.
-#
-# CONSISTENCY
-#
-# The backup is COLD. Every service in the compose project is stopped, the
-# volumes are copied at rest, and the services that were running are started
-# again. There is no hot mode, and that is deliberate:
-#
-#   * The web UI catalog, the web UI records and the poller's MIB metadata are
-#     all PebbleDB stores. Pebble is single-writer and holds an exclusive LOCK.
-#     Copying a live store can capture a MANIFEST that names sstables the copy
-#     took before they were durable, or a half-written WAL tail, which replays
-#     into a corrupt store on open. Pebble exposes Checkpoint() in process, but
-#     neither the poller nor the web UI offers an endpoint that calls it, so
-#     there is nothing to ask over the wire.
-#
-#   * The Prometheus TSDB head block lives in memory plus a WAL. The supported
-#     hot mechanism is POST /api/v1/admin/tsdb/snapshot, which requires
-#     --web.enable-admin-api. This deployment's docker-compose.yml passes
-#     --web.enable-lifecycle and --web.enable-remote-write-receiver but NOT
-#     --web.enable-admin-api, and the endpoint answers
-#     {"errorType":"unavailable","error":"admin APIs disabled"}.
-#
-# A hot copy of these stores is not "slightly risky", it is unverifiable: the
-# damage is invisible until the restore, which is the worst possible time to
-# find it. Stopping the stack for the length of a volume copy is the honest
-# trade, and it makes the archive's consistency a property of the method rather
-# than of luck.
-#
-# The stop also gives one consistency point ACROSS volumes. The web UI's device
-# records reference MIB ids in its catalog, whose files live in the poller's
-# volume; copying those volumes at different instants can produce a backup
-# whose devices reference MIBs the archive does not contain.
-#
-# THE MIB SOURCE TREE
-#
-# One component, "mibs", is not a volume at all: it is the host directory
-# bind-mounted read-only at /app/mibs in both the poller and the web UI. It is
-# the source most of the imported catalog was parsed from. Without it the
-# archive carries the parsed catalogs but not the text they came from, so a
-# restored deployment resolves fine until something triggers a re-parse or a
-# re-import and then cannot. This repository has no version control, so those
-# files exist in exactly one place.
-#
-# It is copied inside the stopped window with everything else. It costs a second
-# or two of extra downtime and buys one "as of" instant for the whole archive,
-# which is the property the paragraphs above promise.
+# Cold backup of a go-netmon stack: stops the compose services, archives every owned volume, the bind-mounted MIB tree and a web UI export, then restarts.
 
 set -euo pipefail
 
@@ -178,9 +130,7 @@ info "compose:    $NETMON_COMPOSE_FILE"
 info "components: ${selected[*]}"
 info "destination: $backup_dir"
 
-# Resolve and prove ownership of every volume BEFORE creating any output or
-# stopping anything. A backup that discovers a problem after taking the stack
-# down has already caused an outage for nothing.
+# Resolve and prove ownership of every volume before creating output or stopping anything.
 declare -a vol_components=() vol_docker=()
 for c in "${selected[@]}"; do
     logical_vol="$(component_volume "$c")"
@@ -193,10 +143,7 @@ done
 
 report_unmanaged_volumes
 
-# Same principle for the MIB source tree: locate it, and prove it is there and
-# non-empty, before anything is stopped. The path is read out of the rendered
-# compose file rather than assumed, and a deployment that mounts nothing at the
-# MIB target fails here with instructions rather than being guessed at.
+# Locate the MIB source tree from the rendered compose file and check it is non-empty before stopping anything.
 want_mibs=0
 if selection_has mibs "${selected[@]}"; then
     want_mibs=1
@@ -262,10 +209,7 @@ export_logical() {
 
     fetch_json "$NETMON_WEBUI_URL/api/poller/config" | jq '.' >"$dir/poller-config.json" || return 1
 
-    # Per-device and per-profile MIB assignments, including the per-assignment
-    # record that carries enablement and any OID filters. These are the
-    # relationships a logical restore would have to recreate, so they are
-    # captured explicitly rather than inferred from the catalog.
+    # Per-device and per-profile MIB assignments, including enablement and OID filters.
     local out='[]'
     while read -r id; do
         [ -z "$id" ] && continue
@@ -345,11 +289,7 @@ for i in "${!vol_components[@]}"; do
     c="${vol_components[$i]}"
     dvol="${vol_docker[$i]}"
     logical_vol="$(component_volume "$c")"
-    # Members are named after the component, not the compose volume. The
-    # compose volume "go-netmon-data" is name-identical to an unrelated stray
-    # volume on the deployment host, and a filename that cannot be told apart
-    # from an object the tooling refuses to touch is a filename waiting to be
-    # misread during a recovery.
+    # Members are named after the component, not the compose volume.
     member="volumes/$c.tar.gz"
     path="$backup_dir/$member"
 
@@ -373,10 +313,7 @@ done
 
 # --- MIB source tree ------------------------------------------------------
 
-# Archived exactly like a volume - own member, own entry count, own checksum -
-# because it restores like one: as a whole directory, replaced outright. It is
-# recorded in trees[] rather than volumes[] so that nothing can mistake a host
-# path for a Docker volume during a recovery.
+# Archived like a volume but recorded in trees[], not volumes[].
 trees_json='[]'
 if [ "$want_mibs" -eq 1 ]; then
     mkdir -p "$backup_dir/trees"

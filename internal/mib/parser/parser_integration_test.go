@@ -13,17 +13,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// asr1001Dir is the directory holding the MIB set shipped with the ASR1001.
-// It is resolved at run time, so it is a var: a function call cannot appear in
-// a const block, which is why this file did not build under the integration
-// tag.
-//
-// It is a *fixture* directory, not a search path. The modules in it import
-// SNMPv2-SMI, SNMPv2-TC and CISCO-SMI, none of which live here, so a parser
-// configured with this directory alone resolves nothing: IF-MIB comes back as
-// 62 objects with an empty numeric OID rather than 91 correctly typed ones, and
-// no error is reported. Every test below therefore parses with allMIBDirs(),
-// and uses this directory only to enumerate the module set under test.
+// asr1001Dir holds the ASR1001 MIB fixtures; tests parse with allMIBDirs() since its imports live elsewhere.
 var asr1001Dir = testsupport.MIBDir("asr1001")
 
 const (
@@ -45,16 +35,10 @@ const (
 	maxReportedOIDs = 10
 )
 
-// moduleHeaderPattern matches the "<name> DEFINITIONS ::= BEGIN" header that
-// opens an SMI module.
+// moduleHeaderPattern matches the "<name> DEFINITIONS ::= BEGIN" module header.
 var moduleHeaderPattern = regexp.MustCompile(`(?m)^[ \t]*([A-Za-z][A-Za-z0-9-]*)[ \t]+DEFINITIONS[ \t]+::=[ \t]*BEGIN`)
 
-// integrationParser returns a parser initialized with every MIB directory in
-// the repository, which is the only configuration in which the modules under
-// test resolve their imports. The parser is closed when the test ends: gosmi
-// keeps its loaded modules in package state, so leaving one open would let a
-// later parse with a different search path silently answer from this one's
-// cache.
+// integrationParser returns a parser over every repository MIB directory, closed at test end.
 func integrationParser(t *testing.T) *Parser {
 	t.Helper()
 
@@ -66,10 +50,7 @@ func integrationParser(t *testing.T) *Parser {
 	return p
 }
 
-// declaredModuleName returns the module name the MIB file at path declares in
-// its header. SMI makes that name independent of the file name — for example
-// mibs/asr1001/EVENT-MIB.my declares DISMAN-EVENT-MIB — so the file is the only
-// authority on what the module is called.
+// declaredModuleName returns the module name the MIB file at path declares in its header.
 func declaredModuleName(t *testing.T, path string) string {
 	t.Helper()
 
@@ -86,11 +67,6 @@ func declaredModuleName(t *testing.T, path string) string {
 }
 
 // assertOIDsResolved fails for every object whose numeric OID came back empty.
-//
-// An empty OID is not a cosmetic defect: an object with no OID cannot be
-// polled, and an object that is *also* marked pollable is worse than useless,
-// because the poller will issue a request for an empty OID and the failure
-// surfaces at run time rather than at import time.
 func assertOIDsResolved(t *testing.T, module string, oids []*mib.OIDMetadata) {
 	t.Helper()
 
@@ -143,14 +119,7 @@ func assertModuleResolves(t *testing.T, module string, minOIDs int) []*mib.OIDMe
 	return oids
 }
 
-// TestIntegration_LoadAllASR1001MIBs loads every MIB shipped for the ASR1001.
-//
-// All of them must load and all of them must contribute at least one node: a
-// module that loads but yields nothing is the signature of an unresolved
-// import, which gosmi does not report as an error. CISCO-PRODUCTS-MIB is the
-// clearest case — it is 2888 OBJECT IDENTIFIER assignments hanging off
-// ciscoProducts, and without CISCO-SMI on the search path it loads "successfully"
-// with zero nodes.
+// TestIntegration_LoadAllASR1001MIBs requires every ASR1001 module to load and yield at least one node.
 func TestIntegration_LoadAllASR1001MIBs(t *testing.T) {
 	parser := integrationParser(t)
 
@@ -207,24 +176,7 @@ func TestIntegration_LoadAllASR1001MIBs(t *testing.T) {
 	}
 }
 
-// TestIntegration_ParseEveryASR1001Module walks every module's nodes, which is
-// what the importer and the web UI do and what TestIntegration_LoadAllASR1001MIBs
-// does not.
-//
-// LoadModule only resolves a module; gosmi parses a node's detail lazily, so a
-// construct it cannot handle is not reached until something reads the nodes.
-// ParseModule reads them. That gap shipped a crash-looping web UI: an
-// unintended bump of the indirect participle dependency from v0.4.1 to v0.7.1
-// left every LoadModule test passing while the deployed binary died on
-//
-//	CISCO-DYNAMIC-TEMPLATE-MIB.my:596:26: branch (<ident>)? was accepted but
-//	did not progress the lexer
-//
-// which is the empty bit-string DEFVAL at that line. gosmi pins participle
-// v0.4.1 in its own go.mod for this reason; nothing here may raise it.
-//
-// A parse failure is reported per module rather than aborting, so one bad
-// module names itself instead of hiding the rest.
+// TestIntegration_ParseEveryASR1001Module reads every node, which LoadModule does not; gosmi requires participle v0.4.1.
 func TestIntegration_ParseEveryASR1001Module(t *testing.T) {
 	parser := integrationParser(t)
 
@@ -608,10 +560,7 @@ func TestIntegration_CriticalMIBs(t *testing.T) {
 	}
 }
 
-// TestIntegration_DetailedOIDDump dumps the full metadata of the first objects
-// of CISCO-BGP4-MIB. The dump is a diagnostic aid, but it asserts rather than
-// annotates: an object with no numeric OID used to be flagged in the output and
-// still let the test pass.
+// TestIntegration_DetailedOIDDump dumps the first CISCO-BGP4-MIB objects and fails on any empty OID.
 func TestIntegration_DetailedOIDDump(t *testing.T) {
 	const dumpLimit = 20
 

@@ -9,16 +9,7 @@ import (
 	"testing"
 )
 
-// Asking for a page instead of the whole fleet.
-//
-// The overview displays one page at a time but the endpoint serialized every
-// configured device, measured at 378 bytes each: about 3MB per refresh per open
-// browser at ten thousand devices, every thirty seconds. The rows a reader
-// cannot see are the overwhelming majority of that.
-//
-// The counts behind the summary chips still have to cover the whole fleet --
-// "12 unreachable" is a statement about the fleet, not about page one -- so they
-// are computed server-side and travel as numbers rather than as rows.
+// The fleet endpoint returns one page of devices plus whole-fleet summary counts.
 
 // fleetPage requests one page and decodes the response.
 func fleetPage(t *testing.T, s *Server, query string) FleetStatusResponse {
@@ -105,8 +96,7 @@ func TestFleetSummaryCoversTheWholeFleet(t *testing.T) {
 	}
 }
 
-// TestFleetSearchIsAppliedServerSide covers the reason paging needs the server
-// to search: the browser no longer holds the rows to search through.
+// TestFleetSearchIsAppliedServerSide checks the server applies fleet search before paging.
 func TestFleetSearchIsAppliedServerSide(t *testing.T) {
 	t.Parallel()
 

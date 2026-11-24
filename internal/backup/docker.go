@@ -7,15 +7,7 @@ import (
 	"strings"
 )
 
-// ConfigFilesLabel is the label Compose stamps a container with naming the
-// compose file it was created from.
-//
-// The name matters and is easy to get wrong: it is "project.config_files" with
-// an underscore, not "config-files". Asking for the wrong label is not an error
-// — docker returns an empty string for a label that does not exist — so a
-// mistake here does not fail, it silently reports every container as belonging
-// to no compose file, which makes an ownership check pass or fail for reasons
-// unrelated to ownership.
+// ConfigFilesLabel is the compose label naming a container's compose file; note the underscore.
 const ConfigFilesLabel = "com.docker.compose.project.config_files"
 
 // Container is a container in the target compose project.
@@ -51,17 +43,7 @@ type Versions struct {
 	Compose string
 }
 
-// Docker is the boundary between this package and the container runtime.
-//
-// Every method addresses objects by explicit name or by the pinned compose
-// project, never by pattern or prefix: a volume whose name merely resembles a
-// stack volume must not be reachable, and that has to be a checked fact rather
-// than a naming convention.
-//
-// It is an interface for one reason only - so tests can drive the whole backup
-// and restore logic against a real, in-process implementation of these
-// semantics instead of a daemon. Nothing above this line knows what a container
-// is; nothing below it knows what a backup is.
+// Docker is the boundary to the container runtime; objects are addressed by exact name or the pinned project.
 type Docker interface {
 	// ForeignContainers lists containers in the compose project that the
 	// configured compose file did not create.
@@ -118,11 +100,6 @@ type Docker interface {
 }
 
 // validName reports whether a Docker object name is safe to pass as an argument.
-//
-// Names are built by this package from the pinned project and a fixed volume
-// name, so anything outside this shape means a caller has been given something
-// unexpected. Refusing is the only correct response: a name beginning with "-"
-// would be read as a flag by whatever it is handed to.
 func validName(name string) bool {
 	if name == "" {
 		return false

@@ -1,8 +1,4 @@
-// Package testsupport provides helpers shared by tests across the repository.
-//
-// Its main job is locating repository fixtures (MIB files in particular)
-// without hardcoding an absolute path, so tests run from any checkout and in
-// CI rather than on one developer's machine.
+// Package testsupport provides shared test helpers, including locating repository MIB fixtures.
 package testsupport
 
 import (
@@ -45,10 +41,7 @@ func RepoRoot() (string, error) {
 	return rootDir, rootErr
 }
 
-// MIBDir returns the absolute path to a MIB directory under mibs/, for example
-// MIBDir("standard") or MIBDir("asr1001"). It panics if the repository root
-// cannot be located, which means the checkout itself is broken and every test
-// depending on fixtures would fail anyway.
+// MIBDir returns the absolute path to a directory under mibs/; it panics if the repository root cannot be found.
 func MIBDir(name string) string {
 	root, err := RepoRoot()
 	if err != nil {

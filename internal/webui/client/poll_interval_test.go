@@ -17,14 +17,7 @@ import (
 // of its own carries it.
 func seconds(n int) *int { return &n }
 
-// TestDeviceToRequestCarriesTheDevicesInterval is the regression for the defect
-// this field exists to fix.
-//
-// deviceToRequest used to compute a poll interval of 30 down both arms of a
-// branch on the device's port, so every device was pushed to the poller at 30
-// seconds no matter what was configured. Each case below asserts the actual
-// number, and the interesting ones are deliberately not 30: a test that accepted
-// 30 would have passed against the bug.
+// TestDeviceToRequestCarriesTheDevicesInterval checks the device's own poll interval reaches the request.
 func TestDeviceToRequestCarriesTheDevicesInterval(t *testing.T) {
 	c := NewPollerClient("http://poller.invalid", time.Second)
 

@@ -2,14 +2,12 @@
 
 > **Status: REFERENCE** · Scope: go-netmon · Last verified: 2026-10-21
 
-Two different faults are called "out of order", they behave nothing alike, and
-telling them apart is what one production incident took fifteen hours and a million samples an
-hour to learn. This is the measured behaviour, and how to reproduce it.
+Two different faults are called "out of order" and they behave nothing alike.
+This is the measured behaviour, and how to reproduce it.
 
-First measured against Prometheus 2.45.0 (the integration stack) on 2026-09-06.
-The stack now pins 3.14.0, the version production runs. The
-receiver's behaviour is version-dependent, so the reproduction asserts it rather
-than assuming it, and names the version when it is surprised.
+The integration stack pins Prometheus 3.14.0. The receiver's behaviour is
+version-dependent, so the reproduction asserts it rather than assuming it, and
+names the version when it is surprised.
 
 ## Disorder inside one request: accepted, and silently lossy
 
@@ -35,16 +33,12 @@ refused with `400: out of order sample`. What happens to the rest of it depends
 on the receiver's major version:
 
 - **Prometheus 2.45.0** returned on the first failure and rolled the appender
-  back, so **every other reading in the request was lost** with it. This is
-  the incident's headline, with the trigger correctly attributed, and it is why a
-  retried batch was lethal rather than merely late: once fresher samples for its
-  series had landed, the batch could never be accepted, and each attempt cost
-  everything travelling with it.
-- **Prometheus 3.14.0** (production, and the stack's pin) does the same.
-  An earlier revision of this page said 3.x skips the offending reading and
-  commits the rest; the first CI run against the 3.14.0 pin (2026-10-21)
-  measured otherwise: `400: out of order sample`, and 200 of 200 good series in
-  the request lost with it. The incident's cost arithmetic still applies.
+  back, so **every other reading in the request was lost** with it. A retried
+  batch is therefore lethal rather than merely late: once fresher samples for
+  its series have landed, the batch can never be accepted, and each attempt
+  costs everything travelling with it.
+- **Prometheus 3.14.0** (the stack's pin) does the same: `400: out of order
+  sample`, and every good series in the request is lost with it.
 
 The reproduction keys this on the running version (`refusalCommitsTheRest` in
 `test/integration/ordering_test.go`): a pin that changes the behaviour, or one
@@ -68,7 +62,7 @@ make integration-test-ordering
 ```
 
 Four tests in `test/integration/ordering_test.go`, against the real Prometheus
-in the integration stack. Nothing touches monitor-01 or any live device.
+in the integration stack. Nothing touches a live device.
 
 | Test | Asks |
 |---|---|

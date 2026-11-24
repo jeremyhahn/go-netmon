@@ -9,20 +9,7 @@ import (
 	"time"
 )
 
-// The logical export is a reviewable, portable copy of what the web UI holds:
-// devices, profiles, the MIB catalog, the poller configuration, and the
-// assignments that connect them.
-//
-// It is not the restore path — restoring is a physical copy of the volumes, and
-// nothing here is ever applied. It exists because a physical archive is opaque:
-// when a schema change makes an old volume unreadable, or an operator needs to
-// see what a deployment looked like without standing it back up, this is the
-// only artifact that answers.
-//
-// It must run while the stack is UP, so it happens before anything is stopped,
-// and a failure is never fatal: an unreachable web UI records
-// logical.status=unavailable and the physical backup proceeds. Losing the
-// reviewable copy is a much smaller loss than declining to take the backup.
+// The logical export is a reviewable copy of the web UI's data, taken while the stack is up; it is never restored from and its failure is not fatal.
 
 // Logical export status values recorded in the manifest.
 const (
@@ -42,10 +29,7 @@ const logicalDir = "logical"
 // serving traffic and a backup must not hang against a wedged web UI.
 const logicalTimeout = 2 * time.Minute
 
-// exportLogical writes the logical export into dst and reports what it found.
-//
-// It returns a status rather than an error: every failure mode here is one the
-// backup continues through.
+// exportLogical writes the logical export into dst and returns a status, never an error.
 func (s *Service) exportLogical(ctx context.Context, dst *Root) LogicalInfo {
 	skipped := LogicalInfo{Status: logicalSkipped, Counts: map[string]int{}}
 	if s.cfg.WebUIURL == "" {
@@ -333,16 +317,7 @@ func (e *logicalExport) writeRaw(name string, data []byte) error {
 	return e.dst.WriteFile(logicalDir+"/"+name, data, 0o644)
 }
 
-// ids decodes the id-bearing arrays out of a collection response. A body that
-// does not parse yields no ids, which the caller records as a count of zero
-// rather than failing the backup.
-// ids decodes the ids out of a collection response.
-//
-// A body that will not decode is an error rather than an empty list. Swallowing
-// it meant a web UI answering with something unexpected produced an export that
-// walked no relationships at all and was still recorded as good -- so the
-// backup claimed a fleet with no MIB assignments, which is exactly what a
-// restore would then reproduce.
+// ids decodes the ids out of a collection response; a body that will not decode is an error.
 func ids(path string, body []byte) (idList, error) {
 	var list idList
 	if err := json.Unmarshal(body, &list); err != nil {

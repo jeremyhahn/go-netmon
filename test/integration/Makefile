@@ -1,18 +1,4 @@
-# Integration test targets.
-#
-# Every target runs the suite inside the Docker stack that run-tests.sh brings
-# up; nothing here executes on the host. run-tests.sh owns the compose file, the
-# compose project name and the teardown, so the stack is defined in exactly one
-# place and a single test cannot be run against a different environment from the
-# one the full suite uses.
-#
-# The tests these targets name are the tests that exist. The previous
-# test-parser, test-poller and test-webui targets selected TestMIBParser,
-# TestPollerToPrometheus and TestWebUIQueries, none of which are in this
-# package, and none passed -tags=integration. Both faults are silent: go test
-# reports success for a -run pattern that matches nothing, and without the tag
-# the only file that needs the stack is not compiled in. Three targets therefore
-# reported success while running no tests at all.
+# Integration test targets; each runs inside the Docker stack run-tests.sh manages.
 
 .PHONY: test test-all test-e2e test-snmp test-prometheus test-pipeline test-index test-ordering clean
 
@@ -50,12 +36,6 @@ test-index:
 test-ordering:
 	@$(RUN_TESTS) 'TestDisorderInsideOneRequestIsDiscardedWithoutASound|TestOneReadingBehindTheHeadIsRefusedAtItsMeasuredCost|TestOverlappingPollsAreRepairedAndNothingIsLost|TestAPollTheEndpointHasMovedPastIsDroppedNotRetriedForever'
 
-# Remove any test stack left behind. run-tests.sh cleans up on every exit path;
-# this target is for a run killed hard enough to skip the trap.
-#
-# The logic lives in clean.sh because it is safety-critical and needs tests:
-# selecting projects by "holds a container of ours" alone would select the
-# DEPLOYMENT's project, since make integration-up can place test services in
-# it. See the script's header.
+# Remove any leftover test stack after a hard kill; the logic and its safety checks live in clean.sh.
 clean:
 	@./clean.sh

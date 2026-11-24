@@ -2,15 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// The dashboard's landing view. It used to be a device picker over an empty
-// frame; it is now every configured device's health, read from
-// /api/devices/status in one request, with the poller's own state word beside
-// each device.
-//
-// These run the working tree over the live API by page.route(), so they pass
-// against a deployment that has not shipped the files yet and keep passing once
-// it has. Nothing here mutates server state: every case is either read-only
-// against the real fleet or a synthesised payload confined to one page.
+// The landing view shows every device's health from /api/devices/status; nothing mutates server state.
 
 import { BASE } from '../target';
 import { SEEDED_DEVICE } from '../stack';
@@ -72,14 +64,7 @@ type FleetEntry = {
   status?: Record<string, unknown>;
 };
 
-// serveFleet answers /api/devices/status with a payload of our own, so a state
-// the live stack is not currently in can still be driven through the UI.
-//
-// It narrows and pages the way the server does, because the overview now asks
-// for a page rather than the whole fleet: a fixture that ignored limit, offset,
-// search and state would answer questions the browser did not ask and would
-// hide a paging defect rather than expose one. The summary counts every device
-// regardless of the filters, which is the contract the chips depend on.
+// serveFleet answers /api/devices/status with our payload, paging and filtering like the server.
 async function serveFleet(page: Page, devices: FleetEntry[]) {
   await page.route('**/api/devices/status*', route => {
     const params = new URL(route.request().url()).searchParams;
@@ -138,8 +123,7 @@ test.describe('fleet overview', () => {
     const names = await page.locator('.fleet-open').allTextContents();
     expect(names).toEqual(expected.devices.map((d: FleetEntry) => d.name));
 
-    // The old landing view spent most of a 1080-tall window on the words "No
-    // device selected". Measure that it no longer does.
+    // The landing view must not be mostly the no-device message.
     const filled = await page.evaluate(() => {
       const overview = document.getElementById('fleetOverview')!;
       return overview.getBoundingClientRect().bottom / window.innerHeight;

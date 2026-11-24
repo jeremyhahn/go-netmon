@@ -66,10 +66,7 @@ func newProfileListCommand(env *Env) *cobra.Command {
 				if env.Opts.JSON {
 					return writeJSON(out, page)
 				}
-				// A profile's size is the first thing an operator wants, and
-				// the listing endpoint does not carry it. Only the profiles
-				// being printed are counted, so a search also cuts the
-				// per-profile requests it costs.
+				// Count objects only for the profiles being printed; the listing endpoint lacks sizes.
 				return renderProfileRows(out, page, profileMIBCounts(ctx, api, page.Items))
 			})
 		},
@@ -79,10 +76,7 @@ func newProfileListCommand(env *Env) *cobra.Command {
 	return cmd
 }
 
-// newProfileListFilter builds the search-and-cap filter for a profile listing.
-//
-// It is uncapped by default for the same reason the device listing is: a
-// profile list is short, hand-curated, and read to confirm what exists.
+// newProfileListFilter builds the uncapped-by-default profile listing filter.
 func newProfileListFilter() *listFilter[client.Profile] {
 	return &listFilter[client.Profile]{
 		noun:   "profiles",

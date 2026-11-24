@@ -71,14 +71,7 @@ func getConfigPath() string {
 	return DefaultConfigPath
 }
 
-// ApplyDefaults fills in every optional field a caller left unset.
-//
-// Load applies these itself, so this exists for callers that build a Config in
-// code — notably the fallback path taken when no config file is present. A
-// Config assembled as a struct literal has zero values in every section the
-// literal does not mention, and those are not all usable: logging.output ""
-// is not a valid output, so a service that skipped this would fail to start
-// rather than fall back.
+// ApplyDefaults fills in every optional field a caller left unset, for Configs built in code; Load applies them itself.
 func ApplyDefaults(config *Config) {
 	setDefaults(config)
 }

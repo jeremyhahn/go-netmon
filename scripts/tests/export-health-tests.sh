@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
-# Tests for scripts/measure-export-health.sh.
-#
-# They exercise the parsing and the judging only. Nothing here contacts a
-# metrics endpoint, an API, or a deployed appliance: the fixtures are captured
-# exposition text of the two shapes that matter, a build that publishes the
-# per-reason counters and one that does not.
-#
-# The property worth most: a counter the build does not publish must read as
-# ABSENT and never as zero. A harness that reports 0 for a counter that is not
-# there would say a deploy succeeded when it had not, which is the failure
-# family the measurement exists to close.
-#
-# Usage: export-health-tests.sh [test-name-substring]
+# Offline tests for scripts/measure-export-health.sh parsing and judging; an unpublished counter reads ABSENT. Usage: export-health-tests.sh [test-name-substring]
 
 set -uo pipefail
 
@@ -265,8 +253,7 @@ test_every_mutating_request_targets_the_devices_own_assignment() {
     # is not a measurement. The URLs are checked rather than the -X flags,
     # because the method and the URL sit on different lines of a wrapped curl.
     local urls bad
-    # Single-quoted deliberately: these patterns are matched against the
-    # script's SOURCE TEXT, where "$API_URL" is the literal characters.
+    # Single-quoted: matched against the script's source text.
     # shellcheck disable=SC2016
     urls="$(drive_edit_body | grep -oE '"\$API_URL[^"]*"' | sort -u)"
     [ -n "$urls" ] || fail "no request URLs found in drive_edit; the extraction is wrong"

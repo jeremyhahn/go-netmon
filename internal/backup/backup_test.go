@@ -230,14 +230,7 @@ func TestBackupRefusesAnEmptyMIBTree(t *testing.T) {
 	}
 }
 
-// TestBackupSkipsAnUnmountedMIBTree covers a deployment that bind-mounts no MIB
-// tree at all.
-//
-// That used to be fatal, and was right while imports were resolved out of a
-// directory in someone's working copy. Once imports are copied into the
-// poller's own volume there is no separate host tree to copy and the volume
-// carries the sources, so refusing to run would be refusing over the absence of
-// something the deployment no longer needs.
+// TestBackupSkipsAnUnmountedMIBTree covers a deployment that bind-mounts no MIB tree.
 func TestBackupSkipsAnUnmountedMIBTree(t *testing.T) {
 	h := newHarness(t)
 	svc, err := backup.New(backup.Config{
@@ -274,12 +267,7 @@ func TestBackupSkipsAnUnmountedMIBTree(t *testing.T) {
 	}
 }
 
-// TestBackupRefusesAnAmbiguousMIBTree is the half that must stay fatal.
-//
-// Two services naming different host directories at the same mount target means
-// the deployment does not agree with itself about where its MIBs are. A restore
-// empties the tree before extracting into it, so picking one would be picking
-// which of two directories to destroy.
+// TestBackupRefusesAnAmbiguousMIBTree: two host directories at one mount target must stay fatal.
 func TestBackupRefusesAnAmbiguousMIBTree(t *testing.T) {
 	h := newHarness(t)
 	h.engine.AddService("odd-one-out", "alpine", false,

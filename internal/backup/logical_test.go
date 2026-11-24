@@ -244,14 +244,7 @@ func TestLogicalExportIsSkippedWithoutAWebUI(t *testing.T) {
 	}
 }
 
-// TestLogicalExportReportsAFailedRelationshipWalk covers the per-device and
-// per-profile walks.
-//
-// These are where the state that exists nowhere else lives: which MIBs a device
-// is assigned, whether each is enabled, and the OID filters on it. A collection
-// endpoint that answers while the relationship endpoints do not would otherwise
-// produce an export that lists every device and knows nothing about any of
-// them -- which reads as a fleet with no MIB assignments at all.
+// TestLogicalExportReportsAFailedRelationshipWalk checks a failed device or profile relationship walk is reported.
 func TestLogicalExportReportsAFailedRelationshipWalk(t *testing.T) {
 	tests := []struct {
 		name string

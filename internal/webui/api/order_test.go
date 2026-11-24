@@ -10,12 +10,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// GET /api/devices/{id}/mibs returned all_mibs and direct_mibs in Go's map
-// iteration order: four consecutive calls gave four different orders. The web
-// UI feeds that array straight into its tab builder, so the dashboard's MIB
-// tabs, their panes and the tab that opens by default all moved on every page
-// load. These tests state that every list endpoint answers in the same order
-// each time, and that the order is one a human can scan.
+// Every list endpoint answers in a stable, human-scannable order.
 
 // orderedFixture stores a device and a profile with MIBs attached to both, in
 // an order that is not the sorted one.
@@ -280,23 +275,7 @@ func seriesNamesOf(t *testing.T, series []TimeSeriesData) []string {
 	return names
 }
 
-// TestPanelsArriveInTheOrderTheirTitlesRead covers a list that was sorted by a
-// key the reader cannot see.
-//
-// Panels were ordered by published metric name, which is what the generator
-// iterates. The card shows panelTitle -- "IF-MIB - ifHCInOctets" -- and the two
-// agree only when the metric name is derived from the object name. The catalog
-// deliberately does not guarantee that: a derived family has no MIB object, so
-// its title IS its bare metric name. Measured on dist-01 before the fix: 220
-// panels, 0 out-of-order transitions by metric name and 6 by title.
-//
-// A list sorted by an invisible key is indistinguishable from an unsorted one,
-// and that is how users read it.
-//
-// The fixture is built so metric order and title order DISAGREE, and so that
-// byte order and alphabetical order disagree too -- the derived family's title
-// is lowercase and every module-prefixed title is uppercase, so a byte-order
-// sort clumps it at the end instead of placing it by letter.
+// TestPanelsArriveInTheOrderTheirTitlesRead checks panels sort alphabetically by displayed title.
 func TestPanelsArriveInTheOrderTheirTitlesRead(t *testing.T) {
 	catalog := []map[string]interface{}{
 		// Metric name sorts first, title sorts last.

@@ -12,20 +12,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/backup/backuptest"
 )
 
-// The fixtures below build a whole deployment inside one t.TempDir():
-//
-//	<tmp>/repo/                  the "checkout": compose file, config, mibs/
-//	<tmp>/repo/mibs/             the MIB source tree, a host directory
-//	<tmp>/repo/backups/          where backups land
-//	<tmp>/engine/volumes/<name>/ the Docker volumes, as real directories
-//
-// Nothing reaches outside it. Every directory is created through a Root anchored
-// on the temp directory, the engine writes only through its own Root, and the
-// service under test is handed those paths and no others.
-//
-// These tests drive the service through its exported API only. That is
-// deliberate: the command-line tool has no other way in either, so anything they
-// cannot reach is not reachable in production.
+// Fixtures build a whole deployment (repo, MIB tree, backups, volumes) inside one t.TempDir() and drive the exported API only.
 
 const testProject = "go-netmon"
 

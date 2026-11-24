@@ -36,13 +36,7 @@ func TestV1DeviceConnectsAndGets(t *testing.T) {
 	}
 }
 
-// TestV1BulkWalkFallsBackToWalk is the reason v1 needs more than a case in a
-// switch.
-//
-// There is no GETBULK in SNMPv1 — gosnmp refuses it outright with "GETBULK not
-// supported in SNMPv1" — and the poller walks every table with BulkWalkAll. A
-// v1 device would therefore have failed every table with an error about a
-// protocol feature rather than about anything the operator could act on.
+// TestV1BulkWalkFallsBackToWalk checks table walks work on SNMPv1, which has no GETBULK.
 func TestV1BulkWalkFallsBackToWalk(t *testing.T) {
 	agent := newTestAgent(t,
 		gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.2.2.1.2.1", Type: gosnmp.OctetString, Value: []byte("eth0")},
@@ -107,16 +101,7 @@ func TestV1ChoosesTheWalkOperation(t *testing.T) {
 	}
 }
 
-// TestUnsupportedVersionIsRefused covers the bad-input case.
-//
-// The version is checked twice: config validation refuses it before a socket is
-// opened, and the client's own switch has a default that refuses it again. The
-// second is unreachable while the two agree on the set, which is the point of
-// having it — they are in different packages and can drift.
-//
-// A caller sees the first, so that is what is asserted here, including that the
-// message names the set. "unsupported SNMP version" without saying what is
-// supported is the message that sends someone to the source.
+// TestUnsupportedVersionIsRefused checks config validation refuses the version and names the supported set.
 func TestUnsupportedVersionIsRefused(t *testing.T) {
 	for _, version := range []string{"", "2", "v1", "4", "nonsense"} {
 		_, err := NewClient(&config.Device{

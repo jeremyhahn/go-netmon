@@ -64,7 +64,7 @@ func TestParseIndexValueConsecutiveInetAddress(t *testing.T) {
 	}
 	pos += consumed
 
-	// Parse prefix (InetAddress) - second consecutive InetAddress (THIS IS THE BUG!)
+	// Parse prefix (InetAddress): the second consecutive InetAddress.
 	t.Logf("Before parsing prefix: pos=%d, remaining parts=%v", pos, indexParts[pos:])
 	prefixValue, consumed := parseIndexValue(indexParts[pos:], "InetAddress")
 	t.Logf("prefix: value=%q, consumed=%d", prefixValue, consumed)

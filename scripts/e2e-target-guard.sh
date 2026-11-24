@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# Refuse an e2e suite that could point at production by default.
-#
-# Usage: e2e-target-guard.sh [ROOT]     (ROOT defaults to this repository)
-#
-# Exit 0: every address the suite names is on the disposable stack.
-# Exit 1: something names production, or an address that is not disposable.
-# Exit 2: the suite could not be scanned at all -- never read as a pass.
-#
-# WHY THIS EXISTS
-#
-# monitor-01 (198.51.100.50) is the production monitoring server and is read-only
-# to the factory: assigning MIBs there once degraded monitoring for fifteen
-# hours. The rendering specs used to have no other working target,
-# because no disposable stack polled anything, so whether a spec defaulted to
-# production was maintained by whoever remembered it. The e2e profile of
-# docker-compose.test.yml now gives every spec a disposable stack with polled
-# series, and this makes the split a rule instead of a memory.
-#
-# THE RULE
-#
-#   * tests/e2e/target.ts holds DISPOSABLE_URL, the one default every spec
-#     imports. It must be a local address: the stack "make e2e-up" brings up
-#     on the machine running the browser.
-#   * No file of the suite names 198.51.100.50 or the host monitor-01, anywhere.
-#   * Every URL the suite names is on DISPOSABLE_URL's host and port. An
-#     operator reaches another stack through NETMON_URL, which is a decision
-#     made at the command line, not a default checked in.
-#
-# The three specs in EXEMPT_FILES are slated for removal and may not be
-# edited, and still default to the older disposable stack on 198.51.100.91:8082.
-# They are exempt from the third rule only, for that address only. Delete the
-# exemption with them.
+# Refuse an e2e suite that names production or a non-disposable address; exit 0 pass, 1 violation, 2 scan failure. Usage: e2e-target-guard.sh [ROOT]
 
 set -uo pipefail
 

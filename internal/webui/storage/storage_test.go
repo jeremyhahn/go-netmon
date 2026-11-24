@@ -40,15 +40,7 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// TestNewInvalidPath covers a store that cannot be opened where it was asked
-// for.
-//
-// The unopenable path is a regular file used as a parent directory, which the
-// kernel refuses with ENOTDIR for every caller. The previous version passed
-// "/invalid/path/that/does/not/exist/db" and relied on the process lacking
-// permission to create /invalid — true for a developer, false for the root user
-// CI runs as, where Pebble created the directory, the test failed, and the run
-// left a directory behind on the host.
+// TestNewInvalidPath checks a store under a regular file fails with ENOTDIR.
 func TestNewInvalidPath(t *testing.T) {
 	notADir := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(notADir, []byte("not a directory"), 0o644); err != nil {

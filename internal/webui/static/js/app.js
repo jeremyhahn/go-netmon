@@ -12,10 +12,7 @@ const MIB_OBJECT_PAGE = 200;
 const MIB_EXPAND_ALL_LIMIT = 20;
 const MIB_EXPAND_ALL_CONCURRENCY = 4;
 
-// Every other list surface — the MIB library, the device and profile lists, the
-// assignment pickers — pages at this size and gains a filter box once it is
-// long enough to get away from the reader. Below the threshold a list fits on
-// screen and the controls would be chrome rather than help.
+// List page size, and the length past which a list gains a filter box.
 const LIST_PAGE = 50;
 const LIST_CONTROLS_MIN = 8;
 // How long a server-backed list waits before turning a typed search into a
@@ -27,21 +24,11 @@ const LIST_SEARCH_DEBOUNCE = 250;
 // more than a screenful of ordinary rows.
 const MIB_ACCORDION_PAGE = 25;
 
-// Pagination sizing, shared by every paged surface.
-//
-// PAGER_WINDOW numbered buttons sit around the current page, with the first and
-// last page always reachable and a gap marker standing in for the run between.
-// That caps the strip at nine controls whether the list is two pages long or
-// ten thousand, so the pager can never become the overflow problem it exists to
-// solve. Past PAGER_JUMP_MIN pages the neighbours are no longer enough to reach
-// an arbitrary page, so a direct "go to page" field is offered as well.
+// Pager sizing: PAGER_WINDOW buttons around the current page; past PAGER_JUMP_MIN pages a go-to-page field.
 const PAGER_WINDOW = 5;
 const PAGER_JUMP_MIN = 8;
 
-// The rows-per-page choices a surface offers, as multiples of its own natural
-// page. A 50-row list offers 50/100/250; the 200-object surfaces offer
-// 200/400/1000. The choice is remembered for the session, not forever: it is a
-// response to the task in hand rather than a preference.
+// Rows-per-page choices as multiples of a surface's page; remembered for the session.
 const PAGER_SIZE_STEPS = [1, 2, 5];
 const PAGER_SIZE_KEY = 'netmon-page-size';
 
@@ -54,44 +41,20 @@ const FIRST_SAMPLE_TIMEOUT = 30000;
 // interval, so asking faster only re-reads the same answer.
 const ALARM_POLL_INTERVAL = 15000;
 
-// How many rows a tile shows before it offers the rest.
-//
-// Eight is what fits beside a chart of the same height, so a row of tiles and a
-// row of charts line up rather than stepping. A tile with forty interfaces on
-// it is a list nobody reads to the bottom of anyway; what matters is that it
-// does not clip one through the middle.
+// Rows a tile shows before offering the rest.
 const PANEL_ROWS_VISIBLE = 8;
 
-// WS_SUPPORTS names the frame shapes this script knows how to apply, sent with
-// every subscribe so the server never sends a frame this page cannot read.
-//
-// It is announced rather than inferred from a version, because the page that
-// gets this wrong is the one ALREADY OPEN when a new server is deployed: its
-// script is what would have to notice, and it is exactly the script too old to
-// know there is anything to notice. Announcing puts the decision on the side
-// that is current -- the server sends the old frames to anyone who has not
-// asked for the new ones, so a stale tab keeps working instead of quietly
-// freezing every chart on the page while the connection stays up.
+// WS_SUPPORTS names the frame shapes this script can apply, sent with every subscribe.
 const WS_SUPPORTS = ['all_steady'];
 
 // PANEL_POINT_CAP bounds the points one series keeps. A panel of forty rows
 // would otherwise hold forty times the history for the same span on screen.
 const PANEL_POINT_CAP = 200;
 
-// BACKFILL_RANGE is the window a chart asks for when its panel is registered.
-// Six hours at the endpoint's 30-second step is more points than
-// PANEL_POINT_CAP keeps, and the newest are the ones kept -- so a chart opens
-// showing roughly the span the live ticker would have taken sixteen minutes to
-// accumulate, rather than a blank plot.
+// BACKFILL_RANGE is the window a chart requests when its panel registers.
 const BACKFILL_RANGE = '6h';
 
-// DEFAULT_SELECTED_ROWS is how many rows a table opens with charted.
-//
-// Chosen, not derived. Zero leaves an empty chart area, which is exactly how
-// the page looks broken today and is the failure being fixed; "all" is the
-// hairball being replaced. Three is enough to show that selection drives the
-// charts without teaching a wrong default, and it is taken from the top of the
-// table's own order so two people opening one device see the same three.
+// DEFAULT_SELECTED_ROWS is how many rows a table opens with charted, from the top of its order.
 const DEFAULT_SELECTED_ROWS = 3;
 
 // MAX_SELECTED_ROWS bounds what "select more" can do to a chart. A readability
@@ -119,13 +82,7 @@ const UNREADABLE_MODULE = '(catalog unavailable)';
 const NO_DATA_TITLE = 'No data reported';
 const NO_DATA_DETAIL = 'The device returned no samples for this object.';
 
-// The states /api/devices/status reports. The server decides which one a device
-// is in; this table only says how each is worded and coloured. Three of them
-// are distinctions the UI could not previously make and must not blur:
-// never_polled is a device the poller holds but has not finished a cycle for,
-// which is not the same as failing; not_registered is a configuration fault
-// rather than a device fault; unknown means the state could not be determined
-// at all and is neither healthy nor down.
+// Wording and colour for each /api/devices/status state.
 const FLEET_STATES = {
     ok:             { label: 'Healthy',        tone: 'ok',      blurb: 'The last poll succeeded.' },
     failing:        { label: 'Failing',        tone: 'failing', blurb: 'A poll ran and did not succeed.' },
@@ -145,27 +102,13 @@ const FLEET_STATE_ORDER = ['ok', 'failing', 'unreachable', 'never_polled', 'not_
 // which lays out the chips and reads best healthy-first.
 const FLEET_SEVERITY = ['unreachable', 'failing', 'not_registered', 'never_polled', 'unknown', 'ok', 'disabled'];
 
-// last_poll_time and next_poll_time are Go time.Time values whose omitempty
-// never fires, so a device that has never been polled sends the zero time
-// rather than nothing at all. Anything this old is that zero value, not a poll
-// that happened in the first century.
+// A zero Go time.Time means never polled.
 const ZERO_TIME_CEILING = Date.UTC(1971, 0, 1);
 
-// How often the dashboard re-reads whichever surface is on screen. One cadence,
-// shared: the fleet overview and a selected device's dashboards take turns on
-// this tick rather than each running a timer of their own.
-//
-// This used to be a fixed 30000, while the Settings view offered an "update
-// interval" input that nothing read. The number is now the default for that
-// input rather than the whole story, and it stays 30 so a browser that has
-// never touched the setting behaves exactly as it did.
+// Default seconds between re-reads of the surface on screen; the Settings interval overrides it.
 const DEFAULT_REFRESH_SECONDS = 30;
 
-// The bounds the input advertises, enforced here as well: a value typed past
-// the spinner, or restored from a localStorage someone edited, still has to
-// land somewhere a browser can honour. One second is the floor because the
-// re-read is several requests; a minute is the ceiling because past that the
-// page reads as broken rather than slow.
+// Bounds for the refresh interval, enforced on typed and restored values.
 const MIN_REFRESH_SECONDS = 1;
 const MAX_REFRESH_SECONDS = 60;
 
@@ -182,18 +125,10 @@ class MonitoringApp {
         this.tableRows = new Map();
         this.tableSelection = new Map();
         this.tableFilter = new Map();
-        // Tables whose default selection has been applied. Separate from the
-        // selection itself, because an EMPTY selection is a choice a reader
-        // made and must not be re-seeded back to the default.
+        // Tables whose default selection was applied; an empty selection is the reader's choice.
         this.tableSeeded = new Set();
         this.paneTables = new Map();
-        // The most recent reading for each subscribed query, and the sequence
-        // number that names it: Map(query -> { seq, byKey: Map(key -> sample) }).
-        //
-        // It is the authoritative copy. A steady query is announced by name
-        // rather than re-sent and resolves back to this; a changed query
-        // usually arrives as a delta, which is applied to this. The sequence is
-        // what says whether that delta belongs to what is held.
+        // Latest reading per subscribed query and its sequence: Map(query -> { seq, byKey: Map(key -> sample) }); deltas apply to this.
         this.lastReadings = new Map();
 
         // Queries this browser has asked the server to resend whole, so a run
@@ -206,12 +141,7 @@ class MonitoringApp {
         this.currentProfile = null;
         this.devices = [];
 
-        // How often this browser re-reads what is on screen, in seconds, and
-        // the timer running at that cadence. Per browser: it is stored in this
-        // browser's localStorage and reaches no one else. Changing it never
-        // touches how often a device is polled -- that is the poller's
-        // configuration, and a viewer does not get to retune collection for
-        // every other viewer.
+        // This browser's refresh cadence in seconds and its timer; never affects polling.
         this.refreshIntervalSec = DEFAULT_REFRESH_SECONDS;
         this.refreshTimer = null;
         this.profiles = [];
@@ -236,13 +166,7 @@ class MonitoringApp {
         // it renders into. See renderPagedList().
         this.pagedLists = new Map();
 
-        // Fleet overview: the last /api/devices/status payload, in the order the
-        // server sent it, plus which state chip is filtering the list and when
-        // the payload arrived. fetchedAt is what "updated 12s ago" is measured
-        // against, so a stale surface says so instead of looking live.
-        // devices is the page on screen; total is how many match the current
-        // search and chip; configured and summary describe the whole fleet and
-        // come from the server, which is the only place that sees all of it.
+        // Fleet overview state: the last /api/devices/status page, filter chip, fetch time, totals and summary.
         this.fleet = {
             devices: [], total: 0, configured: 0, summary: {},
             stateFilter: '', fetchedAt: null, error: null
@@ -267,23 +191,13 @@ class MonitoringApp {
         // Key: "deviceId-mibName", Value: { metricQueries: Set(), statusQueries: Set(), objects: Map(query -> obj) }
         this.activeSubscriptions = new Map();
 
-        // Which module tabs have been rendered and subscribed, keyed
-        // "deviceId-mibName". A tab is loaded lazily the first time it is shown
-        // and never again, so a device opens by subscribing one tab rather than
-        // every module's panels at once. Reset when the tabs are rebuilt.
+        // Module tabs rendered and subscribed, keyed "deviceId-mibName"; loaded lazily once.
         this.loadedMibTabs = new Set();
 
         // Track current selected device for re-subscription on reconnect
         this.currentDashboardDevice = null;
 
-        // Which dashboard load is the current one.
-        //
-        // Loading a device is a chain of awaits -- device status, the dashboard
-        // payload, then one module pane at a time -- and a reader who moves on
-        // does not cancel any of it. Every step compares this counter against
-        // the value it captured at the start and gives up if it has moved, so
-        // the load a reader left cannot paint its panels over the one they are
-        // looking at now, or resubscribe the queries the teardown just dropped.
+        // Which dashboard load is current; each step of a load gives up once this moves.
         this.dashboardLoad = 0;
 
         // Cards registered but not yet plotted; see initializeEmptyChart.
@@ -317,12 +231,7 @@ class MonitoringApp {
         this.bindPanelExpanders();
     }
 
-    // The bell has a tick of its own, and a slow one.
-    //
-    // It is not tied to the dashboard's because it is not about the dashboard:
-    // an alarm is worth seeing whichever page the reader is on, including the
-    // ones that show no metrics at all. The server evaluates on its own
-    // interval, so asking faster than that would only re-read the same answer.
+    // The alarm bell has its own slow tick, independent of the dashboard.
     startAlarmPolling() {
         const poll = () => {
             if (document.visibilityState === 'visible') this.refreshAlarms();
@@ -339,10 +248,7 @@ class MonitoringApp {
             if (!response.ok) return;
             this.renderAlarms(await response.json());
         } catch (error) {
-            // A bell that cannot be read is not a bell that says all-clear.
-            // The badge keeps whatever it last knew rather than clearing, and
-            // the failure is a console record rather than a toast, because a
-            // toast every fifteen seconds during an outage is its own problem.
+            // An unreadable bell keeps its last badge and logs to the console.
             console.error('Could not read the alarms:', error);
         }
     }
@@ -406,9 +312,7 @@ class MonitoringApp {
 
     // alarmRowHtml is one firing alarm.
     alarmRowHtml(alarm) {
-        // What the alarm is ABOUT, beyond the device: a rule that fires once
-        // per interface has to say which interface, or the reader is told to
-        // go and look rather than what to look at.
+        // What the alarm is about beyond the device, such as the interface.
         const about = Object.entries(alarm.labels || {})
             .filter(([name]) => !ALARM_LABELS_HIDDEN.has(name))
             .sort(([a], [b]) => a.localeCompare(b))
@@ -444,11 +348,7 @@ class MonitoringApp {
         return `${Math.floor(seconds / 86400)}d`;
     }
 
-    // bindPanelExpanders lets a tile show the rest of its rows.
-    //
-    // Delegated from the tab content rather than bound per tile: a device with
-    // 220 panels would otherwise add 220 listeners on every render, and every
-    // re-render would leak the previous set.
+    // bindPanelExpanders lets a tile show the rest of its rows, delegated from the tab content.
     bindPanelExpanders() {
         const content = document.getElementById('mibTabContent');
         if (!content || this.panelExpandersBound) return;
@@ -519,19 +419,9 @@ class MonitoringApp {
         });
     }
 
-    // The dashboard's single refresh tick. It drives whichever surface is on
-    // screen and only that one: the fleet overview while no device is selected,
-    // the selected device's dashboards otherwise. Both surfaces share this
-    // cadence so neither gets a timer of its own competing with the other.
-    // clampRefreshSeconds turns anything a caller offers -- a typed string, a
-    // restored localStorage value, a blank field -- into a cadence this browser
-    // can actually run at. Invalid input falls back rather than throwing: the
-    // dashboard must keep refreshing whatever is in the box.
+    // The single refresh tick drives the surface on screen; clampRefreshSeconds turns any input into a runnable cadence.
     clampRefreshSeconds(value) {
-        // An emptied box arrives as "", and a state file written before this
-        // setting existed has no value at all. Number() reads both as 0, which
-        // would clamp to the one-second floor -- but a blank field is a reader
-        // asking for the default, not for the fastest refresh on offer.
+        // A blank value means the default, not the floor.
         if (value === null || value === undefined) return DEFAULT_REFRESH_SECONDS;
         if (typeof value === 'string' && value.trim() === '') return DEFAULT_REFRESH_SECONDS;
 
@@ -540,10 +430,7 @@ class MonitoringApp {
         return Math.min(MAX_REFRESH_SECONDS, Math.max(MIN_REFRESH_SECONDS, seconds));
     }
 
-    // applyRefreshInterval adopts a new cadence and restarts the timer on it.
-    // Returns the value actually applied, which is what the caller should
-    // report -- a request for 900 seconds is honoured as 60, and saying "saved"
-    // without saying that is how the old Save button came to lie.
+    // applyRefreshInterval adopts a cadence, restarts the timer and returns the value applied.
     applyRefreshInterval(value) {
         this.refreshIntervalSec = this.clampRefreshSeconds(value);
         this.startDashboardRefresh();
@@ -571,15 +458,7 @@ class MonitoringApp {
                 // Refresh device status to update error banner
                 await this.fetchAndDisplayDeviceStatus(this.currentDashboardDevice);
 
-                // Has a MIB assigned to *this* device started producing data
-                // since the dashboard was drawn?
-                //
-                // This used to ask which modules hold data for anything on the
-                // fleet and compare that with the modules drawn for one device.
-                // Those sets differ by construction — 13 against 2 on a four
-                // device stack — so it found "new" data on every tick and tore
-                // the whole dashboard down and rebuilt it every 30 seconds,
-                // discarding the streamed history along with it.
+                // Has a MIB assigned to this device started producing data since the dashboard was drawn?
                 const deviceName = this.deviceNameFor(this.currentDashboardDevice);
                 if (!deviceName) return;
 
@@ -601,15 +480,7 @@ class MonitoringApp {
         }, this.refreshIntervalSec * 1000);
     }
 
-    // renderDashboardCadence states what the reader is being served: how often
-    // the selected device is polled, and how often this browser re-reads.
-    //
-    // This is all the page shows of the poller's side. The poll
-    // interval is the operator's configuration, shown here and NOT editable from
-    // this page: a display preference must not repoint collection, and one
-    // viewer must not retune a device for every other viewer. So the dashboard
-    // is made to match the poller, rather than the poller made to follow a
-    // dropdown.
+    // renderDashboardCadence shows the device's poll interval (read-only) and this browser's refresh cadence.
     renderDashboardCadence() {
         const line = document.getElementById('dashboardCadence');
         if (!line) return;
@@ -640,12 +511,7 @@ class MonitoringApp {
             `Polled every ${polled}s${source} — new readings cannot arrive faster than that; ${mine}.`;
     }
 
-    // deviceNameFor resolves a device id to the name its metrics are labelled
-    // with. The dashboard selector carries ids; Prometheus carries names, so
-    // anything asking Prometheus about the selected device goes through here.
-    //
-    // The id arrives as a string from a select element and as a number from the
-    // device list, so both are accepted rather than relying on the caller.
+    // deviceNameFor resolves a device id (string or number) to the name its metrics carry.
     deviceNameFor(deviceId) {
         if (deviceId === null || deviceId === undefined) return null;
         const wanted = String(deviceId);
@@ -739,12 +605,7 @@ class MonitoringApp {
             console.log('WebSocket connected');
             this.updateStatus(true);
 
-            // Only the device on screen is subscribed to. There is deliberately
-            // no fleet-wide warm-up here: unqualified names like
-            // "snmp_sysUpTime" match every series on every device, so a
-            // ten-thousand-device fleet pushed roughly 1.5MB every five seconds
-            // to every open browser, whichever device it was showing -- and
-            // nothing ever read it.
+            // Subscribe only the device on screen.
             this.resubscribeActiveDashboards();
         };
 
@@ -776,26 +637,7 @@ class MonitoringApp {
                 return;
 
             case 'metrics_unchanged':
-                // These queries were re-read and found exactly as we already
-                // have them, so the server sent their names instead of their
-                // numbers. The charts still have to reach this tick: a live
-                // view whose line stops at the last change reads as data
-                // having stopped, and the duration of a steady value is itself
-                // something to see.
-                //
-                // all_steady is the common case said in one flag: every query
-                // this browser holds was steady this round, so the server names
-                // none of them and we advance every reading we have. A query
-                // that moved arrived as its own value frame and updated its
-                // chart already, so it is normally not among what we hold.
-                //
-                // Normally, not always: a mid-round unsubscribe can make the
-                // server's two counts coincide and set the flag on a round
-                // where something moved (see sendSteady). Advancing everything
-                // is still right there -- what we unsubscribed we no longer
-                // hold, and what moved and is still held was updated by its own
-                // frame moments ago, so the worst case is one duplicate point
-                // at the value the chart is already showing.
+                // Steady queries arrive by name; advance their charts to this tick (all_steady means every held query).
                 if (message.all_steady) {
                     for (const [query, held] of this.lastReadings) {
                         this.updateDashboardCharts(query, [...held.byKey.values()],
@@ -818,16 +660,8 @@ class MonitoringApp {
     }
 
     // applySnapshot replaces everything held for a query.
-    //
-    // It is what a client gets when it is new to a query, when it has fallen
-    // behind, and periodically regardless -- so whatever it was holding, right
-    // or wrong, is gone after this.
     applySnapshot(message) {
-        // A frame for a query nobody is subscribed to any more is one the
-        // server had already queued when this browser moved on. Recording it
-        // would put back an entry the teardown just removed, and nothing would
-        // ever take it out again: measured walking nine devices, the held
-        // readings grew to 628 while only 185 were live.
+        // Ignore frames for queries no longer subscribed.
         if (!this.isSubscribed(message.query)) return;
 
         const byKey = new Map();
@@ -840,15 +674,7 @@ class MonitoringApp {
         this.updateDashboardCharts(message.query, [...byKey.values()], message.timestamp);
     }
 
-    // applyDelta applies what changed -- but only to the reading it was
-    // computed against.
-    //
-    // This is the correctness bar of the whole stream. A delta names the
-    // sequence it belongs to. Applying it to anything else would produce a
-    // reading that is part current and part whatever this browser happened to
-    // have, and would go on rendering as though it were live. So a delta whose
-    // base is not what is held is DISCARDED, the query is left showing what it
-    // had rather than advancing, and the server is asked for the whole thing.
+    // applyDelta applies a delta only to the sequence it was computed against; otherwise it discards it and requests a resync.
     applyDelta(message) {
         if (!this.isSubscribed(message.query)) return;
 
@@ -870,12 +696,7 @@ class MonitoringApp {
         this.updateDashboardCharts(message.query, [...held.byKey.values()], message.timestamp);
     }
 
-    // isSubscribed reports whether any open tab is still watching a query.
-    //
-    // The subscriptions are the authority on what this browser is showing;
-    // lastReadings is a cache in front of them. Asking the cache whether it
-    // should hold something is circular, which is how it came to hold readings
-    // for three devices the reader had left.
+    // isSubscribed reports whether any open tab still watches a query.
     isSubscribed(query) {
         for (const [, subscription] of this.activeSubscriptions) {
             if (subscription.objects.has(query)) return true;
@@ -883,13 +704,7 @@ class MonitoringApp {
         return false;
     }
 
-    // requestResync tells the server this browser has lost its place.
-    //
-    // The server resends on its own for a frame it could not queue. This is the
-    // half it cannot see: a frame that was queued, that the socket accepted,
-    // and that this browser could not apply. Asked once per query until the
-    // snapshot arrives, so a run of deltas does not turn into a run of
-    // requests.
+    // requestResync asks the server for a snapshot, once per query until it arrives.
     requestResync(query) {
         if (this.pendingResync.has(query)) return;
         this.pendingResync.add(query);
@@ -901,10 +716,6 @@ class MonitoringApp {
     }
 
     // sampleKey identifies one series by its labels.
-    //
-    // The server sends a removed series as its whole label set rather than as a
-    // key, precisely so that this derivation does not have to match one written
-    // in Go character for character. It only has to be consistent with itself.
     sampleKey(labels) {
         return Object.keys(labels || {}).sort()
             .map(name => `${name.length}:${name}${String(labels[name]).length}:${labels[name]}`)
@@ -944,16 +755,7 @@ class MonitoringApp {
     // Pagination
     // ========================================
 
-    // The app has one pagination engine and these are its parts. Both paged
-    // surfaces — the list helper below and the MIB object picker — go through
-    // them, so there is a single answer to what a page is, where in the set the
-    // reader is, and what the controls look and read like.
-    //
-    // A pager is previous, a strip of numbered pages, next, and — once the
-    // strip can no longer reach every page on its own — a field that takes a
-    // page number directly. It replaced a "Show N more" button, which grew the
-    // list rather than paging it: there was no way back, no way to jump, and
-    // nothing that said where in the set you were.
+    // Pagination engine shared by every paged surface: previous, numbered pages, next and, for long sets, a page field.
 
     // pagerSlice turns a page request into the rows it selects. The page is
     // clamped rather than refused, so a filter that shortens the list lands the
@@ -966,11 +768,7 @@ class MonitoringApp {
         return { page: current, pages, size, from, to: Math.min(from + size, total) };
     }
 
-    // pagerPages lists what the numbered strip shows: every page while they all
-    // fit, and otherwise the first, the last, PAGER_WINDOW around the current
-    // one, and a null wherever a run was left out. A gap of exactly one page is
-    // filled with that page instead, because an ellipsis standing in for a
-    // single number is wider than the number.
+    // pagerPages lists the numbered strip: first, last, PAGER_WINDOW around current, null for gaps; a one-page gap shows the page.
     pagerPages(current, pages) {
         if (pages <= PAGER_WINDOW + 2) {
             return Array.from({ length: pages }, (_, index) => index);
@@ -989,11 +787,7 @@ class MonitoringApp {
         return strip;
     }
 
-    // pagerNavHtml paints the controls. Every one of them is a real button so
-    // it is reachable and operable from the keyboard without help, the page the
-    // reader is on is marked aria-current, and the steps at the ends are
-    // disabled rather than removed so the strip does not shift under the cursor
-    // at the first and last page.
+    // pagerNavHtml renders the pager as buttons, aria-current on the current page, end steps disabled.
     pagerNavHtml(navId, slice, label) {
         if (slice.pages <= 1) return '';
 
@@ -1019,9 +813,7 @@ class MonitoringApp {
                     >${(page + 1).toLocaleString()}</button>`;
         }).join('');
 
-        // Past PAGER_JUMP_MIN pages the neighbours no longer reach an arbitrary
-        // page, so the reader can name one. The field also reads back the page
-        // they are on, which is why it is filled in rather than left blank.
+        // Past PAGER_JUMP_MIN pages, a field to type a page number, prefilled with the current one.
         const jump = slice.pages >= PAGER_JUMP_MIN
             ? `<span class="pager-jump">
                    <label for="${navId}Jump">Go to page</label>
@@ -1058,10 +850,7 @@ class MonitoringApp {
         return `Showing ${range} of ${matched.toLocaleString()} ${noun}${scope}`;
     }
 
-    // paintPager writes a surface's pager into the nav and status elements its
-    // shell created. Both elements outlive every repaint: a live region has to
-    // be in the document before its text changes for a screen reader to
-    // announce it, so the status is updated in place rather than replaced.
+    // paintPager updates a surface's pager and live status in place.
     paintPager(navId, statusId, opts) {
         const nav = document.getElementById(navId);
         if (nav) {
@@ -1113,10 +902,7 @@ class MonitoringApp {
         if (landed) landed.focus({ preventScroll: true });
     }
 
-    // The repaint replaces the control that was just operated, so focus is put
-    // back on its replacement. When a step runs out at the end of the set its
-    // replacement is disabled, and focus goes to the page the reader is now on
-    // rather than being dropped at the top of the document.
+    // Restore focus to the replaced control, or the current page when it became disabled.
     restorePagerFocus(container, rel) {
         const wanted = rel ? container.querySelector(`[data-pager-rel="${rel}"]:not([disabled])`) : null;
         const target = wanted || container.querySelector('.pager-page.is-current');
@@ -1155,10 +941,7 @@ class MonitoringApp {
         }
     }
 
-    // The size control lives beside the search box rather than in the footer,
-    // because it is a property of the view and not a step through it — and
-    // because the footer is rebuilt on every repaint, which would cost the
-    // select its focus mid-choice.
+    // The page-size control sits beside the search box, outside the repainted footer.
     pagerSizeHtml(id, base, size, noun) {
         const options = this.pagerSizeOptions(base)
             .map(option => `<option value="${option}" ${option === size ? 'selected' : ''}>${option.toLocaleString()}</option>`)
@@ -1176,21 +959,9 @@ class MonitoringApp {
     // Sorting
     // ========================================
 
-    // Column sorting for the paged surfaces. A table's headers are the obvious
-    // place to ask "which device has not been polled longest", and answering it
-    // by reading down an unordered column does not scale past a screenful.
-    //
-    // Sorting happens after the filter and the search and before the page is
-    // cut, so the reader sorts the set they can see rather than the page they
-    // happen to be on — sorting a single page would reorder ten rows and leave
-    // the largest value stranded on page four.
+    // Column sorting for paged surfaces, applied after filter and search and before paging.
 
-    // sortCompare orders two values of the same column.
-    //
-    // Missing values always sink, in both directions. A device that has never
-    // been polled has no last-poll time, and the question behind the sort is
-    // "which polled longest ago" — an absent value is not the answer to that in
-    // either direction, so it belongs at the end rather than winning ascending.
+    // sortCompare orders two values of a column; missing values always sink.
     sortCompare(a, b, dir) {
         const aMissing = a === null || a === undefined || a === '';
         const bMissing = b === null || b === undefined || b === '';
@@ -1211,12 +982,7 @@ class MonitoringApp {
         return dir === 'desc' ? -order : order;
     }
 
-    // sortItems returns a sorted copy. The input is left alone because it is the
-    // caller's array — the fleet's device list is replaced wholesale by every
-    // refresh, and sorting in place would fight that.
-    //
-    // Ties are broken by the position the server sent, so a column of equal
-    // values does not reshuffle on every repaint.
+    // sortItems returns a stable sorted copy.
     sortItems(items, state) {
         const column = (state.sortColumns || []).find(c => c.key === state.sortKey);
         if (!column || !column.get) return items;
@@ -1230,12 +996,7 @@ class MonitoringApp {
             .map(entry => entry.item);
     }
 
-    // sortHeaderHtml renders one header cell as a button.
-    //
-    // It is a real button inside the th rather than a click handler on the th:
-    // that is what makes it reachable by keyboard and announced as something
-    // operable. aria-sort on the th is what tells a screen reader which column
-    // the table is ordered by and in which direction.
+    // sortHeaderHtml renders a header cell as a button, with aria-sort on the th.
     sortHeaderHtml(mountId, column, state) {
         const active = state.sortKey === column.key;
         const dir = active ? state.sortDir : null;
@@ -1272,10 +1033,7 @@ class MonitoringApp {
         }).join('');
     }
 
-    // sortControlsHtml is sortHeadersHtml for a surface that is not a table.
-    // The MIB browser is a stack of accordions with no header row to hang a th
-    // on, so the same columns are offered as a row of buttons that reads as one
-    // control rather than as scattered links.
+    // sortControlsHtml offers the sort columns as a button row for non-table surfaces.
     sortControlsHtml(mountId) {
         const state = this.pagedLists.get(mountId);
         if (!state || !state.sortColumns) return '';
@@ -1298,10 +1056,7 @@ class MonitoringApp {
         return `<span class="sort-chips-label">Sort by</span>${buttons}`;
     }
 
-    // sortPagedList applies a header click. Clicking the sorted column reverses
-    // it; clicking another takes that column in its natural first direction —
-    // ascending for names, descending for counts and times, because "most
-    // metrics" and "longest ago" are what a reader wants first from those.
+    // sortPagedList applies a header click: same column reverses, a new one takes its natural direction.
     sortPagedList(mountId, key) {
         const state = this.pagedLists.get(mountId);
         if (!state) return;
@@ -1335,30 +1090,7 @@ class MonitoringApp {
     // Paged list surfaces
     // ========================================
 
-    // Every list in the app that can grow past a screenful gets the same two
-    // controls: a filter box that narrows the rows, and a pager that steps
-    // through them and says which of them are on screen. The library table, the
-    // device and profile lists, the assignment pickers and the MIB browser's
-    // object lists all behave — and read — identically.
-    //
-    // Options:
-    //   items       the full array, in the order the server gave it
-    //   matches     (item, lowercased term) -> boolean
-    //   filter      optional (item) -> boolean, narrowing the list ahead of the
-    //               search box for surfaces that have a second control of their
-    //               own; it is read on every paint, so the caller can change
-    //               what it closes over and repaint
-    //   renderRows  (page of items) -> html
-    //   wrap        (rows html) -> html, for surfaces that need a shell
-    //   noun        plural noun used in the status line and the no-match line
-    //   placeholder search box placeholder and accessible name
-    //   emptyHtml   what to show when there is nothing at all
-    //   pageSize    rows per page, defaulting to LIST_PAGE
-    //   sizeKey     what the session remembers the rows-per-page choice under,
-    //               defaulting to the mount id; surfaces whose mount id carries
-    //               a record id pass a stable one so the choice outlives the row
-    //   pagerLabel  accessible name for the pager, defaulting to the noun; two
-    //               pagers on one page must not answer to the same name
+    // Paged list with filter box and pager; options: items, matches, filter, renderRows, wrap, noun, placeholder, emptyHtml, pageSize, sizeKey, pagerLabel.
     renderPagedList(mountId, options) {
         const mount = document.getElementById(mountId);
         if (!mount) return;
@@ -1392,11 +1124,7 @@ class MonitoringApp {
             // can say which row is which and how to bring one up to date.
             rowKey: options.rowKey || null,
             patchRow: options.patchRow || null,
-            // A list whose rows live on the server declares a source. The
-            // component then holds one page rather than the whole set, and
-            // searching, sorting and paging are questions asked of the server
-            // instead of of an array in the browser -- which is what lets a
-            // ten-thousand-device fleet be paged without shipping all of it.
+            // A list whose rows live on the server declares a source and holds one page.
             source: options.source || null,
             // What the server says matches, which the pager needs and the page
             // in hand cannot tell it.
@@ -1412,14 +1140,7 @@ class MonitoringApp {
             return;
         }
 
-        // LIST_CONTROLS_MIN keeps a search box off a list of three rows, where
-        // it is chrome offering to narrow something already entirely visible.
-        // A surface can override that when the box is a destination rather than
-        // a convenience — see the fleet overview.
-        // A surface whose search box already exists in its own toolbar passes
-        // searchInput and the component binds to that instead of rendering a
-        // second one. The behaviour is identical either way — the box drives
-        // the same state — so the two do not drift apart.
+        // LIST_CONTROLS_MIN keeps the search box off short lists; searchInput binds to an existing box instead.
         const wantsControls = !options.searchInput
             && (options.alwaysControls || items.length >= LIST_CONTROLS_MIN);
         const search = wantsControls
@@ -1450,11 +1171,7 @@ class MonitoringApp {
             </div>
         `;
 
-        // The shell is built once and only the body, the pager and the status
-        // are repainted, so typing in the search box never costs the caret its
-        // place and the status stays the same live region across a page change.
-        // Header clicks are bound on the mount because the body — and with it
-        // every header — is rebuilt on each repaint.
+        // Build the shell once and repaint only body, pager and status.
         if (state.sortColumns) {
             mount.addEventListener('click', (event) => {
                 const header = event.target.closest('[data-sort-key]');
@@ -1466,17 +1183,10 @@ class MonitoringApp {
             ? document.getElementById(options.searchInput)
             : mount.querySelector('.paged-list-search');
         if (searchBox) {
-            // Whatever is in the box right now is the term this render must
-            // honour, first render included. A reader who typed while the list
-            // was still loading has already said what they want, and starting
-            // them on the unfiltered set drops it silently -- which is what
-            // happened as the MIB library grew and its first render got slower.
+            // Honour whatever is already in the search box on first render.
             state.search = searchBox.value || '';
 
-            // An external box outlives the list it drives, so its listener is
-            // registered once and remembered; re-registering on every rebuild
-            // would stack handlers, and each stale one would drive the list
-            // through a state object that is no longer the live one.
+            // Register an external box's listener once.
             const bindOnce = options.searchInput
                 && this.externalSearchBound.has(options.searchInput);
             if (options.searchInput) {
@@ -1518,13 +1228,7 @@ class MonitoringApp {
         this.paintPagedList(mountId);
     }
 
-    // repagePagedList redraws after the reader moved, searched or resorted.
-    //
-    // A list holding its own rows just repaints. A list whose rows live on the
-    // server has to ask for the new page first, and a search typed a character
-    // at a time must not put one request per keystroke on the wire, so the ask
-    // is coalesced: the latest intent wins and anything still in flight for an
-    // older one is discarded when it lands.
+    // repagePagedList redraws after a move, search or sort; server-backed lists coalesce requests, latest wins.
     repagePagedList(mountId) {
         const state = this.pagedLists.get(mountId);
         if (!state) return;
@@ -1571,13 +1275,7 @@ class MonitoringApp {
         const footer = document.getElementById(`${mountId}Footer`);
         if (!body || !footer) return;
 
-        // The filter runs first and the search narrows what it left, so the two
-        // compose instead of replacing one another, and the counts below
-        // describe the set the reader can actually see.
-        // Rows fetched for this page are already the answer to the search, the
-        // filter and the sort -- the server applied all three. Re-applying them
-        // here would narrow a page against itself and hide rows the server
-        // deliberately included.
+        // Filter, then search; server-fetched rows are already the answer and are not filtered again.
         const server = Boolean(state.source);
         let ordered;
         let slice;
@@ -1603,15 +1301,7 @@ class MonitoringApp {
             page = ordered.slice(slice.from, slice.to);
         }
 
-        // A list that refreshes on a timer rewrites the same rows over and over.
-        // Replacing the table wholesale throws away the row elements a reader is
-        // pointing at, and on the fleet overview -- which repaints every thirty
-        // seconds -- that is a visible flash of the whole table.
-        //
-        // A list that supplies rowKey and patchRow can say "these are the same
-        // rows, just newer", and then only the cells whose text changed are
-        // touched. Everything else, including whatever the reader has focused or
-        // selected, stays where it was.
+        // With rowKey and patchRow, a refresh patches changed cells instead of replacing the table.
         if (!this.patchPagedRows(state, body, page)) {
             body.innerHTML = page.length === 0
                 ? `<p class="empty-state">No ${this.escapeHtml(state.noun)} match “${this.escapeHtml(state.search.trim())}”</p>`
@@ -1634,10 +1324,7 @@ class MonitoringApp {
         });
     }
 
-    // patchPagedRows updates a rendered page in place, and reports whether it
-    // could. It refuses unless the list opted in and the rows on screen are the
-    // same ones, in the same order -- anything else is a different page and has
-    // to be drawn rather than edited.
+    // patchPagedRows updates a rendered page in place when the same rows are on screen, reporting whether it could.
     patchPagedRows(state, body, page) {
         if (!state.rowKey || !state.patchRow || page.length === 0) return false;
 
@@ -1665,17 +1352,7 @@ class MonitoringApp {
     // Description sheet
     // ========================================
 
-    // A MIB DESCRIPTION is usually several sentences and sometimes a whole
-    // paragraph, and every list that shows one has to clip it to keep its rows
-    // aligned. descriptionTriggerHtml renders the clipped line as a control
-    // rather than as dead text, so the full wording is one click — or one
-    // Enter — away in the description sheet, where it can be read, selected and
-    // copied. That is the part a title tooltip cannot do: it is unreachable on
-    // a touch screen, it cannot be selected, and browsers truncate it.
-    //
-    // The clipping itself is left alone. On a chart card the single line is
-    // load-bearing: it is what makes every plot in a row start at the same
-    // height. The fix is reaching the text, not unclamping it.
+    // descriptionTriggerHtml renders a clipped MIB description as a control that opens the full text in the description sheet.
     descriptionTriggerHtml(description, detail = {}) {
         const text = String(description == null ? '' : description).trim();
         if (text === '') return '';
@@ -1683,11 +1360,7 @@ class MonitoringApp {
         const meta = (detail.meta || [])
             .filter(([, value]) => value !== undefined && value !== null && value !== '');
 
-        // A compact trigger shows a fixed affordance -- an info glyph and the
-        // word "Description" -- instead of a clipped line of the text itself.
-        // It is for places that put the reading first and the documentation one
-        // click away, rather than printing a paragraph of it above the value.
-        // The full text still travels in data-desc-text for the sheet.
+        // A compact trigger shows an info glyph and "Description"; the text travels in data-desc-text.
         const content = detail.compact
             ? '<span class="desc-trigger-icon" aria-hidden="true">ⓘ</span>' +
               '<span class="desc-trigger-label">Description</span>'
@@ -1757,9 +1430,7 @@ class MonitoringApp {
                     <dd>${this.escapeHtml(value)}</dd>
                 </div>
             `).join('');
-        // The DESCRIPTION arrives with the MIB file's own line wrapping, which
-        // is meaningless once it is in a proportional column, so it is
-        // reflowed. Blank lines are the author's paragraphs and are kept.
+        // Reflow the DESCRIPTION's line wrapping, keeping blank-line paragraphs.
         document.getElementById('descSheetBody').innerHTML = String(trigger.dataset.descText || '')
             .split(/\n\s*\n/)
             .map(paragraph => `<p>${this.escapeHtml(paragraph.replace(/\s*\n\s*/g, ' ').trim())}</p>`)
@@ -1782,34 +1453,13 @@ class MonitoringApp {
         if (trigger && document.body.contains(trigger)) trigger.focus();
     }
 
-    // ========================================
-    // Fleet overview
-    // ========================================
-    //
-    // The dashboard's landing surface. Every configured device, with the state
-    // the poller decided it is in, so opening the app answers "is my network
-    // OK" before anything is selected.
-    //
-    // It is a table rather than a grid of cards because the question is a
-    // comparative one: aligned columns let a reader run down the state column
-    // and stop on the rows that differ, which a wrapped grid of cards stops
-    // being able to do as soon as there are more devices than fit on a screen.
-    // Above it sits one chip per state, which is a constant amount of chrome
-    // whether the fleet is four devices or four hundred, and each chip filters
-    // the table beneath it. Nothing is averaged into a score: the chips are
-    // counts of the states the server reported, and a single down device is a
-    // chip of its own rather than a rounding error in a percentage.
+    // Fleet overview: every configured device and its state in a table, filtered by one chip per state.
 
     // showFleetOverview makes the overview the visible surface and refreshes it.
     // Called on load, when the device selector is cleared, and when the
     // Dashboard tab is re-entered with nothing selected.
     showFleetOverview() {
-        // The fleet is now what the page is showing, so any dashboard load
-        // still in flight is one the reader abandoned. Only STARTING another
-        // load used to end the previous one, which left the way out -- clearing
-        // the selector, navigating back, importing a config -- able to finish
-        // its fetch, replace the fleet with a device dashboard and subscribe to
-        // a device nobody asked for.
+        // Showing the fleet abandons any dashboard load in flight.
         this.dashboardLoad++;
 
         const content = document.getElementById('dashboardContent');
@@ -1857,14 +1507,7 @@ class MonitoringApp {
         return this.fleetRequest;
     }
 
-    // fetchFleetPage asks for the slice of the fleet on screen, plus the counts
-    // that describe the whole of it.
-    //
-    // The rows a reader cannot see were the overwhelming majority of this
-    // response -- about 3MB per refresh per open browser at ten thousand
-    // devices, every thirty seconds. The summary still covers every device,
-    // because "12 unreachable" is a statement about the fleet and not about
-    // page one, but it travels as a handful of numbers.
+    // fetchFleetPage requests the visible page of the fleet plus whole-fleet counts.
     async fetchFleetPage() {
         const list = this.pagedLists.get('fleetDeviceList');
         const size = list ? list.size : LIST_PAGE;
@@ -1932,10 +1575,7 @@ class MonitoringApp {
                 + `refreshing every ${this.refreshIntervalSec}s`;
     }
 
-    // A chip per state, each one a filter over the table below. Healthy is
-    // always present so "none of them are" is as visible as "all of them are";
-    // the rest appear when the fleet is actually in them, so a healthy fleet is
-    // not a row of zeroes.
+    // One chip per state; Healthy always shows, the rest only when non-zero.
     renderFleetSummary() {
         const summary = document.getElementById('fleetSummary');
         if (!summary) return;
@@ -2029,10 +1669,7 @@ class MonitoringApp {
                     grandTotal: this.fleet.configured
                 };
             },
-            // The search box is always offered here, unlike the other lists.
-            // This is the surface the app opens on and the one a reader arrives
-            // at knowing the device they want, so the box is a destination
-            // rather than chrome — and a fleet only ever grows.
+            // The fleet overview always offers the search box.
             alwaysControls: true,
             sortColumns: this.fleetSortColumns(),
             sortKey: 'state',
@@ -2042,10 +1679,7 @@ class MonitoringApp {
                     <tbody>${rows}</tbody>
                 </table>`,
             renderRows: items => items.map(device => this.renderFleetRow(device)).join(''),
-            // The fleet repaints every thirty seconds and almost nothing moves:
-            // the times tick over, a metric count creeps up, and once in a while
-            // a device changes state. Identifying rows by device lets a repaint
-            // edit those cells rather than rebuild the table under the reader.
+            // Rows are keyed by device so a repaint edits cells in place.
             rowKey: device => device.id,
             patchRow: (row, device) => this.patchFleetRow(row, device),
             // An empty fleet and a fleet that could not be read are different
@@ -2062,13 +1696,7 @@ class MonitoringApp {
         });
     }
 
-    // The fleet table's columns. Order here is the order on screen.
-    //
-    // State sorts by severity rather than by its label, because the reason to
-    // sort that column is triage: "show me what is broken" must not be answered
-    // with an alphabetical list that puts Failing above Healthy above
-    // Unreachable. Times and counts open descending, since "polled longest ago"
-    // and "most series" are what is wanted first from them.
+    // Fleet table columns in screen order; state sorts by severity, times and counts open descending.
     fleetSortColumns() {
         return [
             {
@@ -2112,12 +1740,7 @@ class MonitoringApp {
         return `${device.name || ''} ${device.address || ''} ${meta.key} ${meta.label}`.toLowerCase();
     }
 
-    // patchFleetRow brings one rendered row up to date.
-    //
-    // It writes the same markup renderFleetRow would have produced for each
-    // cell, and only where that markup has changed -- so a row whose device has
-    // not moved is left entirely alone, and one that has moved changes only in
-    // the cells that say something different.
+    // patchFleetRow updates only the cells of one row whose markup changed.
     patchFleetRow(row, device) {
         const meta = this.fleetStateMeta(device.state);
         const status = device.status || {};
@@ -2168,10 +1791,7 @@ class MonitoringApp {
         `;
     }
 
-    // Why a device is in the state it is in, without turning the default view
-    // into a wall of error text. The one line that fits is a control: the whole
-    // message opens in the description sheet, which already exists for exactly
-    // this and can be read, selected and copied there.
+    // The state reason shows one line that opens the full message in the description sheet.
     fleetReasonHtml(device, meta) {
         const status = device.status || {};
         const failures = Number(status.consecutive_failures || 0);
@@ -2299,9 +1919,7 @@ class MonitoringApp {
         this.fleetBound = true;
     }
 
-    // Toggling a chip narrows the fleet to one state. The rows live on the
-    // server, so it asks for a new first page rather than filtering an array it
-    // no longer holds. Clicking the active chip again clears the filter.
+    // A chip filters the fleet to one state by fetching a new first page; clicking it again clears.
     setFleetStateFilter(stateKey) {
         this.fleet.stateFilter = this.fleet.stateFilter === stateKey ? '' : stateKey;
 
@@ -2640,12 +2258,7 @@ class MonitoringApp {
 
             this.syncDeviceVersionFields();
 
-            // readOnly, not disabled. A disabled input is omitted from
-            // FormData entirely, so the name came back null and every edit was
-            // refused with "name is required" — whatever field was being
-            // changed. readOnly stops it being edited and keeps it submitted,
-            // which is what was wanted: the name identifies the device and
-            // renaming here would be renaming the thing being edited.
+            // readOnly, not disabled: a disabled input is left out of FormData.
             form.querySelector('input[name="name"]').readOnly = true;
 
             this.showModal('deviceModal');
@@ -2655,11 +2268,7 @@ class MonitoringApp {
         }
     }
 
-    // Show the credentials the chosen SNMP version actually uses.
-    //
-    // v1 and v2c authenticate with a community string; v3 with a user, an
-    // authentication passphrase and a privacy passphrase. A form offering all
-    // of them at once invites filling in both and wondering which took effect.
+    // Show only the credentials the chosen SNMP version uses.
     syncDeviceVersionFields() {
         const form = document.getElementById('deviceForm');
         if (!form) return;
@@ -2705,10 +2314,7 @@ class MonitoringApp {
             device.auth_protocol = formData.get('auth_protocol') || '';
             device.priv_protocol = formData.get('priv_protocol') || '';
 
-            // A blank password on an edit means "keep the stored one": the form
-            // is never filled with the existing secret, so blank cannot be
-            // distinguished from unchanged, and clearing a password is not
-            // something this form offers.
+            // A blank password on an edit keeps the stored one.
             const auth = formData.get('auth_password');
             const priv = formData.get('priv_password');
             if (auth) device.auth_password = auth;
@@ -2718,11 +2324,7 @@ class MonitoringApp {
         }
 
         if (isEdit) {
-            // A number, not the string FormData handed back. storage.Device.ID
-            // is an int64, so JSON with a quoted id fails to decode and the
-            // server answers "invalid request body" — which reads as though
-            // something about the device were wrong rather than the id's type.
-            // Every edit failed this way, whatever field was being changed.
+            // storage.Device.ID is an int64, so send a number.
             device.id = Number(deviceId);
         }
 
@@ -2760,11 +2362,7 @@ class MonitoringApp {
             });
 
             if (!response.ok) {
-                // The server says WHY a delete did not happen -- most often
-                // that the poller could not be told to stop polling the
-                // device, in which case nothing was deleted and retrying is
-                // the answer. "Failed to delete device" on its own leaves the
-                // operator with no way to tell that from anything else.
+                // Show the server's reason a delete did not happen.
                 const reason = (await response.text()).trim();
                 throw new Error(reason || `HTTP error! status: ${response.status}`);
             }
@@ -3452,10 +3050,7 @@ class MonitoringApp {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            // The assignment reports what it will produce. A module can be
-            // assigned successfully and yield nothing — a registry of OBJECT
-            // IDENTIFIERs, or one whose IMPORTS did not resolve — and the only
-            // symptom used to be an empty dashboard minutes later.
+            // Show what the assignment reports it will produce.
             const assignment = await response.json().catch(() => null);
             if (assignment?.warning) {
                 this.showNotification(assignment.warning, 'warning', 12000);
@@ -3551,15 +3146,7 @@ class MonitoringApp {
         }
     }
 
-    // ========================================
-    // MIB Polling Controls (enable/disable + filters)
-    //
-    // `scope` is 'device' or 'profile' throughout this section. Both share
-    // the same assignment shape and the same two endpoints
-    // (/api/devices/{id}/mibs/{mibId}/assignment and the /profiles
-    // equivalent), so one set of handlers drives both the device's direct
-    // MIB list and a profile's MIB list.
-    // ========================================
+    // MIB polling controls; scope is 'device' or 'profile', sharing the same assignment endpoints.
 
     // findMibRecord looks up the AssignedMIB (which already carries the
     // current `assignment`) from the last list response, avoiding an extra
@@ -3589,10 +3176,7 @@ class MonitoringApp {
         return parts.join(', ');
     }
 
-    // buildAssignmentPayload always produces the *complete* assignment body:
-    // the PUT endpoint replaces the stored assignment wholesale rather than
-    // merging, so every field the row already carries has to be re-sent
-    // alongside whatever `overrides` this particular action is changing.
+    // buildAssignmentPayload builds the complete assignment body, since PUT replaces it wholesale.
     buildAssignmentPayload(assignment, overrides = {}) {
         const a = assignment || {};
         const payload = {
@@ -3639,10 +3223,7 @@ class MonitoringApp {
         }
     }
 
-    // toggleDirectMib handles the enabled/disabled switch on a direct MIB
-    // row. Enabling a MIB on a device fetches a series estimate and requires
-    // confirmation first (see confirmEnableMib); disabling, and any change on
-    // a profile, applies immediately.
+    // toggleDirectMib toggles a direct MIB; enabling on a device needs confirmation (confirmEnableMib).
     async toggleDirectMib(scope, entityId, mibId, checkboxEl) {
         const mib = this.findMibRecord(scope, mibId);
         if (!mib) {
@@ -3823,11 +3404,7 @@ class MonitoringApp {
         });
     }
 
-    // validateFilterField parses a textarea into one pattern per line and
-    // checks each one with `new RegExp`. It never comma-splits: a pattern
-    // like `if{2,4}` is a single valid regex that happens to contain a comma.
-    // Returns the parsed lines, or null (with an inline error rendered) if
-    // any pattern fails to compile.
+    // validateFilterField parses one regular expression per line, never comma-split; returns the lines or null with an inline error.
     validateFilterField(id) {
         const el = document.getElementById(id);
         const errorEl = document.getElementById(`${id}Error`);
@@ -3909,18 +3486,7 @@ class MonitoringApp {
         }
     }
 
-    // ========================================
-    // Per-object polling picker
-    //
-    // GET /api/devices/{id}/mibs/{mibId}/objects answers, for every object of
-    // one module, whether this device polls it right now and — when it does
-    // not — which rule stopped it. The verdict is produced by the same
-    // selection code the poller runs, so nothing here recomputes it: a box is
-    // ticked if and only if the server said `polled`. Ticking a box edits the
-    // module's filter patterns; the write goes to the ordinary assignment
-    // endpoint and the plan is re-fetched afterwards, so the ticks that come
-    // back are verdicts rather than a client-side guess at them.
-    // ========================================
+    // Per-object polling picker: shows the server's verdict per object; ticking edits the module's filters and re-fetches the plan.
 
     // The reason vocabulary is the CLI's (`netmon device mib objects`), so an
     // operator reading one recognises the other.
@@ -3993,21 +3559,10 @@ class MonitoringApp {
             advancedEdited: false,
             shadowConfirmed: false,
             search: '',
-            // The list opens on what can actually be operated. A table-heavy
-            // module is mostly columns and unpollable nodes, and burying the
-            // ~24 rows an operator configures under 269 they cannot is what
-            // made this picker read as broken.
+            // Open on the rows that can be operated.
             show: 'actionable',
             sort: 'poller',
-            // Where in the rows the reader is. Ticks live in the draft and the
-            // intents above, never in the checkbox, so paging away from a row
-            // and back to it cannot lose the edit.
-            //
-            // The picker pages at LIST_PAGE rather than at the MIB browser's
-            // MIB_OBJECT_PAGE: a picker row carries a description line, a
-            // verdict and a table's columns, so it is a list row like every
-            // other 50-row list in the app and not one of the browser's compact
-            // grid rows. Rows-per-page raises it for a reader who wants more.
+            // Pager position; edits live in the draft, so paging cannot lose them. Pages at LIST_PAGE.
             page: 0,
             size: this.pagerSize('objectPicker', LIST_PAGE),
             // Top-level rows, with each table's columns hanging off it. Built
@@ -4071,10 +3626,7 @@ class MonitoringApp {
         document.getElementById('modalOverlay').style.display = 'none';
     }
 
-    // objectTableFor finds the table an object is covered by. `table_oid` is
-    // present on columns; a row (entry) node carries none, so the table is the
-    // longest table OID that prefixes it. Either way this only locates a row
-    // in the list the server sent — it decides nothing.
+    // objectTableFor finds the table covering an object: table_oid, or the longest prefixing table OID.
     objectTableFor(obj) {
         const state = this.objectPicker;
         if (obj.table_oid) {
@@ -4090,20 +3642,14 @@ class MonitoringApp {
         return best;
     }
 
-    // objectParent is the table a column or row entry structurally belongs to.
-    // It is deliberately structural — kind and OID, never a polling verdict —
-    // so a column keeps its place under its table however the poller happens
-    // to be treating it today.
+    // objectParent is the table a column or entry structurally belongs to.
     objectParent(obj) {
         if (obj.kind !== 'column' && obj.kind !== 'entry') return null;
         const table = this.objectTableFor(obj);
         return table && table.oid !== obj.oid ? table : null;
     }
 
-    // buildObjectGroups turns the flat plan into one row per thing an operator
-    // configures: a scalar, or a table with its columns hanging off it. The
-    // top-level order is a filtered copy of plan.objects, so the poller's own
-    // order — the one a max_oids cap is spent in — still reads correctly.
+    // buildObjectGroups groups the plan into scalars and tables with their columns, keeping the server's order.
     buildObjectGroups() {
         const state = this.objectPicker;
         const objects = state.plan.objects || [];
@@ -4122,10 +3668,7 @@ class MonitoringApp {
 
         state.groups = top.map(obj => ({ obj, children: children.get(obj.oid) || [] }));
 
-        // A column is normally only reachable through its table's walk, so the
-        // columns stay folded away. When one is separately operable — its
-        // table is excluded and the agent can still be asked for that column
-        // directly — folding it away would hide the only control for it.
+        // Columns stay folded unless one is separately operable.
         if (state.expanded === null) state.expanded = new Set();
         for (const group of state.groups) {
             if (group.children.some(child => this.objectControl(child) === 'toggle')) {
@@ -4142,20 +3685,7 @@ class MonitoringApp {
         return intent === undefined ? !!obj.polled : intent;
     }
 
-    // objectControl says which control a row gets. It is a reading of the
-    // server's verdict, not a second opinion on it:
-    //
-    //   toggle    — the object is polled, or a filter this device owns is what
-    //               stopped it. Ticking or unticking it means something, so it
-    //               gets a working checkbox.
-    //   via-table — its table is walked and one walk already returns it. The
-    //               object IS collected, so the row reads on; the control that
-    //               governs it is the table's.
-    //   never     — no filter can make the agent return it.
-    //   paused    — the module is off, so no object has a verdict yet.
-    //
-    // An unrecognised reason gets a working checkbox: filters are the only
-    // lever the picker has, so offering it is better than a dead row.
+    // objectControl maps the server's verdict to a control: toggle, via-table, never or paused; unknown reasons get a toggle.
     objectControl(obj) {
         if (obj.polled) return 'toggle';
         switch (obj.reason) {
@@ -4187,13 +3717,7 @@ class MonitoringApp {
         return count;
     }
 
-    // objectVerdictHtml explains a row's state. `covered-by-table-walk` is the
-    // one that used to contradict itself: the row said "Collected" beside an
-    // empty box. It is collected, so the row now reads on, and the only
-    // control that can stop it — its table's — is named and offered here.
-    // `grouped` says the row is already sitting under its table, which carries
-    // the explanation and the control, so the row itself only has to say what
-    // state it is in.
+    // objectVerdictHtml explains a row's state; covered-by-table-walk names the table's control.
     objectVerdictHtml(obj, grouped) {
         if (obj.polled || obj.reason === 'polled') return '';
         if (obj.reason === 'module-disabled') return '';
@@ -4278,10 +3802,7 @@ class MonitoringApp {
 
     // ---- selection edits -------------------------------------------------
 
-    // maxOidsNeededFor is the cap an object needs to survive: how many objects
-    // at or before it, in the server's own order, either are polled or were
-    // capped. It counts the server's verdicts rather than re-deciding any of
-    // them, and the true answer still arrives with the next fetch.
+    // maxOidsNeededFor counts the polled or capped objects at or before this one in server order.
     maxOidsNeededFor(target) {
         let needed = 0;
         for (const obj of this.objectPicker.plan.objects || []) {
@@ -4517,13 +4038,7 @@ class MonitoringApp {
         }
     }
 
-    // visibleGroups applies the search and the display order to a copy of the
-    // grouped rows. The server's array is never sorted in place: its order is
-    // the one a max_oids cap was spent in, so re-ordering it would change
-    // which objects look capped.
-    //
-    // It also reports what the Show filter is holding back, because a list
-    // that quietly drops 269 of 293 rows has to say so.
+    // visibleGroups applies search and display order to a copy and reports what the Show filter hides.
     visibleGroups() {
         const state = this.objectPicker;
         const term = state.search.trim().toLowerCase();
@@ -4717,10 +4232,7 @@ class MonitoringApp {
         const footer = document.getElementById('objPickerFooter');
         if (!list || !footer) return;
 
-        // The Show filter and the search box both narrow the same set inside
-        // visibleGroups(), and the pager then steps through what they left — so
-        // the position and the counts describe the rows on screen, never the
-        // module's raw total, which the status line names separately.
+        // Show filter and search narrow the set; the pager counts what is left.
         const { groups, hidden } = this.visibleGroups();
         state.visible = groups;
         const slice = this.pagerSlice(groups.length, state.page, state.size);
@@ -4816,10 +4328,7 @@ class MonitoringApp {
         return parts.join(' · ');
     }
 
-    // renderObjectPickerRow paints one object. A row only carries a checkbox
-    // when ticking it would mean something; everything else gets a state marker
-    // that agrees with the verdict beside it. There is no disabled checkbox in
-    // this list, because a box that cannot be operated is not a control.
+    // renderObjectPickerRow paints one object; only operable rows get a checkbox.
     renderObjectPickerRow(obj, table) {
         const state = this.objectPicker;
         const checked = this.objectChecked(obj);
@@ -4832,9 +4341,7 @@ class MonitoringApp {
         if (pending) classes.push('is-pending');
         if (table) classes.push('is-child');
 
-        // The search box already matches on DESCRIPTION, so the row has to be
-        // able to show why it matched. One clipped line, full text in the
-        // sheet — the same treatment the MIB browser and the chart cards get.
+        // One clipped DESCRIPTION line, full text in the sheet.
         const description = this.descriptionTriggerHtml(obj.description, {
             title: obj.name,
             eyebrow: 'SNMP object',
@@ -4947,10 +4454,7 @@ class MonitoringApp {
         this.renderObjectPickerBanners();
     }
 
-    // objectPickerHowToHtml states the picker's current state and the actions
-    // it offers, counted from the server's verdicts. The "nothing is tickable"
-    // case is the important one: it is the normal state of an unfiltered
-    // module, and it has to read as a fact rather than as a broken control.
+    // objectPickerHowToHtml states the picker's state and available actions.
     objectPickerHowToHtml() {
         const state = this.objectPicker;
         const totals = this.objectPickerTotals();
@@ -5013,10 +4517,7 @@ class MonitoringApp {
             `);
         }
 
-        // What this picker can do right now, said out loud. Unfiltered, every
-        // pollable object is already polled and the only available action is to
-        // remove one — correct, but invisible unless it is stated, and hunting
-        // for a control that cannot exist is what made this feel broken.
+        // State what the picker can do now.
         if (plan.assignment && plan.assignment.enabled !== false && state.draft.enabled) {
             parts.push(`<p class="obj-picker-banner info howto">${this.objectPickerHowToHtml()}</p>`);
         }
@@ -5338,12 +4839,7 @@ class MonitoringApp {
         `;
     }
 
-    // renderEffectiveMibRow renders one read-only row for the device's "All
-    // applied MIBs" list: the effective enabled state plus whether it came
-    // from a direct assignment or an assigned profile. Only a direct
-    // assignment is editable on the device page, so a profile-sourced row
-    // points at the profile instead of offering controls that would not
-    // take effect.
+    // renderEffectiveMibRow renders a read-only effective MIB row; profile-sourced rows link to the profile.
     renderEffectiveMibRow(deviceId, mib, directIds) {
         const assignment = mib.assignment || {};
         const enabled = !!assignment.enabled;
@@ -5629,19 +5125,7 @@ class MonitoringApp {
     // Dashboard Generation
     // ========================================
 
-    // generateDeviceDashboard opens a device's dashboard and reports what its
-    // MIBs will contribute.
-    //
-    // This used to render the generated configuration itself, into a
-    // ".metrics-grid" the dashboard redesign removed. The first statement of that
-    // renderer therefore threw on a null element, every time — after the view had
-    // already switched. The symptom was exactly what it looked like: the button
-    // takes you to the dashboard and the device's MIBs are not there.
-    //
-    // Rendering now goes through the device selector, like openFleetDevice, so
-    // the one place that knows how to build a device dashboard stays the only
-    // place that does it. What this endpoint uniquely offers is the diagnosis:
-    // which MIBs contributed panels, and why the others did not.
+    // generateDeviceDashboard opens a device's dashboard through the selector and reports which MIBs contributed panels.
     async generateDeviceDashboard(deviceId) {
         try {
             this.showNotification('Generating dashboard...', 'success');
@@ -5661,10 +5145,7 @@ class MonitoringApp {
             this.switchView('dashboard');
             this.openFleetDevice(deviceId);
 
-            // A panel exists only for an object Prometheus already holds data
-            // for, so a MIB assigned a moment ago contributes nothing until the
-            // device has been polled and answered. Saying which case applies is
-            // the difference between "wait a minute" and "this will never work".
+            // A new MIB contributes nothing until the device has been polled.
             const warnings = dashboardConfig.warnings || [];
             if (warnings.length > 0) {
                 warnings.forEach(warning => this.showNotification(warning, 'warning', 15000));
@@ -5716,24 +5197,13 @@ class MonitoringApp {
         }
     }
 
-    // Routing one query's result to the panels that asked for it.
-    //
-    // Every subscription on this page came from a catalog panel, and a panel
-    // carries the query it was built with, so a result is matched by the query
-    // itself. The version this replaced also tried to match on "same metric
-    // name and same device" when the exact string missed -- machinery for the
-    // instance selector, which rewrote a subscription's query whenever the
-    // reader picked a different row. Panels draw every row at once, so their
-    // queries never change and an exact match is the whole rule.
+    // Route a query's result to the panels that subscribed with that exact query.
     updateDashboardCharts(query, metrics, timestamp) {
         if (!metrics || !Array.isArray(metrics)) {
             return;
         }
 
-        // Every point on a chart is plotted at the tick that carried it. The
-        // dashboard is a live view on a timer, so the x axis is the timer --
-        // which is also what lets a steady reading be replayed at a later tick
-        // to carry its line forward.
+        // Points are plotted at the tick that carried them.
         const time = new Date(timestamp * 1000);
 
         this.activeSubscriptions.forEach((subscription) => {
@@ -5744,13 +5214,7 @@ class MonitoringApp {
         });
     }
 
-    // ========================================
-    // Chart option construction
-    //
-    // Every metric card is one series over time, so there is exactly one
-    // builder for it. Colours and date formats come from netmonCharts, which
-    // reads the CSS design tokens, so nothing here needs to know the theme.
-    // ========================================
+    // Chart options: one builder for a series over time; colours from netmonCharts.
 
     timeAxisOption(spanMs, data) {
         const option = {
@@ -5766,10 +5230,7 @@ class MonitoringApp {
             }
         };
 
-        // With a single sample the data extent is a point, and ECharts widens
-        // it to something arbitrary — often days — which the labels then have
-        // to describe. Pin a minute around the sample instead. Once a second
-        // sample lands, null hands the extent back to the data.
+        // Pin a minute around a single sample; null once there are two.
         if (data && data.length === 1) {
             const at = new Date(data[0][0]).getTime();
             option.min = at - 30000;
@@ -5789,13 +5250,7 @@ class MonitoringApp {
         return Math.max(0, last - first);
     }
 
-    // ========================================
-    // Card data states
-    //
-    // A card is either waiting, charting, or terminal. The state lives on the
-    // container so the placeholder costs a couple of text lines rather than a
-    // full-height empty plot frame.
-    // ========================================
+    // Card data states: waiting, charting or terminal, held on the container.
 
     chartCard(chartId) {
         const element = document.getElementById(chartId);
@@ -5848,11 +5303,7 @@ class MonitoringApp {
         if (detail) detail.textContent = NO_DATA_DETAIL;
     }
 
-    // A status tile is the same three states as a chart card in one line of
-    // text: waiting, showing a value, or terminal. It used to have only the
-    // first two, so an object the device never answered for sat on "Loading..."
-    // for the life of the page — and then had its tile hidden outright, which
-    // is not a state anybody can read.
+    // A status tile has the same three states as a chart card.
     statusTile(statusId) {
         const element = document.getElementById(statusId);
         return element ? element.closest('.status-item') : null;
@@ -5877,17 +5328,7 @@ class MonitoringApp {
         if (tile) tile.classList.remove('is-nodata');
     }
 
-    // ========================================
-    // METRIC NAMES AND QUERIES
-    // ========================================
-    // The frontend composes no PromQL at all. A panel arrives carrying the
-    // query to run, because building it needs facts only the server has: the
-    // metric catalog says whether a family is a counter to wrap in rate(), and
-    // the device record says how wide that rate window has to be for this
-    // device's poll interval to fill it. internal/webui/api/dashboard_gen.go
-    // builds them; internal/promname/contract_test.go pins the naming to what
-    // the exporter actually emits. The frontend's job is to use what it is
-    // given.
+    // Metric names and queries: panels arrive with their PromQL from internal/webui/api/dashboard_gen.go.
 
 
     // ========================================
@@ -5934,13 +5375,7 @@ class MonitoringApp {
         return false;
     }
 
-    // formatAxisValue keeps an axis tick short enough to read.
-    //
-    // Which scale to use comes from the unit the CATALOG declared, not from a
-    // match on the metric name. The version this replaced tested the name for
-    // "octets" or "bytes", which got IF-MIB right and said nothing about
-    // anything else -- optical power is published as snmp_entity_sensor_dbm and
-    // matched none of it.
+    // formatAxisValue shortens an axis tick using the catalog's declared unit.
     formatAxisValue(value, unit) {
         const number = parseFloat(value);
         if (isNaN(number)) return String(value ?? '');
@@ -5966,32 +5401,14 @@ class MonitoringApp {
     // MIB Browser (existing functionality)
     // ========================================
 
-    // loadDevices refills the device list and both selectors.
-    //
-    // restore: false leaves the selection alone. restoreState replays the
-    // device chosen at STARTUP, which is right on a page load and wrong
-    // afterwards -- the config import does its own transition and had this one
-    // racing it, loading the startup device and subscribing to it while the
-    // import was deciding where the reader should end up.
-    //
-    // strict: true reports a failed read instead of swallowing it. The import
-    // uses the rebuilt selector to decide whether the open device survived, so
-    // a read that quietly failed would have it judging that question against
-    // the configuration that was just replaced.
+    // loadDevices refills the device list and selectors; restore: false keeps the selection, strict: true reports a failed read.
     async loadDevices({ restore = true, strict = false } = {}) {
         try {
             const response = await fetch('/api/devices');
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
 
-            // Keep the fleet, not just the dropdown built from it.
-            //
-            // deviceNameFor resolves the selected id to the name Prometheus
-            // labels its series with, and everything that asks Prometheus about
-            // "this device" goes through it. This list was only ever filled by
-            // the Devices page, so on the dashboard -- where the question is
-            // actually asked -- it was empty, the name came back null, and every
-            // request fell back to its fleet-wide form.
+            // Keep the device list for deviceNameFor.
             this.devices = data.devices || [];
 
             // effective_poll_interval arrives with this list, so the cadence
@@ -6077,11 +5494,7 @@ class MonitoringApp {
                 return;
             }
 
-            // Paged rather than painted whole. The library is 170 modules
-            // here and grows with every import; rendering all of them built an
-            // accordion whose every item was in the document at once and hid
-            // the ones that did not match, so the cost of a search was paid on
-            // every keystroke against the entire library.
+            // The MIB library is paged.
             this.pagedLists.delete('mibAccordion');
             this.renderPagedList('mibAccordion', {
                 items: mibs,
@@ -6137,8 +5550,7 @@ class MonitoringApp {
             ? `<span class="mib-accordion-tags">${tags.map(t => `<span class="tag-badge">${this.escapeHtml(t)}</span>`).join('')}</span>`
             : '';
 
-        // Zero is the correct answer for TEXTUAL-CONVENTION and conformance-only
-        // modules, so it is described rather than shown as a bare "0 objects".
+        // Zero objects is correct for TC and conformance-only modules.
         const meta = objectCount === 0
             ? 'No objects — definitions only'
             : `${objectCount.toLocaleString()} object${objectCount === 1 ? '' : 's'}`;
@@ -6255,11 +5667,7 @@ class MonitoringApp {
         parts.push(`<div id="${mountId}"></div>`);
         body.innerHTML = parts.join('');
 
-        // The largest module in the library declares 10,539 objects, so the
-        // list is searched by name, OID or description and paged — the same two
-        // controls every other long list in the app has. Several modules can be
-        // expanded at once, so the pager is named after the module it belongs
-        // to rather than after "objects", which would not distinguish them.
+        // Module objects are searched and paged; the pager is named after the module.
         this.renderPagedList(mountId, {
             items: objects,
             pageSize: MIB_OBJECT_PAGE,
@@ -6303,11 +5711,8 @@ class MonitoringApp {
         return html;
     }
 
-    // Filters the collapsed list by module name. Nothing is expanded and no
-    // request is issued.
-    // What the MIB browser can be ordered by. Name is the default because it is
-    // how a reader looks a module up; object count answers "which of these is
-    // worth expanding", and imported date answers "what did I just add".
+    // Filters the collapsed list by module name without requests.
+    // MIB browser sort keys: name (default), object count, imported date.
     mibAccordionSortColumns() {
         return [
             { key: 'name', label: 'Name', firstDir: 'asc', get: mib => mib.name || '' },
@@ -6326,10 +5731,7 @@ class MonitoringApp {
     }
 
 
-    // The summary reads the list's own state rather than being handed counts,
-    // so it cannot disagree with the pager beneath it about how many matched.
-    // The pager states position within the matches; this states what the
-    // library holds and what the filter did to it.
+    // The summary reads the list's own state.
     updateMIBBrowserSummary() {
         const summary = document.getElementById('mibBrowserSummary');
         if (!summary) return;
@@ -6359,11 +5761,7 @@ class MonitoringApp {
         const accordion = document.getElementById('mibAccordion');
         if (!accordion) return;
 
-        // Only the current page is in the document, so this expands the page
-        // the reader is looking at. That is the bound: expanding is one request
-        // per module, and a page is a screenful by construction. Before the
-        // list was paged this could be aimed at the whole library at once,
-        // which is why the ceiling below exists at all.
+        // Expand the current page only: one request per module.
         const targets = Array.from(
             accordion.querySelectorAll('.mib-accordion-item:not(.expanded)'));
         if (targets.length === 0) return;
@@ -6583,12 +5981,7 @@ class MonitoringApp {
         const saveSettings = document.getElementById('saveSettings');
         if (saveSettings) {
             saveSettings.addEventListener('click', () => {
-                // This used to announce a save and do nothing at all: it read no
-                // field, stored nothing, and changed no behaviour. It now applies
-                // the interval, persists it, and names the value that took
-                // effect -- which differs from what was typed whenever the input
-                // is out of range, and saying "saved" without saying so is the
-                // same lie in a smaller form.
+                // Apply and persist the interval, and report the value that took effect.
                 const input = document.getElementById('updateInterval');
                 const applied = this.applyRefreshInterval(input ? input.value : this.refreshIntervalSec);
                 if (input) input.value = applied;
@@ -6690,13 +6083,7 @@ class MonitoringApp {
         }
     }
 
-    // An import runs twice: once to plan and once to apply.
-    //
-    // The endpoint defaults to a dry run and only applies with ?apply=true,
-    // which is what makes this possible — the confirmation quotes what the
-    // server said it would do to this instance rather than asking the operator
-    // to agree to a file name. A bundle that matches what is already here
-    // reports no changes and never reaches the second call.
+    // An import runs twice: a dry run to plan, then ?apply=true.
     async importConfiguration(file, button) {
         button.disabled = true;
         this.configTransferStatus(`Checking ${file.name}…`, null);
@@ -6704,10 +6091,7 @@ class MonitoringApp {
         try {
             const plan = await this.postConfigBundle(file, false);
 
-            // report.changed counts devices and profiles only, so a bundle
-            // whose devices already match but which carries modules this
-            // instance does not have still has work to do. Refreshing modules
-            // that are already present is the one genuinely empty case.
+            // report.changed counts devices and profiles; missing modules are still work.
             const newMIBs = (plan.counts || {}).mibs_imported || 0;
             if (!plan.changed && newMIBs === 0) {
                 this.configTransferStatus(
@@ -6732,19 +6116,7 @@ class MonitoringApp {
                 `Imported ${file.name}. ${this.describeImportPlan(applied)}${undo}`, 'ok');
             this.showNotification('Configuration imported', 'success');
 
-            // Everything on screen was built from the configuration that has
-            // just been replaced, so it is reloaded rather than left showing
-            // the previous instance's devices.
-            //
-            // The dashboard is torn down FIRST and put back explicitly, rather
-            // than left to loadDevices' own restore. That restore replays the
-            // device selected at STARTUP, which is not necessarily the one the
-            // reader is on, and it does nothing at all when the imported
-            // configuration no longer has that device -- leaving
-            // currentDashboardDevice naming a device the rebuilt selector does
-            // not offer, subscriptions alive for modules the import removed,
-            // and fleetVisible() answering no to the refresh tick while the
-            // fleet is what is on screen.
+            // Tear the dashboard down first and reload everything from the imported configuration.
             const wasShowing = this.currentDashboardDevice;
             if (wasShowing) this.unsubscribeFromAllDashboards(wasShowing);
             this.dashboardLoad++;
@@ -6757,11 +6129,7 @@ class MonitoringApp {
                 await this.loadProfiles({ strict: true });
                 await this.loadStoredMIBs({ strict: true });
             } catch (error) {
-                // The server applied the import; this page could not be
-                // rebuilt from it. Saying "import failed" here would be false
-                // and would send someone looking for a rollback they do not
-                // need -- but the page cannot be trusted either, least of all
-                // the selector the branch below asks about the open device.
+                // The import was applied but the page could not be rebuilt.
                 this.configTransferStatus(
                     `Imported ${file.name}, but this page could not be refreshed ` +
                     `(${error.message}). Reload to see the new configuration.`, 'error');
@@ -6847,10 +6215,7 @@ class MonitoringApp {
 
         try {
             const response = await fetch(`/api/devices/${deviceId}/status`);
-            // The banner is shared by every device, and this function paints it
-            // before returning, so the caller's own check comes too late to
-            // stop a departed device's "Polling Error" appearing over the one
-            // the reader opened.
+            // The banner is shared, so check this is still the current device first.
             if (load !== this.dashboardLoad) return;
 
             if (!response.ok) {
@@ -6966,15 +6331,7 @@ class MonitoringApp {
         banner.style.display = 'none';
     }
 
-    // One request per device, not one per module.
-    //
-    // Every panel this device has comes back together, grouped here by the
-    // module each belongs to. Asking per tab meant asking per tab for the
-    // METRIC CATALOG as well -- four Prometheus reads apiece, ten times over
-    // for core-01 -- and the tabs were loaded one after another, so the last
-    // one did not even subscribe until twelve seconds in. It is also what keeps
-    // the rail honest: the modules listed and the panels drawn are now derived
-    // from the same answer and cannot disagree.
+    // One request per device returns every panel, grouped here by module.
     async loadDeviceDashboards(deviceId) {
         const load = ++this.dashboardLoad;
         try {
@@ -7030,20 +6387,13 @@ class MonitoringApp {
             document.getElementById('dashboardContent').style.display = 'none';
             document.getElementById('mibTabsContainer').style.display = 'block';
 
-            // The tab the reader left on, when this device still has it. The
-            // state has always been saved and never read back, so a reload
-            // dropped you on the first module whatever you had been looking at.
-            // Chosen before the rail is built, because the rail is what marks
-            // it active.
+            // Reopen the tab the reader left on, if the device still has it.
             this.activeMibTab = names.includes(this.restoredMibTab)
                 ? this.restoredMibTab : names[0];
             this.restoredMibTab = null;
 
             this.createMibTabs(deviceId, this.deviceDashboards[deviceId].mibs);
-            // Render and subscribe only the tab the reader lands on. The rest
-            // load on first activation and stay subscribed after, so opening a
-            // device no longer subscribes every module's panels at once -- a
-            // ~200-query, multi-megabyte burst for tabs nobody has opened.
+            // Render and subscribe only the landing tab; others load on first activation.
             this.ensureMibTabLoaded(deviceId, this.activeMibTab, load);
         } catch (error) {
             console.error('Error loading device dashboards:', error);
@@ -7054,17 +6404,7 @@ class MonitoringApp {
         }
     }
 
-    // groupPanelsByModule splits one device's answer into a dashboard per tab.
-    //
-    // A panel with no module belongs to the DEVICE -- optical power published
-    // under a name derived from its unit, the system group, an OID no loaded
-    // MIB describes -- and gets a rail entry of its own rather than being
-    // repeated under every module.
-    //
-    // With the catalog unreadable, nothing has a module: not because no MIB
-    // claims these metrics but because nothing could be asked. Grouping that
-    // answer would file all 363 of core-01's metrics under "(no module)",
-    // so it is kept whole and the read failure is what the reader is told.
+    // groupPanelsByModule splits a device's panels by module; module-less panels get a device entry; an unreadable catalog keeps them whole.
     groupPanelsByModule(dashboard) {
         const byModule = new Map();
         const noteFor = name => (dashboard.mibs || [])
@@ -7077,11 +6417,7 @@ class MonitoringApp {
                     mib: name,
                     panels: [],
                     warnings: noteFor(name),
-                    // The tables belonging to this module, carried through the
-                    // split. Rebuilding a per-module payload and forgetting a
-                    // top-level field is how the server can send an arrangement
-                    // the browser never sees: the panels arrived, the tables did
-                    // not, and the pane rendered exactly as it did before.
+                    // Carry this module's tables through the split.
                     tables: (dashboard.tables || []).filter(table =>
                         (table.module || UNATTRIBUTED_MODULE) === name)
                 };
@@ -7103,27 +6439,12 @@ class MonitoringApp {
         return byModule;
     }
 
-    // createMibTabs builds the module rail and one pane per module.
-    //
-    // The rail is a filterable column, not a row of tabs: a device can carry
-    // hundreds of assigned modules, and a horizontal strip has exactly one
-    // screen of room to spend before it starts hiding names off the right edge.
-    // A column has a scrollbar and a filter box instead, so the cost of the
-    // 200th module is one more row in a list rather than one more thing that
-    // cannot be reached.
-    //
-    // The server's order is kept exactly as it arrives. It is already
-    // alphabetical, and sorting here would make a module's position depend on
-    // the client rather than on the payload.
+    // createMibTabs builds a filterable module rail and one pane per module, in the server's order.
     createMibTabs(deviceId, mibs) {
         const tabList = document.getElementById('mibTabList');
         const tabContent = document.getElementById('mibTabContent');
 
-        // A rebuild drops every pane, so anything subscribed for this device is
-        // about to point at DOM that no longer exists. Release it and forget
-        // which tabs were loaded; the tabs the reader opens will subscribe
-        // again. On a fresh open there is nothing to release -- switching
-        // devices already dropped the previous one -- so this is a no-op there.
+        // A rebuild drops every pane: release this device's subscriptions and loaded-tab marks.
         this.unsubscribeFromAllDashboards(deviceId);
         this.loadedMibTabs = new Set();
 
@@ -7209,10 +6530,7 @@ class MonitoringApp {
         this.mibTabNavBound = true;
     }
 
-    // filterMibTabs narrows the rail. It never changes the selection: hiding a
-    // row is a way to reach some other module, not a way to close the one being
-    // read, so the selected pane stays on screen even while its row is filtered
-    // away.
+    // filterMibTabs narrows the rail without changing the selection.
     filterMibTabs(searchTerm) {
         const tabList = document.getElementById('mibTabList');
         if (!tabList) return;
@@ -7259,10 +6577,7 @@ class MonitoringApp {
         target.scrollIntoView({ block: 'nearest' });
     }
 
-    // Arrow keys move focus along the rail; Enter or Space then opens the
-    // module. Focus and selection are kept apart deliberately — opening a
-    // module fetches and renders a dashboard, which is far too much work to do
-    // once per keypress while someone is scanning the list.
+    // Arrow keys move focus along the rail; Enter or Space opens the module.
     handleMibTabKey(event) {
         const tabs = this.selectableMibTabs();
         const current = tabs.indexOf(document.activeElement);
@@ -7312,9 +6627,7 @@ class MonitoringApp {
         // dropped, so there is nothing to do but resize its charts below.
         this.ensureMibTabLoaded(deviceId, mibName);
 
-        // CRITICAL FIX: Resize all charts in the newly visible tab
-        // ECharts needs to be resized when its container becomes visible
-        // Use multiple resize attempts with increasing delays to handle layout timing
+        // Resize the newly visible tab's charts, retrying with increasing delays for layout.
         this.resizeChartsInTab(mibName);
     }
 
@@ -7324,10 +6637,7 @@ class MonitoringApp {
 
         const doResize = () => {
             console.log(`Resizing charts for MIB tab: ${mibName}`);
-            // Selected by class, not by an id prefix. The prefix was "chart-",
-            // which the panel renderer does not use, so every plot in a tab
-            // that had just become visible kept the provisional size it was
-            // built with while collapsed.
+            // Select charts by class.
             const chartElements = activeTabPane.querySelectorAll('.chart-canvas');
             console.log(`Found ${chartElements.length} chart elements to resize`);
 
@@ -7357,26 +6667,9 @@ class MonitoringApp {
         setTimeout(doResize, 500);
     }
 
-    // ========================================
-    // REFACTORED: Dashboard rendering from DashboardSpec
-    // Old functions removed: fetchTableMetadata(), isTableColumn()
-    // ========================================
+    // Dashboard rendering from DashboardSpec.
 
-    // ensureMibTabLoaded renders and subscribes one module's tab the first time
-    // it is shown, and never again.
-    //
-    // This is what makes subscription lazy: a device opens by loading only the
-    // active tab, and each other tab loads when the reader first clicks it.
-    // Subscriptions are kept once a tab has been opened, so returning to it is
-    // instant -- what lazy loading saves is the tabs the reader never opens,
-    // whose panels would otherwise all subscribe at device-open. The key is
-    // added before the async render so a second click cannot start it twice.
-    //
-    // A render that FAILS gives the key back, and says so in the pane. The key
-    // is the marker that says a tab needs no work, so leaving it behind after a
-    // failure makes the empty pane permanent: every later click on that tab
-    // returns at the line above, and the reader has no way to retry short of
-    // switching devices.
+    // ensureMibTabLoaded renders and subscribes a tab once; a failed render releases the key so the tab can retry.
     ensureMibTabLoaded(deviceId, mibName, load = this.dashboardLoad) {
         if (!mibName) return;
         const key = `${deviceId}-${mibName}`;
@@ -7385,22 +6678,11 @@ class MonitoringApp {
         this.loadMibCharts(deviceId, mibName, load).catch(error => {
             console.error(`Error loading MIB tab ${mibName}:`, error);
 
-            // Both of these belong to the load that failed, so both are gated
-            // on it still being the current one. Releasing the key is the part
-            // that has to be: createMibTabs REPLACES loadedMibTabs with a new
-            // Set, so an ungated release could delete a live key out of the set
-            // belonging to a device the reader has since opened, and the next
-            // click would start a second render over an in-flight one. Nothing
-            // awaits between the guard and here today, so it cannot happen yet
-            // -- but that is an invariant spread over three functions, and one
-            // added await would make it happen.
+            // Both belong to the failed load, so gate them on it still being current.
             if (load !== this.dashboardLoad) return;
             this.loadedMibTabs.delete(key);
 
-            // The pane still says "Initializing...", and it will say that
-            // forever now that nothing is rendering into it. A toast is gone in
-            // three seconds and the reader who looks away misses it, so the
-            // durable half of the answer goes where they are already looking.
+            // Show the failure in the pane, not only in a toast.
             const pane = document.getElementById(`mib-tab-${mibName}`);
             if (pane) {
                 pane.innerHTML = `<div class="empty-state">
@@ -7412,12 +6694,7 @@ class MonitoringApp {
         });
     }
 
-    // Render one module's tab from the answer the device fetch already holds.
-    //
-    // There is nothing to fetch here any more. Every panel arrived with the
-    // device, so switching tabs is a render rather than four more Prometheus
-    // reads, and a tab cannot come back describing a different module than the
-    // one the reader clicked.
+    // Render one module's tab from the device answer already held.
     async loadMibCharts(deviceId, mibName, load = this.dashboardLoad) {
         const tabPane = document.getElementById(`mib-tab-${mibName}`);
         if (!tabPane) return;
@@ -7432,48 +6709,19 @@ class MonitoringApp {
         await this.renderPanels(deviceId, mibName, held, load);
     }
 
-    // One metric card. The chart is the card: the object name labels it and the
-    // MIB DESCRIPTION is reference text, kept to a single line with the full
-    // wording on hover so it can never push the plot down the card.
-    // The head every panel shares: where it came from, what it is, and what it
-    // is measured in.
-    //
-    // Four kinds of information on four INDEPENDENT axes -- size, weight,
-    // colour and letterform -- so no two are told apart by a single signal.
-    // They were all one size, one weight and one colour, which is why a card
-    // read as a paragraph and a wall of cards read as one block of text:
-    //
-    //   provenance  xs / 600 / muted     / uppercase, tracked
-    //   name        md / 620 / text      / plain
-    //   unit        xs / 550 / secondary / tabular, on its own surface
-    //   description sm / 400 / secondary / plain
-    //
-    // Size alone would not do it -- two things at 11.5px are still told apart
-    // here, by weight, by colour and by case.
+    // One metric card; its head shows provenance, name, unit and description on independent size, weight, colour and case.
     panelHeadMarkup(panel, options = {}) {
         const provenance = panel.module
             || (panel.kind === 'string' && !panel.object ? 'Reading' : '')
             || 'Unattributed';
 
-        // The name is the MIB object where there is one. Where there is not,
-        // the published name is the honest answer -- but stripped of the
-        // affixes the exporter added, which are contract rather than content:
-        // "snmp_racname_info" is the same thing as "racname" with the prefix
-        // that says it is ours and the suffix that says it is text. Both are
-        // read off the naming contract, not guessed.
-        //
-        // It is set in mono, because a published name with no MIB object
-        // behind it is an identifier rather than a word, and reads as one.
+        // The MIB object name where there is one, else the published name without its snmp_/_info affixes, in mono.
         const named = Boolean(panel.object);
         const name = panel.object || this.publishedName(panel.metric);
 
         const unit = this.panelUnit(panel);
 
-        // On a scalar tile the reading is the content, so the description is a
-        // compact control -- an info glyph, one click from the full text --
-        // rather than a clipped paragraph printed between the name and the
-        // value. On a chart card the clipped line is kept: it is what makes
-        // every plot in a row start at the same height.
+        // Scalar tiles get a compact description control; chart cards keep the clipped line.
         const compact = Boolean(options.compactDescription);
         const descTrigger = this.descriptionTriggerHtml(panel.description, {
             title: name,
@@ -7531,10 +6779,7 @@ class MonitoringApp {
 
         const panels = dashboard.panels || [];
 
-        // What the dashboard could not explain about itself, said once at the
-        // top rather than left for the reader to infer from missing cards.
-        // This runs before the empty case, because an empty tab is exactly when
-        // the reason for it matters most.
+        // State what the dashboard could not explain, before the empty case.
         let html = '';
         for (const warning of dashboard.warnings || []) {
             html += `<div class="dashboard-warning">${this.escapeHtml(warning)}</div>`;
@@ -7587,10 +6832,7 @@ class MonitoringApp {
             html += '</div>';
         }
 
-        // A tab is re-rendered whenever it is reloaded, and replacing its
-        // markup detaches every canvas in it. The ECharts instances bound to
-        // those nodes survive the detach and go on holding their data and their
-        // resize listeners, so they are discarded first.
+        // Dispose the tab's ECharts instances before replacing its markup.
         for (const canvas of tabPane.querySelectorAll('.chart-canvas')) {
             this.discardChart(canvas.id);
         }
@@ -7598,19 +6840,11 @@ class MonitoringApp {
         tabPane.innerHTML = html;
         this.paneTables.set(`${deviceId}-${mibName}`, { tables, panels });
 
-        // Visibility belongs to .tab-pane.active. Every MIB is rendered up
-        // front, so forcing an inline display here stacked all of them on the
-        // page at once; charts in a hidden pane are sized by resizeChartsInTab
-        // when that pane becomes the active one.
+        // Visibility belongs to .tab-pane.active; resizeChartsInTab sizes charts when shown.
         void tabPane.offsetHeight;
         await new Promise(resolve => setTimeout(resolve, 100));
 
-        // The reader can leave during that pause, and everything below this
-        // line is a side effect that outlives the render: two timers and a
-        // subscription. The outer loop's check comes only after this function
-        // returns, by which time the subscription for the departed device is
-        // already installed -- and a subscription is exactly what makes its
-        // frames look legitimate to the guard in applySnapshot.
+        // Stop if the reader left during the pause, before installing timers and subscriptions.
         if (load !== this.dashboardLoad) return;
 
         // A tile that never receives a sample has to say so on the same
@@ -7629,24 +6863,13 @@ class MonitoringApp {
         }, 35000);
     }
 
-    // panelUnit is what this panel's numbers are measured in.
-    //
-    // A counter is drawn as its rate, so its unit is per second whatever the
-    // MIB declared the counter itself in. The card head and the chart axis both
-    // read it from here rather than composing it separately -- a card whose
-    // pill says "octets/s" over an axis that says "octets" disagrees with
-    // itself, and the axis is the one a reader believes.
+    // panelUnit is the panel's unit; a counter is drawn as its rate, per second.
     panelUnit(panel) {
         if (panel.type !== 'rate') return panel.unit || '';
         return panel.unit ? `${panel.unit}/s` : 'per second';
     }
 
-    // publishedName strips the affixes the exporter adds to a metric name.
-    //
-    // "snmp_" says the family is ours and "_info" says the value is text; both
-    // are the same contract promname.InfoMetricName writes and IdentityLabel
-    // reads back. Neither is part of what the metric IS, and leaving them on
-    // makes every unnamed card start with the same five characters.
+    // publishedName strips the snmp_ and _info affixes from a metric name.
     publishedName(metric) {
         let name = String(metric || '');
         if (name.startsWith('snmp_')) name = name.slice(5);
@@ -7654,11 +6877,7 @@ class MonitoringApp {
         return name || String(metric || '');
     }
 
-    // sectionHeadMarkup announces a group of panels.
-    //
-    // The count is not decoration: a tab with 190 measurements and 30 states
-    // reads differently from one with 2 and 28, and the number is the fastest
-    // way to know which you are looking at before you start scrolling.
+    // sectionHeadMarkup announces a group of panels with its count.
     sectionHeadMarkup(title, count, note) {
         return `
             <div class="panel-section">
@@ -7669,28 +6888,12 @@ class MonitoringApp {
         `;
     }
 
-    // panelElementId is the DOM id of a panel's tile or chart.
-    //
-    // The panel id is used rather than its title, because two modules can name
-    // an object the same thing and a collision here would make one panel write
-    // into the other's card.
+    // panelElementId is the DOM id of a panel's tile or chart, from the panel id.
     panelElementId(deviceId, mibName, panel) {
         return `panel-${deviceId}-${mibName}-${this.slug(panel.id)}`;
     }
 
-    // ------------------------------------------------------------------
-    // Row tables
-    //
-    // A device's indexed metrics are rows, not a wall of series. Before this,
-    // every interface of a switch was drawn as its own line behind a scrolling
-    // legend -- unreadable on a device with hundreds of them, and slow for the
-    // same reason, because the page asked for every series of every panel.
-    //
-    // The table lists the rows with their CURRENT values, which is one sample
-    // each, and the charts below draw only the rows the reader picks. So the
-    // expensive thing -- history across hundreds of series -- is never fetched,
-    // and the page's cost stops scaling with how many interfaces a device has.
-    // ------------------------------------------------------------------
+    // Row tables: indexed metrics list current values per row; charts draw only the rows the reader picks.
 
     tableKey(deviceId, mibName, table) {
         return `${deviceId}-${mibName}-${this.slug(table.id)}`;
@@ -7706,12 +6909,7 @@ class MonitoringApp {
             .filter(entry => entry.panel);
     }
 
-    // tableSummary is the columns every row agrees about, said once.
-    //
-    // They are not hidden. A column that vanished would make its absence carry
-    // meaning -- uniform, deselected, or not reported at all are three different
-    // reasons and one appearance -- so a value the whole table shares is stated
-    // here, and moves back into the table the moment a row disagrees.
+    // tableSummary states the columns every row agrees about.
     tableSummary(table, panels) {
         const byMetric = new Map(panels.map(panel => [panel.metric, panel]));
         return (table.columns || [])
@@ -7725,14 +6923,7 @@ class MonitoringApp {
 
     rowTableMarkup(deviceId, mibName, table, panels) {
         const key = this.tableKey(deviceId, mibName, table);
-        // A table with no default columns still gets a body.
-        //
-        // Returning nothing here meant no section, so no rows, so nothing to
-        // tick -- and because the selection was seeded by rendering, its charts
-        // then drew every row they held. Three of four chart groups on the live
-        // page were unfiltered for that reason. A table whose values are all
-        // summarized still has rows worth charting, and the reader still needs
-        // somewhere to pick them.
+        // A table with no default columns still gets a body so rows can be picked.
         const columns = this.tableColumns(table, panels);
 
         const summary = this.tableSummary(table, panels);
@@ -7786,34 +6977,18 @@ class MonitoringApp {
     }
 
     // selectionFor returns the rows charted for a table.
-    //
-    // A plain getter. It used to seed the default too, and it is called from
-    // renderTableBody -- so a table that never rendered a body never got a
-    // selection, and every chart of its columns drew every row it held. Three
-    // of four chart groups on the live page were unfiltered for exactly that
-    // reason. Rendering is a view concern; ownership of which rows are charted
-    // is not, and tying the second to the first meant a table that did not draw
-    // could not filter.
     selectionFor(key) {
         return this.tableSelection.get(key) || new Set();
     }
 
-    // seedSelection applies the default the first time a table has rows.
-    //
-    // Where rows are RECORDED rather than where they are drawn, and only once:
-    // a reader who unticks every row has chosen an empty selection, and
-    // re-seeding it would overrule them on the next tick.
+    // seedSelection applies the default once, the first time a table has rows.
     seedSelection(key, ordered) {
         if (this.tableSeeded.has(key) || ordered.length === 0) return;
         this.tableSeeded.add(key);
         this.tableSelection.set(key, new Set(ordered.slice(0, DEFAULT_SELECTED_ROWS)));
     }
 
-    // orderedRowKeys is the table's row order: by the name a reader sees, and
-    // numerically within it, so eth10 follows eth9 rather than eth1.
-    //
-    // Shared by the seeding and the rendering, so "the first three rows" cannot
-    // mean two different things in the two places.
+    // orderedRowKeys is the table's row order, by displayed name with numeric runs compared numerically.
     orderedRowKeys(rows) {
         return [...rows.keys()].sort((a, b) =>
             String(rows.get(a).name).localeCompare(String(rows.get(b).name), undefined,
@@ -7876,23 +7051,7 @@ class MonitoringApp {
         }).join('');
     }
 
-    // ------------------------------------------------------------------
-    // Searching what the device reports
-    //
-    // Users need to search across historical data. Viewing
-    // history already worked -- the time-range selector -- but there was no way
-    // to FIND a series: a reader who knows a port is called "Office Switch" had
-    // no path from that string to its chart.
-    //
-    // v1 matches names: the metric, the MIB object, the row's identity, and the
-    // friendly labels the exporter promotes (ifAlias, ifDescr). Matching rows
-    // are charted over whatever time range is selected, so the history is the
-    // history already on screen rather than a second query path.
-    //
-    // Value conditions -- "show me when X > Y" -- are v2 and are a different
-    // feature: they need a query language rather than a substring, and go
-    // through PromQL.
-    // ------------------------------------------------------------------
+    // Search: match metric, object, row identity and friendly labels; matching rows are charted over the selected time range.
 
     bindSeriesSearch() {
         const input = document.getElementById('seriesSearch');
@@ -7923,14 +7082,7 @@ class MonitoringApp {
                 if (!rows) continue;
                 const hits = [...rows.keys()].filter(rowKey => {
                     const row = rows.get(rowKey);
-                    // Key, name AND the row's readings.
-                    //
-                    // The alias a reader searches for -- "Office Switch" -- is
-                    // usually a VALUE in a column rather than the row's name:
-                    // ifAlias is its own info metric, and the row is named from
-                    // ifName. Searching key and name alone found ports by index
-                    // and by interface name and missed every alias, which is
-                    // the string a person actually remembers.
+                    // Match the key, the name and the row's readings, which include aliases.
                     const words = [rowKey, row.name, ...row.values.values()].join(' ');
                     return words.toLowerCase().includes(lowered);
                 });
@@ -7940,11 +7092,7 @@ class MonitoringApp {
         return { perTable, panels };
     }
 
-    // searchSeries charts what matches and says how much did.
-    //
-    // An empty box restores the default selection rather than leaving whatever
-    // the last search charted -- otherwise clearing a search silently keeps its
-    // result, which reads as the search still being active.
+    // searchSeries charts what matches and reports how much; an empty box restores the default selection.
     searchSeries(needle) {
         const count = document.getElementById('seriesSearchCount');
 
@@ -8005,11 +7153,7 @@ class MonitoringApp {
         });
     }
 
-    // toggleChartedRow adds or removes one row from what the charts draw.
-    //
-    // Bounded, because "select all" would rebuild the hairball this replaced
-    // through the new control. Refusing is said out loud rather than silently
-    // ignoring the click, which would read as the checkbox being broken.
+    // toggleChartedRow adds or removes a charted row, bounded, and says when it refuses.
     toggleChartedRow(key, rowKey, wanted, box) {
         const selected = this.tableSelection.get(key) || new Set();
         if (wanted) {
@@ -8068,18 +7212,9 @@ class MonitoringApp {
         return String(value).replace(/[^A-Za-z0-9_-]/g, '_');
     }
 
-    // subscribeToPanels streams every panel of one module's tab.
-    //
-    // The server built each query, so there is nothing to assemble here: a
-    // counter already arrives wrapped in rate() over a window this device's
-    // poll interval can fill, and a table column already carries the join that
-    // puts a name on each row.
+    // subscribeToPanels streams every panel of one module's tab with the server-built queries.
     subscribeToPanels(deviceId, mibName, panels) {
-        // Whatever this tab was subscribed to before, it is not subscribed to
-        // now: its markup has just been replaced. Adding to the previous sets
-        // instead kept every query a re-render removed -- a MIB unassigned, a
-        // catalog row gone -- streaming forever into targets whose DOM nodes no
-        // longer exist, and re-sent the union of both sets on every reload.
+        // The tab's markup was replaced, so start its subscription sets afresh.
         this.unsubscribeFromDashboard(deviceId, mibName);
 
         const key = `${deviceId}-${mibName}`;
@@ -8098,25 +7233,14 @@ class MonitoringApp {
             } else {
                 subscription.metricQueries.add(panel.query);
                 this.initializeEmptyChart(elementId, panel.object || panel.metric);
-                // Fetched when the panel is REGISTERED, not when its first
-                // sample arrives. A chart with no live data yet is exactly the
-                // chart that needs history, and hanging this off the first
-                // sample meant waiting a tick to start asking -- or, for a
-                // series not currently reporting, never asking. Not awaited:
-                // live points draw as they arrive and the history is merged
-                // behind them whenever it lands.
+                // Backfill history when the panel is registered, without awaiting it.
                 this.backfillPanel(target).catch(error =>
                     console.warn(`backfill for ${panel.title}:`, error));
             }
             subscription.objects.set(panel.query, target);
         }
 
-        // Recorded only once every panel has been registered, immediately
-        // before the send. A panel that throws partway through (a chart that
-        // will not initialise) used to leave the half-built subscription in
-        // the map, where it counted as installed -- and was re-sent on the next
-        // reconnect -- although nothing had ever been sent for it. Now a throw
-        // leaves nothing behind, and ensureMibTabLoaded's retry starts clean.
+        // Record the subscription only once every panel registered, just before sending.
         this.activeSubscriptions.set(key, subscription);
 
         const queries = [...subscription.statusQueries, ...subscription.metricQueries];
@@ -8125,26 +7249,12 @@ class MonitoringApp {
         }
     }
 
-    // seriesName is what one line of a panel is called.
-    //
-    // Which label carries the name is not guessed here: the server worked out
-    // the candidates from the catalog and put them in order, best first, so the
-    // first one this series actually carries is the answer. A row whose name
-    // was never collected falls through to its index labels, which identify it
-    // exactly -- less friendly, never wrong, and better than forty lines all
-    // called the same thing.
+    // seriesName is a line's name: the first server-ranked name label the series carries, else its index labels.
     seriesName(panel, labels) {
         return this.seriesIdentity(panel, labels).name;
     }
 
-    // seriesIdentity is seriesName plus whether it found a NAME or fell back to
-    // the row's index.
-    //
-    // The difference matters for a text panel. An index is a fine way to tell
-    // two lines on a chart apart, but as the label on a reading it is noise:
-    // ifDescr rendered as "369098752  port-channel1" puts a number nobody can
-    // use in front of the only thing on the row worth reading, and does it
-    // forty times. Where there is no name, the reading is its own identity.
+    // seriesIdentity is seriesName plus whether it found a name rather than an index.
     seriesIdentity(panel, labels) {
         for (const label of panel.series_labels || []) {
             const value = labels[label];
@@ -8153,18 +7263,7 @@ class MonitoringApp {
         return { name: this.seriesKey(panel, labels) || panel.title, named: false };
     }
 
-    // seriesKey identifies the ROW a sample belongs to.
-    //
-    // This is what a chart keys its lines on, and it is deliberately not the
-    // display name. A friendly name is not unique: ifAlias is whatever an
-    // operator typed and is routinely the same on several ports, and a sensor
-    // name repeats across identical modules. Two rows sharing a name would then
-    // append to one series -- two readings at the same timestamp, interleaved
-    // into a line that is the truth about neither, and one row missing from the
-    // legend with nothing to say it is gone.
-    //
-    // The index is what the MIB guarantees to be unique, so it is the key. The
-    // name is decoration on top of it.
+    // seriesKey identifies the row by its index labels, which are unique; names are not.
     seriesKey(panel, labels) {
         return (panel.index_labels || [])
             .map(label => labels[label])
@@ -8172,12 +7271,7 @@ class MonitoringApp {
             .join('/');
     }
 
-    // feedTables records what a panel's rows currently read, for any table this
-    // panel is a column of.
-    //
-    // The same stream that draws the charts fills the table: one current value
-    // per row per tick is exactly what a table of current values wants, so
-    // there is no second fetch and nothing polls.
+    // feedTables records a panel's current row values for the tables it belongs to.
     feedTables(target, metrics) {
         const panel = target.panel;
         if (!panel || !panel.index_labels || panel.index_labels.length === 0) return;
@@ -8229,28 +7323,13 @@ class MonitoringApp {
 
     // updatePanel routes one query's result to the widget that asked for it.
     updatePanel(target, metrics, time) {
-        // A reading with no series in it is an answer, not the absence of one:
-        // the last interface went away, the query stopped matching, the device
-        // stopped reporting it. Returning early here is how a panel came to go
-        // on showing its last value indefinitely, advancing at every heartbeat,
-        // with nothing on screen saying the numbers were no longer true.
+        // An empty reading means no current series: clear the panel.
         if (metrics.length === 0) {
             this.clearPanel(target);
             return;
         }
 
         // Every panel feeds the table, whatever it renders as.
-        //
-        // This used to sit below the branch, so a state or text panel returned
-        // at updatePanelTile and never reached it -- and those are exactly the
-        // columns a reader needs: ifAlias is a port's human name, ifOperStatus
-        // is whether it is up. The table showed a dash on every row for them
-        // while the cards above displayed the same values, because the values
-        // reached the tile and stopped there.
-        //
-        // How a value is DRAWN and whether it belongs in the table are
-        // different questions, and putting the call after the branch answered
-        // the second with the first.
         this.feedTables(target, metrics);
 
         if (target.panel.type === 'state' || target.panel.type === 'text') {
@@ -8260,11 +7339,7 @@ class MonitoringApp {
         this.updatePanelChart(target, metrics, time);
     }
 
-    // clearPanel says a panel has no current reading.
-    //
-    // Not the same as "waiting for data", which is what a panel says before its
-    // first sample: this one HAD readings and no longer does, so it says so
-    // rather than keeping the last ones on screen.
+    // clearPanel says a panel that had readings no longer has one.
     clearPanel(target) {
         const element = document.getElementById(target.elementId);
         if (!element) return;
@@ -8278,21 +7353,7 @@ class MonitoringApp {
             return;
         }
 
-        // "No current reading" and "no history" are different facts, and this
-        // used to collapse them: the series was cleared, so a metric that
-        // stopped reporting lost its entire plotted past -- the chart
-        // destroying the only information it had left, at the moment that
-        // information became the most valuable thing on the page. History
-        // exists for the gap.
-        //
-        // Keeping the line alone would be worse than the bug it fixes: a
-        // populated chart reads as current, so a device that went quiet an
-        // hour ago would look healthy. That is absence rendered as health,
-        // which is the fault this stack has spent a long time removing.
-        //
-        // So: keep the line, and SAY the feed is empty. A chart with nothing
-        // to keep still falls through to the terminal state, because "last
-        // known" is not a thing to render when there is no last known.
+        // Keep the plotted history and mark it last-known; with no history, go terminal.
         const chart = this.charts[target.elementId];
         const plotted = chart && chart._panelSeries && chart._panelSeries.size > 0;
         if (plotted) {
@@ -8318,11 +7379,7 @@ class MonitoringApp {
         return newest;
     }
 
-    // markChartStale says the plot is last-known rather than current.
-    //
-    // The label carries the STATE rather than asserting a condition: a reader
-    // sees "Last known 14:03:12 - no current reading", which is a fact about
-    // what they are looking at, not a warning they have to interpret.
+    // markChartStale labels the plot last-known with its time.
     markChartStale(chartId, newest) {
         const card = this.chartCard(chartId);
         if (!card) return;
@@ -8348,12 +7405,7 @@ class MonitoringApp {
         if (banner) banner.hidden = true;
     }
 
-    // updatePanelTile renders the rows of a state or text panel.
-    //
-    // Both are info metrics or enumerations: their reading is a word, not a
-    // number, and a device reports one per row. A tile therefore lists its rows
-    // rather than showing a single value -- an interface table has forty
-    // operational states and there is no one of them to show.
+    // updatePanelTile lists a state or text panel's rows.
     updatePanelTile(target, metrics) {
         const element = document.getElementById(target.elementId);
         if (!element) return;
@@ -8377,18 +7429,11 @@ class MonitoringApp {
             // adds a number nobody can use to the only thing worth reading.
             const anonymous = !identity.named;
 
-            // One series can carry SEVERAL readings, and each of them is a row
-            // of its own named by the label it arrived on. Only then is the row
-            // a label opposite a piece of text, which is what `labelled` marks:
-            // an interface's ifAlias is one reading under the port's name and
-            // must keep the shared row layout.
+            // A series with several readings yields one row per reading, named by its label.
             const readings = this.textReadings(panel, labels);
             const labelled = readings.length > 1;
 
-            // On an indexed panel each row of the table carries its own set of
-            // readings, so the reading's label alone ("sys_descr") names the
-            // same thing on every row and says which of them it belongs to on
-            // none. The row's identity stays in front of it.
+            // On an indexed panel, keep the row identity in front of the reading's label.
             const indexed = (panel.index_labels || []).length > 0 && key !== panel.title;
 
             return readings.map(reading => ({
@@ -8415,13 +7460,7 @@ class MonitoringApp {
             return;
         }
 
-        // A whole number of rows, or none of the last one.
-        //
-        // The list used to be a fixed height with the overflow scrolled, which
-        // cut the final row through the middle of its letters: the first thing
-        // the eye lands on is a half-rendered line, and a card that clips its
-        // own content reads as broken rather than as abbreviated. Show a whole
-        // number and say how many are not shown.
+        // Show whole rows only and say how many are hidden.
         const expanded = element.dataset.expanded === '1';
         const shown = expanded ? rows : rows.slice(0, PANEL_ROWS_VISIBLE);
         const hidden = rows.length - shown.length;
@@ -8444,20 +7483,7 @@ class MonitoringApp {
         this.markClippedReadings(element);
     }
 
-    // readingValueMarkup renders one of an info metric's readings as a control
-    // that opens the whole of it.
-    //
-    // The reading is CLIPPED on the card -- a sysDescr is 190 characters and
-    // its row gives it three lines -- so without a way to open it, clipping
-    // would destroy text the operator can read today. It opens the same sheet a
-    // description does, because that sheet is precisely where long text is
-    // readable, SELECTABLE and copyable; the codebase already rejected a title
-    // tooltip for being none of those.
-    //
-    // It opens under the READING's own name, never "Description". The sheet now
-    // carries two kinds of content -- a MIB's documentation and a device's
-    // data -- and showing a reading under a heading that says "Description"
-    // presents the one as the other.
+    // readingValueMarkup renders a clipped reading as a control that opens it in the sheet under its own name.
     readingValueMarkup(row, panel) {
         const meta = [['Metric', panel.metric], ['OID', panel.oid]]
             .filter(([, value]) => value !== undefined && value !== null && value !== '');
@@ -8472,15 +7498,7 @@ class MonitoringApp {
                 >${this.escapeHtml(row.reading)}</button>`;
     }
 
-    // markClippedReadings flags the readings the card could not show in full.
-    //
-    // Every reading opens, because a value worth reading is worth copying --
-    // an sysObjectID is easier to take from the sheet than off the card. But
-    // only the one that was actually CUT advertises it, and whether a reading
-    // was cut is a fact about this card at this width with this font, not
-    // about its length: a character count here would be a second copy of the
-    // layout, maintained separately from the layout and wrong on a narrow
-    // tile. So it is measured, once, off the box that did the clipping.
+    // markClippedReadings measures which readings the card actually cut and flags them.
     markClippedReadings(element) {
         for (const value of element.querySelectorAll('.panel-row.is-reading .panel-row-value')) {
             value.classList.toggle('is-clipped', value.scrollHeight > value.clientHeight + 1);
@@ -8495,27 +7513,7 @@ class MonitoringApp {
         this.markStatusNoData(elementId);
     }
 
-    // textReadings pulls the words out of an info metric, one reading per row.
-    //
-    // Its sample is always 1, so everything it has to say is in its labels. The
-    // usual shape is one "value" label holding the reading, and the catalog
-    // says so: that is a single reading, and the card's own title names it.
-    // Some families carry SEVERAL instead -- snmp_system_info collapses the
-    // whole system group into sys_descr, sys_name, sys_object_id and the rest
-    // -- so where the named label is absent, the labels that are not
-    // bookkeeping ARE the readings, and each is returned separately.
-    //
-    // They used to be joined into one "sys_descr=..., sys_name=..." string and
-    // printed as a paragraph. sysDescr alone is 190 characters, so it filled
-    // the tile's four visible lines by itself and pushed every other reading
-    // on the series below the clip: the card showed a wall of text and withheld
-    // the two readings a reader could have used. Measured on dist-01,
-    // 2026-09-05 -- 253 characters rendered as 4 of 6 lines.
-    //
-    // The label is reported as it is published rather than prettified back to
-    // its MIB spelling. "sys_object_id" is what the exporter writes and what a
-    // reader greps in Prometheus, and the round trip is not faithful anyway:
-    // the MIB object is sysObjectID, which no mechanical un-snaking produces.
+    // textReadings returns an info metric's readings: the value label, or each non-bookkeeping label separately, as published.
     textReadings(panel, labels) {
         const named = panel.value_label && labels[panel.value_label];
         if (named) return [{ label: '', text: named }];
@@ -8524,27 +7522,13 @@ class MonitoringApp {
             '__name__', 'device', 'oid', 'source', 'instance', 'job',
             ...(panel.index_labels || [])
         ]);
-        // Every carried reading keeps its label, including when there is only
-        // one of them. Dropping the label there would read better on the cards
-        // that exist today -- but what is carried is not only the catalog's
-        // readings: mergeExtraLabels puts a device's configured TAGS on the
-        // same series, and they are not in the skip set above. A device tagged
-        // with one thing would then render that tag's value alone, unlabelled,
-        // as though it were the panel's reading. The set of panels this reaches
-        // is a function of how the fleet is tagged, so it is not something the
-        // renderer can settle by measuring the fleet once.
+        // Every reading keeps its label, since device tags also arrive as labels.
         return Object.keys(labels).sort()
             .filter(name => !skip.has(name) && labels[name] !== '')
             .map(name => ({ label: name, text: labels[name] }));
     }
 
-    // distinctNames qualifies a display name that two rows honestly share.
-    //
-    // A friendly name is not unique: ifAlias is whatever an operator typed and
-    // is routinely the same on several ports, and a sensor name repeats across
-    // identical modules. Two rows reading "up" under the same name is a list
-    // that cannot be acted on. The index that identifies them is added to the
-    // ones that collide, and only to those, so the common case stays clean.
+    // distinctNames adds the index to display names that collide.
     distinctNames(panel, rows) {
         const counts = new Map();
         for (const row of rows) {
@@ -8555,23 +7539,14 @@ class MonitoringApp {
             : row);
     }
 
-    // decodeState turns a state panel's number into the word the MIB gave it.
-    //
-    // The decode comes from the catalog, so a state the poller has never seen
-    // before still reads correctly. A number with no decode is shown as itself
-    // rather than hidden: the reading is real, and only its name is missing.
+    // decodeState turns a state number into its catalog label, or shows the number.
     decodeState(panel, value) {
         const decode = panel.enum || {};
         const key = String(Math.floor(Number(value)));
         return decode[key] !== undefined ? decode[key] : String(value);
     }
 
-    // updatePanelChart plots every row of a panel as its own line.
-    //
-    // A table column is one metric name over many rows, and the old renderer
-    // pushed all of them into a single series -- forty interfaces' octet counts
-    // interleaved on one line, which is why a dropdown had to exist to pick one
-    // row at a time. Keying the series on the row's name draws the table.
+    // updatePanelChart plots each row of a panel as its own line.
     updatePanelChart(target, metrics, time) {
         const chart = this.chartFor(target.elementId);
         if (!chart || !metrics || metrics.length === 0) return;
@@ -8616,17 +7591,7 @@ class MonitoringApp {
         chart.setOption(this.buildPanelOption(chart, panel), true);
     }
 
-    // backfillPanel gives a chart the history it would otherwise spend a minute
-    // accumulating.
-    //
-    // Every chart on this page started EMPTY and gained one point per series
-    // per five-second tick: blank at t=0, one dot at t=5, a hairline at t=10,
-    // and about a minute before it read as a line. That is half of "the
-    // dashboard takes an extremely long time to load" -- the other half being
-    // how many series are drawn -- and it is neither a slow query nor a slow
-    // render. There was no query for history at all: the stream is an INSTANT
-    // read and updatePanelChart appends what it returns. loadChartData was
-    // written against the range endpoint and never called from anywhere.
+    // backfillPanel loads a chart's history from the range endpoint so it does not start empty.
     async backfillPanel(target) {
         const panel = target.panel;
         if (!panel || !panel.query) return;
@@ -8645,25 +7610,14 @@ class MonitoringApp {
 
         const chart = this.chartFor(target.elementId);
         if (!chart) {
-            // The card has no element to draw on yet. Held rather than
-            // discarded: this request resolves in milliseconds and the pane is
-            // rendered a frame or two later, so dropping it loses the history
-            // for the life of the page -- and only sometimes, which is the
-            // worst way for it to be wrong. chartFor applies it when the
-            // instance is built. One entry per pending card, deleted on use.
+            // Hold the backfill until the card's chart exists; chartFor applies it.
             this.pendingBackfill.set(target.elementId, { panel, series });
             return;
         }
         this.applyBackfill(chart, target.elementId, panel, series);
     }
 
-    // applyBackfill merges one range read into a chart's series.
-    //
-    // Merged rather than assigned, because the first live points can arrive
-    // while the request is in flight. Assigning would discard them -- the
-    // newest readings on the chart, thrown away by the thing fetching the
-    // oldest -- so each series is concatenated and re-sorted, and a timestamp
-    // already plotted is not drawn twice.
+    // applyBackfill merges a range read into a chart's series, sorted and de-duplicated by timestamp.
     applyBackfill(chart, elementId, panel, series) {
         if (!chart._panelSeries) chart._panelSeries = new Map();
 
@@ -8703,12 +7657,7 @@ class MonitoringApp {
         chart.setOption(this.buildPanelOption(chart, panel), true);
     }
 
-    // legendOption picks how a panel names its lines.
-    //
-    // One line needs no legend; the card's title says what it is. A handful get
-    // their names listed. More than that gets the pager back, because the
-    // alternative is a legend that buries the plot -- and a panel with more
-    // series than the selection bound is one no table is filtering.
+    // legendOption picks a panel's legend: none for one line, plain names for a few, the pager beyond.
     legendOption(count) {
         if (count <= 1) return { show: false };
         if (count <= MAX_SELECTED_ROWS) {
@@ -8719,22 +7668,7 @@ class MonitoringApp {
 
     // buildPanelOption is the ECharts option for a multi-series panel.
     buildPanelOption(chart, panel) {
-        // Only the rows the reader picked in the table above.
-        //
-        // Drawing every row is what made this page unusable: hundreds of
-        // interfaces became hundreds of lines behind a scrolling legend, and
-        // the legend was the only way to tell them apart. The data for the rest
-        // is still held -- picking another row draws it immediately, with the
-        // history it already has -- it is simply not on the plot.
-        // A panel belonging to no table draws everything: it has no rows to
-        // pick from. A panel belonging to one draws exactly what is ticked --
-        // including nothing.
-        //
-        // "|| charted.size === 0" used to sit in this filter, so unticking the
-        // last row drew all forty series instead of none. It reads as a
-        // defensive fallback and it is the whole bug: absent meaning
-        // unfiltered, hand-written into the filter whose purpose is to stop
-        // drawing everything.
+        // Draw only the ticked rows of a table-bound panel, including none; unbound panels draw everything.
         const charted = this.chartedRows(panel);
         const keys = [...chart._panelSeries.keys()]
             .filter(key => !charted || charted.has(key))
@@ -8748,13 +7682,7 @@ class MonitoringApp {
             labelled.set(row.key, row.name);
         }
 
-        // Nothing ticked is a state this has to render, not one to fall over on.
-        //
-        // The lines below read chart._panelSeries.get(keys[0]) for the x axis,
-        // which throws when keys is empty -- and a throw here leaves the LAST
-        // option in place, so the chart went on showing a series the reader had
-        // just unticked. An empty plot that says so is the answer; the previous
-        // drawing is not.
+        // Render an empty plot when nothing is ticked.
         if (keys.length === 0) {
             return {
                 series: [],
@@ -8787,29 +7715,13 @@ class MonitoringApp {
                     return `${when}<br/>${lines.join('<br/>')}`;
                 }
             },
-            // The scrolling legend -- the "1/20" pager with arrows -- is what
-            // users reported as unusable: on a switch it is the only way to
-            // tell hundreds of lines apart, and reaching the last one takes
-            // longer than the question is worth.
-            //
-            // It exists because a panel could hold forty rows. A panel bound to
-            // a table now draws at most MAX_SELECTED_ROWS, which fits as plain
-            // names, so the pager is not needed and is not shown.
-            //
-            // It is kept for panels that are NOT bound to a table -- they have
-            // no rows to pick from and still draw everything they hold, so the
-            // scroll is the difference between a crowded legend and a buried
-            // plot. Removing it outright would trade one unusable card for
-            // another.
+            // The scrolling legend only for panels not bound to a table.
             legend: this.legendOption(keys.length),
             grid: { left: 4, right: 14, top: keys.length > 1 ? 30 : 18, bottom: 2, containLabel: true },
             xAxis: this.timeAxisOption(longest, chart._panelSeries.get(keys[0]).points),
             yAxis: {
                 type: 'value',
-                // The RATE unit, not the raw one. A chart of octets per second
-                // whose axis reads "octets" is telling the reader the wrong
-                // thing about every number on it -- and the axis is where they
-                // look to find out what the numbers are.
+                // The rate unit, not the raw one.
                 name: this.panelUnit(panel),
                 nameLocation: 'end',
                 nameGap: 8,
@@ -8832,11 +7744,7 @@ class MonitoringApp {
         };
     }
 
-    // formatPanelValue renders a reading with the unit the catalog declared.
-    //
-    // The unit comes from the catalog rather than from a match on the metric
-    // name, so a family the poller derives -- optical power in dBm, named for
-    // its unit and belonging to no MIB object -- is labelled correctly.
+    // formatPanelValue renders a reading with the catalog's declared unit.
     formatPanelValue(panel, value) {
         const number = parseFloat(value);
         if (isNaN(number)) return String(value);
@@ -8944,26 +7852,13 @@ class MonitoringApp {
         });
 
         keysToRemove.forEach(key => {
-            // The key is `${deviceId}-${mibName}`, and MIB names carry hyphens of
-            // their own -- HOST-RESOURCES-MIB, IF-MIB. Splitting on the hyphen
-            // recovered "HOST", so the lookup missed and the subscription was
-            // never released; the name is everything past the first hyphen.
+            // The key is `${deviceId}-${mibName}`; the name is everything past the first hyphen.
             const mibName = key.slice(String(deviceId).length + 1);
             this.unsubscribeFromDashboard(deviceId, mibName);
         });
     }
 
-    // initializeEmptyChart registers a chart card without building its plot.
-    //
-    // A device dashboard can hold hundreds of cards -- core-01 has 407 -- and
-    // building every plot up front created 271 live ECharts instances, each with
-    // its own canvas, resize listener and animation loop, for the eight or so a
-    // reader can actually see. Only 40 of them were subscribed to anything; the
-    // rest were empty plots waiting on data that never comes.
-    //
-    // The instance is now built on first need: when the card scrolls into view,
-    // or when a sample arrives for it, whichever happens first. Nothing is lost
-    // either way, and a dashboard nobody scrolls costs almost nothing.
+    // initializeEmptyChart registers a card and builds its ECharts instance on first view or first sample.
     initializeEmptyChart(chartId, title) {
         const chartElement = document.getElementById(chartId);
         if (!chartElement) {
@@ -9100,12 +7995,7 @@ class MonitoringApp {
             return;
         }
 
-        // A sequence number belongs to a connection. The server sends this
-        // browser the whole reading anyway -- it is a client it has never seen
-        // -- but holding a sequence from before the drop means depending on
-        // the server for that, and the rule that a delta is only applied to
-        // the reading it was computed against is one this side can keep on its
-        // own.
+        // A sequence belongs to a connection: drop held sequences on reconnect.
         this.lastReadings.clear();
         this.pendingResync.clear();
 
@@ -9170,13 +8060,7 @@ class MonitoringApp {
             this.switchView(this.currentView);
         }
 
-        // Put the restored values back on the controls that display them.
-        //
-        // These were loaded into fields and never written back to the elements,
-        // so a browser that had chosen "Last 30 days" came back showing "Last 6
-        // hours" while holding 30d -- the control and the state it represents
-        // disagreeing silently, which is the same defect class as a control
-        // that drives nothing.
+        // Write restored values back to their controls.
         const timeRange = document.getElementById('dashboardTimeRange');
         if (timeRange) timeRange.value = this.currentTimeRange;
 
@@ -9198,10 +8082,7 @@ class MonitoringApp {
     // UI Helpers
     // ========================================
 
-    // showNotification shows a transient message. holdMs is how long it stays;
-    // the default suits a few words, and a message that explains something —
-    // why a MIB will produce no metrics, say — needs longer than a reader takes
-    // to notice it appeared.
+    // showNotification shows a transient message for holdMs.
     showNotification(message, type = 'success', holdMs = 3000) {
         const container = document.getElementById('notificationContainer');
         const notification = document.createElement('div');

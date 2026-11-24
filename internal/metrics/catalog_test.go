@@ -8,12 +8,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// TestClassifyKind pins the rule a renderer keys on.
-//
-// kind is the one catalog field that must be reliable: unit is declared by
-// fewer than a fifth of MIB objects, so a renderer that depended on it would
-// be blank most of the time, while kind is derivable for every object whose
-// type resolved.
+// TestClassifyKind pins the kind rule renderers key on.
 func TestClassifyKind(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -57,13 +52,7 @@ func TestClassifyKind(t *testing.T) {
 	}
 }
 
-// TestClassifyKindReportsUnresolvedTypesAsUnknown is the diagnostic case.
-//
-// An object whose module parsed with unresolved imports comes back with no
-// type at all, and loses its units, display hint and enumeration in the same
-// stroke. Measured at 730 of 9,638 pollable objects across 198 modules. The
-// catalog reports that rather than guessing, because a guess would put a line
-// chart on something that might be a hostname.
+// TestClassifyKindReportsUnresolvedTypesAsUnknown checks an object without a resolved type is unknown.
 func TestClassifyKindReportsUnresolvedTypesAsUnknown(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -123,14 +112,7 @@ func TestNewCatalogIndexKeysOnThePublishedName(t *testing.T) {
 	}
 }
 
-// TestNewCatalogIndexIsFirstWinsOnCollision checks that the catalog resolves a
-// duplicated metric name the same way the metric name index does.
-//
-// 436 of 9,638 objects collide across 198 modules, so this is routine. Both
-// OIDs are resolved through the name index rather than only the first, because
-// the point is not that the catalog has some entry -- it is that both
-// colliding objects publish under the name the catalog describes. Asserting
-// only the first would check the catalog against itself.
+// TestNewCatalogIndexIsFirstWinsOnCollision checks colliding names resolve as the name index does.
 func TestNewCatalogIndexIsFirstWinsOnCollision(t *testing.T) {
 	objects := []*mib.OIDMetadata{
 		{OID: ".1.3.6.1.2.1.1.9", Name: "sysCounter", Module: "FIRST-MIB", Type: "Counter32", IsScalar: true},
@@ -165,12 +147,7 @@ func TestNewCatalogIndexIsFirstWinsOnCollision(t *testing.T) {
 	}
 }
 
-// TestCatalogAndNameIndexDescribeTheSameObjects checks that the two indexes
-// are built from one filtered set.
-//
-// They answer two halves of one question -- what a sample is called, and what
-// that name means -- so a sample named by one and described by the other is
-// worse than either being wrong alone.
+// TestCatalogAndNameIndexDescribeTheSameObjects checks both indexes come from one filtered set.
 func TestCatalogAndNameIndexDescribeTheSameObjects(t *testing.T) {
 	objects := []*mib.OIDMetadata{
 		{OID: ".1.3.6.1.2.1.2.2.1.10", Name: "ifInOctets", Module: "IF-MIB", Type: "Counter32", IsColumn: true},
@@ -273,13 +250,7 @@ func TestCatalogEntryScalarHasNoRowToIdentify(t *testing.T) {
 	}
 }
 
-// TestDerivedCatalogEntriesDescribeWhatNoMIBCan is the correction that makes
-// the catalog useful for the reading this collector exists to produce.
-//
-// Entity sensor readings are published under a name derived from their unit,
-// so no sweep of the MIB store can describe them: there is no MIB object
-// called entity_sensor_dbm. A catalog keyed on object name would document
-// every interface counter and none of the optical power.
+// TestDerivedCatalogEntriesDescribeWhatNoMIBCan checks entity sensor metrics are described.
 func TestDerivedCatalogEntriesDescribeWhatNoMIBCan(t *testing.T) {
 	byMetric := map[string]*CatalogEntry{}
 	for _, entry := range derivedCatalogEntries() {
@@ -415,12 +386,7 @@ func TestCatalogSamplesOmitEmptyLabels(t *testing.T) {
 	}
 }
 
-// TestCatalogCarriesNoDeviceLabel is the scaling invariant, and the reason the
-// catalog is affordable at all.
-//
-// A device dimension would multiply 20,390 series by the fleet, so at a
-// hundred thousand devices the description of a metric would cost more than
-// the metric. Nothing here may vary per device.
+// TestCatalogCarriesNoDeviceLabel checks no catalog series varies per device.
 func TestCatalogCarriesNoDeviceLabel(t *testing.T) {
 	entries := append(derivedCatalogEntries(), &CatalogEntry{
 		Metric: "snmp_ifInOctets", Module: "IF-MIB", Object: "ifInOctets",
@@ -440,18 +406,7 @@ func TestCatalogCarriesNoDeviceLabel(t *testing.T) {
 	}
 }
 
-// TestAStateColumnIsNeverATableIdentity is a live-fleet finding.
-//
-// The identity election prefers a column whose name ends in Name, Descr or
-// Alias and otherwise takes the first status column in sorted order.
-// cbgpPeer2Table has none of those, so it elected cbgpPeer2AdminStatus -- an
-// enumeration of two values. On core-01 every row of every panel in that
-// table was then labeled "start": eight BGP peers, eight lines, one name
-// between them.
-//
-// An enumeration cannot tell rows apart, by construction. Where no candidate
-// survives the answer has to be no identity, so a renderer falls back to the
-// row's index, which for this table is the peer's address.
+// TestAStateColumnIsNeverATableIdentity checks an enumeration column is never elected as a row identity.
 func TestAStateColumnIsNeverATableIdentity(t *testing.T) {
 	enum := func(name string) statusColumnInfo {
 		return statusColumnInfo{Name: name, LabelName: strings.ToLower(name),
@@ -473,11 +428,7 @@ func TestAStateColumnIsNeverATableIdentity(t *testing.T) {
 			want:    "",
 		},
 		{
-			// Neither declares itself a name, so neither is one. The fallback
-			// that used to take the first in sorted order elected
-			// cbgpPeer2LastError on the real table, and named all eight of
-			// core-01's BGP peers "04:00" -- the hex rendering of an error
-			// code, identical on every row.
+			// Neither declares itself a name, so neither is one; no sorted-order fallback.
 			name:    "no candidate declares itself a name",
 			columns: []statusColumnInfo{enum("cbgpPeer2AdminStatus"), text("cbgpPeer2LastError")},
 			want:    "",

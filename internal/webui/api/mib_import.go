@@ -61,13 +61,7 @@ func (e *MIBRefreshError) Error() string {
 
 func (e *MIBRefreshError) Unwrap() error { return e.Err }
 
-// MIBParseError reports a MIB source file the parser could not turn into a
-// module.
-//
-// Stage separates the two failures that look alike and mean different things:
-// "file" is an upload that is not a MIB this parser can read, which is the
-// caller's input, while "module" is the parser failing to finish a file it had
-// already accepted, which is the server's problem.
+// MIBParseError reports a MIB file the parser could not read (stage "file") or finish (stage "module").
 type MIBParseError struct {
 	Stage string
 	Name  string
@@ -91,13 +85,7 @@ type MIBLoaderError struct {
 
 func (e *MIBLoaderError) Error() string { return e.Reason }
 
-// mibUpload is an uploaded MIB file that has been written into the server's MIB
-// directory, together with whatever content it displaced.
-//
-// A MIB is stored under the name it was uploaded with, so re-uploading a module
-// overwrites the copy the stored record points at. Keeping the displaced bytes
-// means a file that turns out not to parse can be undone, instead of leaving
-// the record pointing at something unparseable until someone notices.
+// mibUpload is an uploaded MIB file written to the MIB directory, with the content it displaced for rollback.
 type mibUpload struct {
 	// root is the uploaded-MIB directory, held open. Every operation below
 	// names a file relative to it and is resolved by the kernel against that
@@ -140,27 +128,15 @@ type importedMIB struct {
 	record   *storage.MIB
 	replaced bool
 
-	// unresolved counts objects the module defines that came out with no OID
-	// and were therefore discarded. It is nearly always zero; when it is not,
-	// the module is partly or wholly unusable and the caller has to be told,
-	// since a module that stores fewer objects than it declares is otherwise
-	// indistinguishable from one that is simply small.
+	// unresolved counts the module's objects discarded for having no OID.
 	unresolved int
 
-	// missingImports names the modules this one IMPORTS from that could not
-	// be found, and untyped the objects kept without a type because of it.
-	// The module is stored either way; these say it is not whole.
+	// missingImports names unfound imported modules; untyped names objects left without a type.
 	missingImports []string
 	untyped        []string
 }
 
-// handleImportMIB imports an uploaded MIB file.
-//
-// With ?replace=true it instead refreshes a module that is already imported:
-// the record keeps its ID, name and tags, every device and profile assignment
-// stays attached, and only the parsed metadata — objects, object count and
-// description — is rewritten. Without it, uploading a module that is already
-// stored is a 409 rather than an overwrite.
+// handleImportMIB imports an uploaded MIB; ?replace=true refreshes an existing module in place, otherwise an existing one is a 409.
 func (s *Server) handleImportMIB(w http.ResponseWriter, r *http.Request) {
 	// Limit upload size
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
@@ -272,18 +248,7 @@ func (s *Server) moduleParser() (*parser.Parser, error) {
 	return loaderParser, nil
 }
 
-// importMIBSource stores one MIB source file and records the module it defines.
-//
-// It is the whole of what importing a MIB means, and it is deliberately the only
-// implementation of it: the upload endpoint and the configuration importer both
-// go through here, so a bundle restored onto a fresh instance produces exactly
-// the records a hand upload would, including the loader refresh that makes the
-// module's objects available to the poller without a restart.
-//
-// The parser is resolved before anything is written, because a server that
-// cannot parse has no business replacing a MIB file that currently parses. A
-// file that turns out not to parse is rolled back, so a rejected import leaves
-// neither a stored record nor a stray file behind.
+// importMIBSource stores one MIB source and records its module, rolling back a file that does not parse; shared by upload and config import.
 func (s *Server) importMIBSource(
 	ctx context.Context,
 	fileName string,
@@ -351,19 +316,8 @@ func nonNilStrings(values []string) []string {
 func (s *Server) saveUploadedMIB(name string, content io.Reader) (*mibUpload, error) {
 	mibDir := s.uploadedMIBDir()
 
-	// The MIB store is opened once and everything below is named relative to
-	// it, so no path built from an upload is ever handed to the os package.
-	//
-	// The caller has already reduced name to its base, which stops "../" — but
-	// a base name is still followed through a symbolic link, so a link planted
-	// in the upload directory would have had os.Create write through it to
-	// anywhere this process can reach. A name resolved against an open
-	// directory is refused by the kernel instead.
-	//
-	// #nosec G703 -- mibStoragePath is this server's own configured storage
-	// directory, not anything a request supplies. It is the one path here that
-	// names a location to the os package, which is what makes every path after
-	// it relative to an open handle.
+	// Names are resolved against the open MIB store directory, so the kernel refuses symlinked or escaping names.
+	// #nosec G703 -- mibStoragePath is this server's configured storage directory, not request input.
 	store, err := os.OpenRoot(s.mibStoragePath)
 	if err != nil {
 		return nil, &MIBUploadError{Op: "open storage", Path: s.mibStoragePath, Err: err}
@@ -414,10 +368,7 @@ func (s *Server) saveUploadedMIB(name string, content io.Reader) (*mibUpload, er
 	return upload, nil
 }
 
-// undoUpload rolls back an upload, logging a rollback that itself fails. There
-// is nothing left to return the failure to — the caller is already reporting
-// why the upload was rejected — but it must not pass silently, because it means
-// a stored module now points at a file that does not parse.
+// undoUpload rolls back an upload, logging a rollback that itself fails.
 func undoUpload(upload *mibUpload, stage string) {
 	if err := upload.restore(); err != nil {
 		log.Printf("WARNING: %s failed and the previous MIB file could not be restored: %v",
@@ -439,10 +390,7 @@ func (s *Server) storeParsedMIB(
 	var notFound *storage.MIBNotFoundError
 	switch {
 	case errors.As(err, &notFound):
-		// Not imported yet. Refreshing a module the server has never seen is an
-		// import: the caller asked for the stored state to match this file, and
-		// a refresh run across a whole MIB tree must not fail on the one module
-		// that was never imported or has since been deleted.
+		// Not imported yet: a refresh imports it.
 		return s.createParsedMIB(ctx, name, content, tags)
 	case err != nil:
 		return nil, err
@@ -450,10 +398,7 @@ func (s *Server) storeParsedMIB(
 		return nil, &storage.MIBExistsError{Name: existing.Name, ID: existing.ID}
 	}
 
-	// Reload the objects first. They are what the poller reads; the record is a
-	// summary of them. In this order a failed reload leaves the record
-	// describing the last refresh that did land, and RefreshedAt only advances
-	// when the objects really moved.
+	// Reload the objects before the record, so RefreshedAt advances only when objects changed.
 	if refreshErr := s.refreshModuleObjects(name); refreshErr != nil {
 		return nil, refreshErr
 	}
@@ -495,9 +440,7 @@ func (s *Server) createParsedMIB(
 	return &importedMIB{record: record}, nil
 }
 
-// refreshModuleObjects reloads a module's objects in the loader's metadata
-// store. The loader drops the module's existing objects first, so an object the
-// new parse no longer defines does not linger and get selected for polling.
+// refreshModuleObjects reloads a module's objects in the loader's store, dropping objects no longer defined.
 func (s *Server) refreshModuleObjects(name string) error {
 	if s.mibLoader == nil {
 		return &MIBStorageError{Reason: "MIB loader not available"}
@@ -506,25 +449,13 @@ func (s *Server) refreshModuleObjects(name string) error {
 		return &MIBRefreshError{Module: name, Err: err}
 	}
 
-	// What the catalog can describe has just changed, and the held copy is now
-	// one module out of date. Re-read it rather than waiting out the refresh
-	// interval, so the dashboard drawn straight after an import describes the
-	// module that was just imported.
-	//
-	// Detached from the request: an operator's browser closing the connection
-	// after the upload succeeded must not abandon the re-read, or the catalog
-	// stays stale until the timer comes round.
+	// Refresh the catalog now, detached from the request.
 	go s.RefreshCatalog(context.WithoutCancel(context.Background()))
 
 	return nil
 }
 
-// writeImportError reports why an upload could not be stored.
-//
-// A module that is already imported is a conflict, not a server fault, and the
-// body names the module and the way to refresh it: the workaround an operator
-// otherwise reaches for — delete, then import — drops every device and profile
-// assignment the module had.
+// writeImportError reports why an upload could not be stored; an existing module is a 409 naming the refresh route.
 func writeImportError(w http.ResponseWriter, err error) {
 	var exists *storage.MIBExistsError
 	if errors.As(err, &exists) {

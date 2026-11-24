@@ -38,13 +38,7 @@ type PollerDeviceConfig struct {
 	Tags          map[string]string             `json:"tags,omitempty"`
 }
 
-// PollerModuleFilter narrows the objects the poller reads from one module.
-//
-// It mirrors the poller's own module filter: patterns are regular expressions
-// matched against an object's OID or name, and excludes win over includes.
-// It is config.ModuleFilter under another name: the poller reads that type, the
-// YAML config declares it, and the control API carries it. Three copies of the
-// same five fields is how they drift apart.
+// PollerModuleFilter is config.ModuleFilter: patterns match OID or name, excludes win.
 type PollerModuleFilter = config.ModuleFilter
 
 // newPollerModuleFilter converts the filtering half of a stored assignment to
@@ -144,17 +138,7 @@ func (s *Server) handleGetPollerConfig(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, response)
 }
 
-// buildPollerDeviceConfig constructs the configuration for a single device.
-//
-// The modules it reports are the ones the device's assignments leave enabled,
-// so a MIB that has been paused simply is not there for the poller to fetch.
-//
-// The poll interval it reports is the device's own, or 0 when the device
-// inherits. Inheriting is passed on as inheriting rather than resolved here:
-// the poller applies global.default_poll_interval from its own configuration,
-// which is the configuration that governs the polling, and it does so on every
-// sync — so changing the default takes effect without rewriting a single
-// device.
+// buildPollerDeviceConfig builds one device's poller config: enabled modules only, and 0 for an inherited interval.
 func (s *Server) buildPollerDeviceConfig(ctx context.Context, device *storage.Device) (*PollerDeviceConfig, error) {
 	selection, err := s.resolveDeviceModules(ctx, device.ID)
 	if err != nil {
@@ -178,18 +162,7 @@ func (s *Server) buildPollerDeviceConfig(ctx context.Context, device *storage.De
 	// Format address with port
 	address := formatDeviceAddress(device.Address, device.Port)
 
-	// Tags become Prometheus labels on every sample this device produces, so
-	// only values that are stable for as long as the device means the same
-	// thing belong here.
-	//
-	// device_id and created_at were both here and both change when a device is
-	// deleted and added back under the same name — a routine thing to do after
-	// fixing an address or a community string. Prometheus identifies a series
-	// by its full label set, so either one changing forks every series the
-	// device has: the old ones go stale, the new ones start empty, and a graph
-	// that should be continuous shows a gap and then a second line. Neither
-	// value was read by anything; the device's name identifies it, and the API
-	// is where its id and creation time belong.
+	// Tags become labels on every sample, so only values stable for the device's life belong here.
 	tags := make(map[string]string)
 	tags["source"] = "webui"
 

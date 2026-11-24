@@ -57,16 +57,7 @@ func TestFormatOctetsWithNoSpecifiers(t *testing.T) {
 	}
 }
 
-// A repeat count larger than the octets actually present renders a dangling
-// separator — "*1x:" over {9, 0xaa} yields "aa:" rather than "aa" — because the
-// separator is emitted from the declared count rather than from whether another
-// run follows. That case is deliberately not asserted here: it is a defect
-// reported to the maintainer, not behavior to pin.
-//
-// TestFormatOctetsWithRepeatCount covers the '*' form, where the first octet of
-// the value says how many times the specifier repeats. It is how variable
-// length addresses are rendered, and getting the cursor wrong shifts every
-// subsequent field.
+// TestFormatOctetsWithRepeatCount covers the '*' repeat form, where the first octet gives the repeat count.
 func TestFormatOctetsWithRepeatCount(t *testing.T) {
 	tests := []struct {
 		name  string

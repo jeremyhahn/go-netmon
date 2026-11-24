@@ -10,15 +10,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// The helpers here make the fake API the CLI tests run against narrow its
-// answers the way the real one does, now that search and paging happen on the
-// server. Without them these tests would assert that the CLI filters lists it
-// no longer filters.
-//
-// The search they apply is internal/mib/search's — the same definition the API
-// applies — so a CLI test cannot pass against a search the server does not
-// implement. What is left, the offset and limit arithmetic and the counts, is
-// the wire contract these tests exist to pin.
+// Helpers that make the fake API search and page the way the real one does, using internal/mib/search.
 
 // narrow applies a request's search, offset and limit to an ordered list and
 // returns the slice to serve with the counts that describe it, or false when

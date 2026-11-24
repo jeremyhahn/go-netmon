@@ -8,13 +8,7 @@ import (
 	"testing"
 )
 
-// A failed SNMP probe is not an API failure. The server answers an unreachable
-// device with a gateway status and the same body a successful probe returns, so
-// the negative result is data a caller can render — "no response from
-// 198.51.100.101: timeout" — instead of an opaque "504 Gateway Timeout" that says
-// nothing about which device or why. Anything that is not a probe result has to
-// stay an error, or a genuine server fault would be displayed as a tidy
-// negative probe.
+// A failed SNMP probe is a probe result, not an API error; anything else stays an error.
 
 // probeServer answers every request with the given status and body.
 func probeServer(t *testing.T, status int, body string) *Client {

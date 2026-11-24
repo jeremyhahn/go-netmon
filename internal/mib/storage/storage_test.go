@@ -933,17 +933,7 @@ func TestStorage_GetTableColumns_EmptyResult(t *testing.T) {
 	}
 }
 
-// TestStorage_GetMetricColumns_ScopedToModuleAtScale fills the store with two
-// same-sized modules and checks that a lookup returns one module's metric
-// columns and nothing else.
-//
-// What it verifies is the SCOPE of the result: drop either filter and the
-// other module's objects or the status columns come back with it. What it
-// deliberately does not verify is HOW the scope was reached — a full store
-// scan that then filtered by module would satisfy it too. That is a cost
-// question, and it belongs to BenchmarkGetMetricColumns and
-// BenchmarkModuleLookup in storage_bench_test.go, which measure the index
-// against the scan it replaced.
+// TestStorage_GetMetricColumns_ScopedToModuleAtScale checks the result holds one module's metric columns only; cost is benchmarked separately.
 func TestStorage_GetMetricColumns_ScopedToModuleAtScale(t *testing.T) {
 	storage, cleanup := getTestStorage(t)
 	defer cleanup()

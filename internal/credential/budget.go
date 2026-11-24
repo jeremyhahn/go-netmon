@@ -9,12 +9,7 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// Locked memory is one budget for the whole process: RLIMIT_MEMLOCK bounds
-// every page go-enclave locks, and the 64 KiB a container gets by default is
-// sixteen pages. Every open secret holds locked pages for as long as it is
-// open, so workers opening their devices' credentials at the same time could
-// together ask for more than the limit and have their requests refused. A
-// LockedBudget makes them wait their turn instead.
+// LockedBudget makes concurrent secret opens wait for RLIMIT_MEMLOCK headroom instead of failing.
 
 // keyPageBytes is the locked memory one seal or open of a value holds for its
 // data key, which go-enclave unwraps into a locked page of its own.
@@ -25,10 +20,7 @@ var keyPageBytes = enclave.LockedSize(enclave.RootKeyBytes)
 // page more while it mints the next KEK.
 const sealerKeyPages = 3
 
-// LockedCost is the locked memory, in bytes, that opening an n-byte secret
-// holds: its plaintext rounded up to whole pages, and the data key's page.
-// Sealing it holds no more, and is charged the same. An absent secret costs
-// nothing.
+// LockedCost is the locked memory opening an n-byte secret holds: plaintext pages plus the data key's page; absent costs 0.
 func LockedCost(n int) int64 {
 	if n <= 0 {
 		return 0
@@ -80,10 +72,7 @@ func (b *LockedBudget) Fits(cost int64) error {
 	return &LockedMemoryError{Limit: b.limit.Bytes, Need: LimitFor(cost)}
 }
 
-// Acquire waits until cost bytes of the budget are free and holds them until
-// release is called; release is idempotent. It returns ctx's error if ctx ends
-// first, and a LockedMemoryError at once for a cost the budget can never
-// admit, rather than waiting for ever.
+// Acquire waits for cost bytes and holds them until the idempotent release; it fails at once for a cost that can never fit.
 func (b *LockedBudget) Acquire(ctx context.Context, cost int64) (release func(), err error) {
 	if b.sem == nil || cost <= 0 {
 		return func() {}, nil

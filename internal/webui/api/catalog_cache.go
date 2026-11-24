@@ -7,37 +7,12 @@ import (
 	"time"
 )
 
-// The catalog is read once and kept, not fetched on every click.
-//
-// Every dashboard load re-read it whole: four Prometheus queries returning
-// 12,324 catalog rows and 13,534 enumeration rows, decoded from JSON, on every
-// request. Measured on monitor-01 before this existed, opening one device took 4 to 6
-// seconds and most of that was re-downloading a description of the fleet's
-// metrics that had not changed since the last time anyone clicked.
-//
-// It is cacheable because of what it is: the catalog describes what the loaded
-// MIBs mean, and that changes when a MIB is imported or reloaded -- an
-// operator action, minutes or days apart -- not when a device is polled. The
-// readings on the dashboard are live and are not cached; only the words on the
-// panels are.
+// The metric catalog is cached between reads; it changes only when MIBs change, readings are never cached.
 
-// CatalogRefreshInterval is how often the held catalog is re-read in the
-// background.
-//
-// It is not a staleness bound so much as a backstop: an import refreshes the
-// catalog immediately through Refresh, so this only catches a change made by
-// something other than this process -- another collector's MIB reload, or a
-// direct edit to the poller's store. Five minutes is well inside the hour-long
-// window a consumer reads with, so nothing can age out while a refresh is
-// pending.
+// CatalogRefreshInterval is the background re-read interval; imports refresh immediately.
 const CatalogRefreshInterval = 5 * time.Minute
 
-// catalogCache holds the metric catalog between reads.
-//
-// Readers take a read lock and get whatever is currently held; they never wait
-// on Prometheus except once, on a cache that has never been filled. That is
-// the property that matters: a dashboard load must not be behind a five-second
-// query, and a slow Prometheus must slow the refresh rather than the page.
+// catalogCache holds the metric catalog; readers wait on Prometheus only for the first fill.
 type catalogCache struct {
 	// read is what fills the cache. Injected so the cache can be tested
 	// without a Prometheus.
@@ -57,12 +32,7 @@ func newCatalogCache(read func(context.Context) metricCatalogResult) *catalogCac
 	return &catalogCache{read: read}
 }
 
-// Catalog returns the held catalog, filling it first if it has never been read.
-//
-// The synchronous fill is deliberate and happens at most once per process: a
-// dashboard opened in the seconds after a restart should wait and get labeled
-// panels, not render unlabeled ones and leave the operator wondering why the
-// units are missing.
+// Catalog returns the held catalog, filling it synchronously the first time.
 func (c *catalogCache) Catalog(ctx context.Context) metricCatalogResult {
 	c.mu.RLock()
 	if c.primed {
@@ -87,13 +57,7 @@ func (c *catalogCache) Catalog(ctx context.Context) metricCatalogResult {
 	return c.fill(ctx)
 }
 
-// Refresh re-reads the catalog and replaces what is held.
-//
-// Called on a timer and whenever a MIB import changes what the catalog can
-// describe. A read that fails leaves the previous catalog in place rather than
-// blanking it: the descriptions it holds are still the best available answer,
-// and replacing them with nothing would strip every panel of its units and
-// enumerations because Prometheus was briefly unwell.
+// Refresh re-reads the catalog; a failed read keeps the previous one.
 func (c *catalogCache) Refresh(ctx context.Context) {
 	c.filling.Lock()
 	defer c.filling.Unlock()
@@ -109,10 +73,7 @@ func (c *catalogCache) fill(ctx context.Context) metricCatalogResult {
 	primed, held := c.primed, c.held
 	c.mu.RUnlock()
 
-	// An unreadable catalog is not an empty one. Keeping what is held is the
-	// same rule the two-read strategy follows one layer down, for the same
-	// reason: losing every description because a query failed is worse than
-	// serving descriptions that are a few minutes old.
+	// An unreadable catalog is not an empty one: keep what is held.
 	if !fresh.readable && primed {
 		log.Printf("WARNING: the metric catalog could not be re-read; keeping %d entries",
 			len(held.entries))

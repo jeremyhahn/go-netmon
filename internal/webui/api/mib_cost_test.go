@@ -739,14 +739,7 @@ func TestLearnedTablesWithoutPoller(t *testing.T) {
 	}
 }
 
-// TestLearnedTablesCarryTheEntryOIDAndItsIndexes pins what the module filter
-// reads out of the poller's answer.
-//
-// The dashboard used to consume these too, through an adapter that reshaped
-// them for a MIB-parsing generator. That generator is gone -- panels come from
-// the catalog now -- and the only remaining reader is the "does this module
-// have data?" filter, which needs the entry OID and nothing else. The adapter
-// went with it rather than being kept for one caller.
+// TestLearnedTablesCarryTheEntryOIDAndItsIndexes pins the entry OID the module filter reads.
 func TestLearnedTablesCarryTheEntryOIDAndItsIndexes(t *testing.T) {
 	poller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"tables":{"1.3.6.1.2.1.2.2.1":{"entry_oid":"1.3.6.1.2.1.2.2.1",

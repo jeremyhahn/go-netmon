@@ -5,10 +5,7 @@ import "strings"
 // Component is one independently selectable part of a deployment's state.
 type Component string
 
-// The components a backup can carry, in the order a restore applies them.
-//
-// Host-side content is restored before the volumes so that the sources are in
-// place by the time the stack comes back up and re-reads them.
+// The components a backup can carry, in restore order: host content before volumes.
 const (
 	// ComponentConfig covers the repository files bind-mounted into the stack.
 	ComponentConfig Component = "config"
@@ -38,15 +35,9 @@ func AllComponents() []Component {
 }
 
 // ConfigFiles lists the repository files the config component carries.
-//
-// They are data in the operational sense: the stack behaves differently if they
-// change.
 func ConfigFiles() []string { return []string{"config.yaml", "prometheus.yml"} }
 
-// ReferenceFiles lists files recorded in a backup for provenance only.
-//
-// They are never restored. Overwriting the deployment definition beneath a
-// running deployment is a deployment action, not a data restore.
+// ReferenceFiles lists files recorded for provenance only; they are never restored.
 func ReferenceFiles() []string { return []string{"docker-compose.yml"} }
 
 // Volume reports the compose volume a component's data lives in, or the empty
@@ -99,11 +90,7 @@ func (c Component) Valid() bool {
 	return false
 }
 
-// ParseComponents turns a comma-separated list into components, refusing any
-// name this tool does not know.
-//
-// An unknown name is fatal rather than ignored: silently dropping a typo in
-// --only would back up, or restore, something other than what was asked for.
+// ParseComponents parses a comma-separated list, refusing unknown names.
 func ParseComponents(list string) ([]Component, error) {
 	var out []Component
 	for _, raw := range strings.Split(list, ",") {

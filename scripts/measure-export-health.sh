@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# Measure what a device edit does to the exporter's health counters, and judge
-# the result against docs/operations/export-health.md.
-#
-# The expectations are written down BEFORE the run and this script prints
-# observed against expected, line by line, marking each. That is the whole
-# point: nearly every measurement fault in the out-of-order remote-write incident was a number that
-# looked plausible and let its reader supply the meaning. A run that cannot
-# come out wrong is not a measurement.
-#
-# It changes nothing on the target except the device edit it drives, and it
-# restores that: the MIB assignment it creates is deleted again, and the
-# assignment endpoint is checked to be back where it started.
-#
-# A counter that is ABSENT is reported as absent, never as zero. An older build
-# does not publish the per-reason counters at all, and reading those as 0 would
-# report a successful deploy that had not happened -- the exact failure family
-# this measurement exists to close.
-#
-# Usage:
-#   measure-export-health.sh baseline          # before the deploy
-#   measure-export-health.sh edit              # after: drive the edit and judge
-#
-# Environment:
-#   METRICS_URL   default http://127.0.0.1:9100/metrics
-#   API_URL       default http://127.0.0.1:8080
-#   DEVICE_ID     default 3        (pdu-03: small, answers in milliseconds)
-#   MIB_ID        default 171
-#   STATE_FILE    default ${TMPDIR:-/tmp}/measure-export-health.state
-#   UNIT          default go-netmon        (whose running image is identified)
-#   EXPECT_SHA256 optional: the sha256 of the binary that was deployed. When
-#                 set, the edit arm refuses to measure anything unless the
-#                 RUNNING image matches it.
+# Measure a device edit's effect on exporter health counters against docs/operations/export-health.md. Usage: measure-export-health.sh baseline|edit; env METRICS_URL, API_URL, DEVICE_ID, MIB_ID, STATE_FILE, UNIT, EXPECT_SHA256.
 
 set -uo pipefail
 
@@ -42,20 +11,12 @@ STATE_FILE="${STATE_FILE:-${TMPDIR:-/tmp}/measure-export-health.state}"
 UNIT="${UNIT:-go-netmon}"
 EXPECT_SHA256="${EXPECT_SHA256:-}"
 
-# ABSENT is what a counter reads when the build does not publish it. It is not
-# a number and no arithmetic is done on it; every comparison checks for it
-# first, so a missing counter can only ever be reported as missing.
+# ABSENT marks a counter the build does not publish; it is never treated as a number.
 ABSENT="absent"
 
 # --- what is actually running ---------------------------------------------
 
-# running_image_sha prints the sha256 of the image the service is EXECUTING,
-# read through /proc/<pid>/exe rather than from the path on disk.
-#
-# The distinction is the point: a deploy that copied a new binary but failed to
-# restart leaves the right file on disk and the old code running, and only the
-# executing image can tell those apart. Prints ABSENT when it cannot be read,
-# never a guess.
+# running_image_sha prints the sha256 of the running executable via /proc/<pid>/exe, or ABSENT.
 running_image_sha() {
     local pid exe
     pid="$(systemctl show "$UNIT" -p ExecMainPID --value 2>/dev/null)" || true
@@ -67,13 +28,7 @@ running_image_sha() {
     sha256sum "$exe" 2>/dev/null | awk '{print $1}' | grep . || printf '%s\n' "$ABSENT"
 }
 
-# assert_build refuses to measure anything unless the running image is the one
-# that was deployed.
-#
-# Counters cannot answer this. "The new code ran and nothing moved" and "the new
-# code was never there" produce identical counter movements -- none -- and the
-# second is the one that would have this harness certify a deploy that did not
-# happen.
+# assert_build refuses to measure unless the running image matches EXPECT_SHA256.
 assert_build() {
     local sha
     sha="$(running_image_sha)"
@@ -96,26 +51,7 @@ assert_build() {
     printf '  matches EXPECT_SHA256.\n'
 }
 
-# assert_counters_present refuses to measure unless every series exists.
-#
-# After a deploy, an absent counter is not "it did not move" -- it is the wrong
-# binary. Evaluating expectations against absent counters passes every one of
-# them, because "must not move" is satisfied by a series that is not there, and
-# the harness would certify a node that was never updated.
-#
-# THAT INFERENCE ONLY HOLDS BECAUSE THE EXPORTER PRE-CREATES EVERY LABELLED
-# CHILD. It did not, and this check was wrong on the first node it ever ran
-# against: the appliance published the right binary hash and no
-# dropped_samples_total{reason=...} series at all, because a CounterVec child
-# does not exist until something increments it and nothing had been dropped
-# since the restart. Two of this script's own signals contradicted each other.
-#
-# The fix went into the exporter rather than here, because absence-means-zero
-# is the weaker property: it would have made this script tolerant while leaving
-# an alert on the drop counters unable to fire on a fresh process, rate() over
-# a series that does not exist being empty rather than 0. With every child
-# published at 0 from the first scrape, absence has exactly one cause again and
-# the abort below says something true.
+# assert_counters_present refuses to measure unless every series exists; the exporter pre-creates every labelled child at 0.
 assert_counters_present() {
     local text missing=0 name key value
     text="$(fetch_metrics)" || {
@@ -188,9 +124,7 @@ snapshot() {
 
 saved() { awk -v k="$1" '$1 == k { print $2 }' "$STATE_FILE"; }
 
-# delta prints the change, or ABSENT if either end is absent. A counter that
-# appeared between the two readings is reported as "appeared" rather than as a
-# number, because its baseline is unknown rather than zero.
+# delta prints the change, ABSENT if either end is absent, or appeared if the baseline was absent.
 delta() {
     local before="$1" after="$2"
     if [ "$after" = "$ABSENT" ]; then printf '%s\n' "$ABSENT"; return; fi
@@ -285,9 +219,7 @@ cmd_edit() {
         return 2
     }
 
-    # Both preflights run BEFORE anything is measured or driven. A measurement
-    # taken against the wrong build, or against counters that do not exist, is
-    # worse than no measurement: it produces a full set of passes.
+    # Both preflights run before anything is measured or driven.
     printf '=== preflight ===\n'
     assert_build || return 1
     assert_counters_present || return 1

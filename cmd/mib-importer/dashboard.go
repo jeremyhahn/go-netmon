@@ -22,10 +22,7 @@ const (
 // prometheusFlag names the flag that sets the Prometheus the generator queries.
 const prometheusFlag = "prometheus-url"
 
-// addPrometheusFlag registers --prometheus-url. It has no default of its own:
-// the default lives in the config package, and an unset flag must not mask the
-// environment (NETMON_DASHBOARD_PROMETHEUS_URL) or the config file
-// (dashboard.prometheus_url).
+// addPrometheusFlag registers --prometheus-url with no default, so an unset flag does not mask the environment or config file.
 func addPrometheusFlag(fs *flag.FlagSet) {
 	fs.String(prometheusFlag, "", "Prometheus URL to query for metric existence "+
 		"(config dashboard.prometheus_url, env NETMON_DASHBOARD_PROMETHEUS_URL)")

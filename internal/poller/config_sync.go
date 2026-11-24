@@ -186,12 +186,7 @@ func (r *ConfigResponse) ToConfig(baseConfig *config.Config) *config.Config {
 	return cfg
 }
 
-// toConfigDevice converts a device from the WebUI wire format to the poller's
-// own configuration type.
-//
-// It normalizes the SNMP version, which WebUI states as "v2c"/"v3" and the
-// poller as "2c"/"3", and carries the per-module filters across so a device
-// that polls part of a MIB keeps doing so.
+// toConfigDevice converts a WebUI device to the poller's config type, normalizing the SNMP version and carrying module filters.
 func (d DeviceConfig) toConfigDevice() config.Device {
 	snmpVersion := d.SNMPVersion
 	switch snmpVersion {
@@ -244,10 +239,7 @@ func toConfigModuleFilters(filters map[string]ModuleFilterConfig) map[string]con
 func ApplyConfiguration(ctx context.Context, p *Poller, syncedConfig *ConfigResponse) error {
 	log.Println("Applying synchronized configuration to poller...")
 
-	// Load the MIB modules WebUI enables globally. A device's own modules are
-	// not loaded here: AddDevice below brings in whatever each device needs,
-	// which is also the path a device added later takes, so doing it twice
-	// would be two implementations of the same rule.
+	// Load the globally enabled MIB modules; AddDevice loads each device's own.
 	if mibLoader := p.GetMIBLoader(); mibLoader != nil {
 		for _, mibModule := range syncedConfig.MIBModules {
 			if !mibModule.Enabled {

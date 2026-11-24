@@ -63,11 +63,7 @@
         };
     }
 
-    // The colour half of an axis, with none of the structure. A live theme
-    // change merges this into charts that already exist, so it must not carry
-    // show flags, formatters or intervals — those belong to the chart, not to
-    // the palette, and re-asserting them would undo per-chart decisions such as
-    // a suppressed vertical grid.
+    // Axis colours only; live theme changes merge this into existing charts.
     function axisChrome() {
         var muted = token('--text-muted', '#6d7684');
         return {
@@ -185,14 +181,7 @@
         };
     }
 
-    // ----------------------------------------------------------------------
-    // Time axis
-    //
-    // A fixed hour:minute label is wrong at both ends of the range the UI
-    // offers: over a two minute window every tick reads the same, and over
-    // days it loses the date. The label granularity is therefore chosen from
-    // the span the series actually covers.
-    // ----------------------------------------------------------------------
+    // Time axis: label granularity follows the span the series covers.
 
     var MINUTE = 60 * 1000;
     var HOUR = 60 * MINUTE;
@@ -277,14 +266,7 @@
         return band <= BAND_DATETIME ? calendar(date) + ' ' + time : time;
     }
 
-    // ----------------------------------------------------------------------
-    // Value axis
-    //
-    // ECharts formats value ticks as floats, so an integer series with a range
-    // of one renders "1 1 1 0 0 0". Integer series therefore get an integer
-    // tick step, and fractional series get as many decimals as it takes for
-    // neighbouring ticks to differ.
-    // ----------------------------------------------------------------------
+    // Value axis: integer series get an integer step, fractional ones enough decimals to tell ticks apart.
 
     function decimalsFor(value) {
         var abs = Math.abs(value);

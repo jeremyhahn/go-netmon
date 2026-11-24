@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the golangci-lint pin guards in the Makefile: the "lint" and
-# "install-tools" targets, and the missing-scanner guards of "security"
-# (govulncheck, trivy).
-#
-# Those targets exist to make a lint run at the wrong version impossible, so
-# the guards themselves have to be exercised rather than assumed -- an
-# unverified fail-closed check is indistinguishable from a fail-open one until
-# the day it matters. Every case below runs against fake binaries in $TMPDIR
-# and an installer URL that never reaches the network, so nothing here touches
-# the shared GOPATH/bin or downloads anything.
-#
-# Usage: toolchain-tests.sh [test-name-substring]
+# Tests for the Makefile's golangci-lint pin and missing-scanner guards, using fake binaries offline. Usage: toolchain-tests.sh [test-name-substring]
 
 set -euo pipefail
 
@@ -129,9 +118,7 @@ test_lint_refuses_a_mismatched_version() {
     expect_output "mismatched version names both" "but this repository pins $WANT_VERSION"
 }
 
-# The regression this file was added for: the version command's exit status was
-# lost to the awk pipeline, so a binary printing the right banner and then
-# failing was accepted as the pinned tool.
+# A binary printing the right banner and then failing is rejected.
 test_lint_refuses_a_binary_that_reports_the_pin_then_fails() {
     local dir="$TMPDIR_TEST/rightbanner-badexit"
     mkdir -p "$dir"
@@ -166,8 +153,7 @@ fake_scanner() {
     chmod +x "$path"
 }
 
-# The defect this guard was added for: security ran no trivy scan, and
-# with trivy absent from PATH it must fail, not pass having scanned less.
+# security fails when trivy is absent from PATH.
 test_security_refuses_a_missing_trivy() {
     local dir="$TMPDIR_TEST/notrivy"
     mkdir -p "$dir"

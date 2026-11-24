@@ -9,13 +9,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/config"
 )
 
-// TestAddDeviceReportsADuplicateAsAType pins the error a second AddDevice under
-// the same name produces.
-//
-// It was a formatted string, so a caller could only tell a duplicate from a
-// real failure by matching on the message. The control API answered 500 for
-// both, and the web UI's client -- which retries a 5xx and not a 4xx -- turned
-// each one into three. The type is what lets both stop guessing.
+// TestAddDeviceReportsADuplicateAsAType checks a duplicate AddDevice returns DeviceExistsError.
 func TestAddDeviceReportsADuplicateAsAType(t *testing.T) {
 	p := New(getTestConfig(t), nil)
 	defer func() { _ = p.Stop() }()

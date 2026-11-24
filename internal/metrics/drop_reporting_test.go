@@ -1,13 +1,6 @@
 package metrics
 
-// What the exporter says about what it threw away.
-//
-// The out-of-order remote-write incident was invisible for fifteen hours while the process was losing a million
-// samples an hour, and both halves of that were reporting faults rather than
-// losing faults: a counter whose siblings were in different units, so no ratio
-// taken across them meant anything, and an error that named memory pressure
-// whatever had actually happened. Wrong loudly is worse than silent, because it
-// is acted on.
+// What the exporter reports about samples it dropped.
 
 import (
 	"context"
@@ -65,13 +58,7 @@ func TestTheHelpTextNamesEveryReason(t *testing.T) {
 	}
 }
 
-// TestADroppedErrorNamesWhyRatherThanGuessing is the defect this file is named
-// for.
-//
-// Every DroppedError said "awaiting write to bound queue memory", whatever had
-// happened. A poll superseded by a newer one -- which is a POLLER fault, two
-// overlapping polls of one device -- therefore reported backpressure, and sent
-// whoever read it looking for memory pressure that was not there.
+// TestADroppedErrorNamesWhyRatherThanGuessing checks a DroppedError names its actual reason.
 func TestADroppedErrorNamesWhyRatherThanGuessing(t *testing.T) {
 	for _, reason := range dropReasons {
 		err := &DroppedError{Samples: 7, Reason: reason}
@@ -155,15 +142,7 @@ func TestASupersededDiscardReportsSupersession(t *testing.T) {
 	}
 }
 
-// TestFlushOutcomesAreCountedInFlushesNotSamples is the counter half.
-//
-// gonetmon_exports_total{status="dropped"} counted SAMPLES while its two
-// siblings counted FLUSHES. rate(...{status="dropped"}) /
-// rate(...{status="success"}) is how anyone would ask "what fraction are we
-// losing", and it divided samples by flushes -- so the incident's own measurement had to
-// carry a paragraph saying its two headline figures could not be compared.
-//
-// The samples are counted where they mean something instead, by reason.
+// TestFlushOutcomesAreCountedInFlushesNotSamples checks every exports_total status counts flushes; samples are counted by reason.
 func TestFlushOutcomesAreCountedInFlushesNotSamples(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

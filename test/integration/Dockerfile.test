@@ -4,12 +4,7 @@
 # host pulls two images instead of one, and that claim quietly stops holding.
 FROM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf
 
-# Install dependencies including net-snmp for snmptranslate.
-#
-# docker-cli is here for the backup/restore tests, which drive a real daemon.
-# That daemon is the sibling "dind" service, not the host's: this container is
-# unprivileged and has no access to the host socket, so a backup test cannot
-# reach the deployment it is testing a backup of.
+# Dependencies: net-snmp for snmptranslate, docker-cli for backup tests against the sibling dind daemon.
 RUN apk add --no-cache git make bash curl net-snmp net-snmp-tools docker-cli docker-cli-compose
 
 # Set working directory
@@ -23,14 +18,7 @@ RUN go mod download
 # Copy the entire project
 COPY . .
 
-# Compile the whole tree under the integration tag, so the image build fails on
-# a tagged file that does not compile.
-#
-# This replaces "go test -c -tags=integration ./test/integration": that compiled
-# ONE package, so internal/mib/parser's tagged file went uncompiled for months
-# while every check stayed green, because go build, go vet and go test are all
-# scoped to the tag set they are given. vet over ./... under the tag is
-# the whole matrix -- integration is the repository's only build tag.
+# Vet the whole tree under the integration tag, so a tagged file that does not compile fails the build.
 RUN go vet -tags=integration ./...
 
 # Default command runs every package holding integration-tagged tests, not one

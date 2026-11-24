@@ -7,10 +7,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// The SNMPv3 side of the test agents: one USM user, engine discovery, and
-// requests accepted only when they authenticate and decrypt under that
-// user's keys. Every byte is decoded and encoded by gosnmp itself, so a
-// client is tested against what it really puts on the wire.
+// SNMPv3 test agent support: one USM user, engine discovery, and gosnmp-encoded authenticated requests.
 
 const (
 	// usmStatsUnknownEngineIDs is the report an agent sends to engine
@@ -35,15 +32,7 @@ type SNMPv3User struct {
 	PrivPassphrase string
 }
 
-// SNMPv3PrivacyRefused says why this process cannot put an SNMPv3 authPriv
-// message on the wire, or returns "" when it can.
-//
-// Every SNMPv3 privacy protocol a FIPS build offers is AES in CFB128 mode
-// (RFC 3826 and its 192/256-bit extensions). CFB is not part of the Go
-// Cryptographic Module, so under GODEBUG=fips140=only crypto/cipher refuses it
-// whatever the key size and whichever auth protocol is in force. A test whose
-// point is privacy cannot run there; one that only needs a v3 exchange can run
-// at authNoPriv instead.
+// SNMPv3PrivacyRefused says why this process cannot send SNMPv3 authPriv (AES-CFB is refused under fips140=only), or returns "".
 func SNMPv3PrivacyRefused() string {
 	if fips140.Enforced() {
 		return "GODEBUG=fips140=only refuses AES-CFB128, the cipher mode of every SNMPv3 privacy protocol (RFC 3826)"
@@ -88,18 +77,9 @@ func NewUSMEngine(user SNMPv3User) (*USMEngine, error) {
 	return &USMEngine{usm: usm, probe: probe}, nil
 }
 
-// Answer decodes one SNMPv3 datagram and encodes the reply. An engine
-// discovery probe is answered by the engine itself; any other request must
-// authenticate (and decrypt, at authPriv) under the user's keys, and is then
-// answered with what respond makes of it. A request that does not is
-// refused with a *USMRejectedError.
+// Answer decodes one SNMPv3 datagram and encodes the reply; unauthenticated requests get a *USMRejectedError.
 func (e *USMEngine) Answer(datagram []byte, respond func(*gosnmp.SnmpPacket) *gosnmp.SnmpPacket) ([]byte, error) {
-	// A discovery probe carries an empty engine ID, and gosnmp localizes its
-	// configured keys afresh for every engine ID unlike its own: read under
-	// the user's keys, each probe would cost a full password-to-key
-	// derivation inside the client's timeout. So a datagram is read without
-	// keys first; one that is authenticated fails that read, and is read
-	// again, under the keys, below.
+	// Read without keys first: discovery probes are unauthenticated, and keyed reads cost a key derivation each.
 	request, err := decodeV3(e.probe, bytes.Clone(datagram))
 	if err != nil || request.MsgFlags&gosnmp.AuthNoPriv != 0 {
 		if request, err = decodeV3(e.usm, datagram); err != nil {
@@ -127,12 +107,7 @@ func (e *USMEngine) Answer(datagram []byte, respond func(*gosnmp.SnmpPacket) *go
 	return response.MarshalMsg()
 }
 
-// discoveryReport answers an unauthenticated discovery probe with the
-// engine's ID, boots and time.
-// decodeV3 reads one SNMPv3 datagram as user. UnmarshalTrap is gosnmp's
-// receive path for unsolicited v3 messages: it checks the message's
-// authentication and decrypts it with user's keys, which is just what an
-// agent does with a request.
+// decodeV3 reads one SNMPv3 datagram as user, authenticating and decrypting it via gosnmp's UnmarshalTrap.
 func decodeV3(user *gosnmp.UsmSecurityParameters, datagram []byte) (*gosnmp.SnmpPacket, error) {
 	decoder := &gosnmp.GoSNMP{
 		Version:            gosnmp.Version3,

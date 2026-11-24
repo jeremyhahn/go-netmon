@@ -24,12 +24,7 @@ const (
 	ConfigErrorStorage     = "storage"
 )
 
-// ConfigErrorResponse is the body every failed configuration request carries.
-//
-// It is JSON rather than the plain text the older endpoints use because the
-// answers here are lists — every field that is wrong, every module that is
-// missing — and a client that has to show an operator what to fix cannot do it
-// from a sentence.
+// ConfigErrorResponse is the JSON body every failed configuration request carries.
 type ConfigErrorResponse struct {
 	Kind    string `json:"kind"`
 	Message string `json:"message"`
@@ -59,12 +54,7 @@ func (e *ConfigRequestError) Error() string {
 	return "config: " + e.Parameter + "=" + strconv.Quote(e.Value) + ": " + e.Reason
 }
 
-// handleExportConfig writes this instance's whole logical configuration.
-//
-// By default it answers with a bundle: a gzipped tar holding config.json and the
-// MIB source files the configuration references, so the archive restores onto an
-// empty instance on its own. With ?format=json it answers with config.json
-// alone, which is the artifact to read, diff and attach to a change request.
+// handleExportConfig writes the logical configuration as a gzipped tar bundle with MIB sources, or config.json alone with ?format=json.
 func (s *Server) handleExportConfig(w http.ResponseWriter, r *http.Request) {
 	opts, asJSON, err := exportRequest(r)
 	if err != nil {
@@ -146,13 +136,7 @@ func exportRequest(r *http.Request) (opts storage.ConfigExportOptions, asJSON bo
 	return opts, asJSON, nil
 }
 
-// handleImportConfig imports a configuration, replacing what is here with it.
-//
-// It is a dry run unless ?apply=true. That is not a convenience: the import
-// deletes every device, profile and assignment the document does not contain, so
-// the default has to be the one that cannot destroy anything, and applying has
-// to be something the caller said out loud. It follows the same shape as
-// POST /api/mibs/import?replace=true and scripts/restore.sh --yes.
+// handleImportConfig imports a configuration, replacing what is here; a dry run unless ?apply=true.
 func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 	// A bundle carrying a few hundred MIB modules is parsed module by module,
 	// which takes far longer than an ordinary request. Extending this one
@@ -195,11 +179,7 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, report)
 }
 
-// extendDeadlines gives one handler more time than the server's defaults.
-//
-// A response controller that cannot set a deadline means the connection does not
-// support one, which is the case in tests and behind some proxies; there is
-// nothing to report and nothing to do about it.
+// extendDeadlines gives one handler more time than the server's defaults, where the connection supports deadlines.
 func extendDeadlines(w http.ResponseWriter, budget time.Duration) {
 	controller := http.NewResponseController(w) //nolint:bodyclose // not a response body
 	deadline := time.Now().Add(budget)
@@ -223,13 +203,7 @@ func applyRequested(r *http.Request) (bool, error) {
 	return value, nil
 }
 
-// readConfigUpload reads the configuration a client sent, from a multipart form
-// field named "file" or from the request body directly.
-//
-// Both are accepted because both are natural: a browser file input produces a
-// multipart form, and every other client produces a body. The bytes are what
-// decide whether it is a bundle or a bare document, so neither route has to
-// declare which it is sending.
+// readConfigUpload reads the uploaded configuration from multipart field "file" or the request body.
 func readConfigUpload(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBundleUploadSize)
 
@@ -266,14 +240,7 @@ func readAllLimited(source io.Reader) ([]byte, error) {
 	return data, nil
 }
 
-// configErrorStatus maps a failed import to the status and kind that describe
-// it.
-//
-// The distinction that matters most is between a document that is wrong, which
-// is a 400 and the operator's to fix, and a document that is right for an
-// instance holding modules this one does not, which is a 409 and a prerequisite
-// to satisfy. Answering both with 400 would send someone editing a file that has
-// nothing wrong with it.
+// configErrorStatus maps a failed import to its status: 400 for a wrong document, 409 for missing modules.
 func configErrorStatus(err error) (status int, kind string) {
 	var missing *storage.ConfigMIBMissingError
 	if errors.As(err, &missing) {

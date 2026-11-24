@@ -356,9 +356,7 @@ func TestImportMIBPropagatesServerError(t *testing.T) {
 	}
 }
 
-// TestGetDeviceDecodesTheRecord is the success arm that pairs with the failure
-// cases above: the fields the CLI and web UI render must survive the round trip
-// rather than being dropped by a JSON tag that no longer matches the server.
+// TestGetDeviceDecodesTheRecord checks the device fields survive decoding.
 func TestGetDeviceDecodesTheRecord(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/devices/42" {

@@ -28,24 +28,10 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/testsupport"
 )
 
-// pipelineModules are the MIB modules every test in this file needs: IF-MIB for
-// a simple single-integer row index, CISCO-BGP4-MIB for a four-column composite
-// index carrying a variable-length InetAddress, and SNMPv2-MIB for the system
-// scalars.
+// pipelineModules are IF-MIB, CISCO-BGP4-MIB and SNMPv2-MIB.
 var pipelineModules = []string{"IF-MIB", "CISCO-BGP4-MIB", "SNMPv2-MIB"}
 
-// loadPipelineMIBs parses the repository's MIB files into a Pebble store at
-// storagePath and returns the store, which is closed when the test ends.
-//
-// Paths are resolved from the repository root so this runs both on a
-// developer's machine and inside the test container, which mounts the repo at a
-// different location.
-//
-// mibs/cisco is required because CISCO-BGP4-MIB imports ciscoMgmt FROM
-// CISCO-SMI, which lives there. Without it the parser cannot resolve the
-// absolute OID of any CISCO-BGP4-MIB object — every OID in the module comes
-// back empty — so the loader silently produces unusable table metadata instead
-// of failing loudly.
+// loadPipelineMIBs parses the repository MIBs (including mibs/cisco for CISCO-SMI) into a Pebble store closed at test end.
 func loadPipelineMIBs(t *testing.T, storagePath string) *storage.Storage {
 	t.Helper()
 
@@ -99,11 +85,9 @@ func TestTableIndexExtraction(t *testing.T) {
 		t.Logf("✓ IF-MIB index extraction: %v", labels)
 	})
 
-	// Test BGP composite index extraction with FIXED InetAddress parsing
+	// BGP composite index extraction with InetAddress parsing.
 	t.Run("BGP_Composite_Index", func(t *testing.T) {
-		// BGP peer prefix OID with composite index:
-		// Format: .1.3.6.1.4.1.9.9.187.1.2.8.1.1.TYPE.LENGTH.IP_OCTETS.AFI.SAFI
-		// type=1 (IPv4), length=4, addr=203.0.113.218 (4 octets), afi=1, safi=1
+		// BGP peer prefix OID: .1.3.6.1.4.1.9.9.187.1.2.8.1.1.TYPE.LENGTH.IP_OCTETS.AFI.SAFI, here IPv4 203.0.113.218, afi=1, safi=1.
 		oid := ".1.3.6.1.4.1.9.9.187.1.2.8.1.1.1.4.203.0.113.218.1.1"
 		labels := indexCache.ExtractIndexLabels("test-device", oid)
 
@@ -115,7 +99,7 @@ func TestTableIndexExtraction(t *testing.T) {
 			t.Error("Expected cbgppeer2type label")
 		}
 
-		// CRITICAL: Verify IP address is correctly parsed
+		// Verify the IP address is parsed correctly.
 		if labels["cbgppeer2remoteaddr"] != "203.0.113.218" {
 			t.Errorf("Expected cbgppeer2remoteaddr=203.0.113.218, got %s", labels["cbgppeer2remoteaddr"])
 		}
@@ -176,7 +160,7 @@ func TestTableIndexExtraction(t *testing.T) {
 			t.Errorf("Expected ifindex=5, got %s", ifSample.Labels["ifindex"])
 		}
 
-		// Check BGP sample has composite labels with CORRECT IP
+		// The BGP sample has composite labels with the correct IP.
 		var bgpSample *metrics.Sample
 		for _, s := range samples {
 			if s.Labels["cbgppeer2type"] != "" {
@@ -193,7 +177,7 @@ func TestTableIndexExtraction(t *testing.T) {
 			t.Error("BGP sample missing cbgppeer2addrfamilyafi label")
 		}
 
-		// CRITICAL: Verify IP address in sample
+		// Verify the IP address in the sample.
 		if bgpSample.Labels["cbgppeer2remoteaddr"] != "203.0.113.218" {
 			t.Errorf("BGP sample has incorrect IP: expected 203.0.113.218, got %s",
 				bgpSample.Labels["cbgppeer2remoteaddr"])
@@ -203,27 +187,7 @@ func TestTableIndexExtraction(t *testing.T) {
 		t.Logf("✓ BGP sample labels: %v", bgpSample.Labels)
 	})
 
-	// Test all loaded tables have index information.
-	//
-	// "Usable" index information means three things, because anything less
-	// leaves a row of the table either unlabeled or mislabeled in Prometheus:
-	//
-	//  1. the row's INDEX clause survived the parse as a non-empty list of
-	//     columns, since a table with no index columns cannot have its rows
-	//     told apart at all;
-	//  2. every one of those columns carries the name the clause lists, the
-	//     OID of the object it names and that object's resolved type, since
-	//     the decoder splits the OID suffix by each column's type and consumes
-	//     the columns left to right -- one column of the wrong width misaligns
-	//     every column after it;
-	//  3. the production index cache actually turns an instance OID of the
-	//     table into one label per index column, which is the only thing that
-	//     proves the metadata reached the component that uses it rather than
-	//     merely being stored.
-	//
-	// Every table of every loaded module is checked rather than a sample, and
-	// the set is asserted exactly: a table that stops being stored fails, and
-	// so does a table that appears without an expectation written for it.
+	// Every loaded table has a non-empty resolved INDEX and the index cache decodes one label per index column.
 	t.Run("All_Tables_Have_Index_Info", func(t *testing.T) {
 		stored := make(map[string]*mib.TableInfo)
 		for _, module := range pipelineModules {
@@ -322,9 +286,7 @@ func TestTableIndexExtraction(t *testing.T) {
 			t.Errorf("enriched index types are %v, want %v", enriched.IndexTypes, wantIndexTypes)
 		}
 
-		// CISCO-BGP4-MIB already describes this table, so exporting the learned
-		// copy must add nothing: a learned table, whose index types are
-		// inferred from column names, may never displace the MIB's own.
+		// Exporting a learned copy of a MIB-described table adds nothing.
 		if exported := learner.ExportToIndexCache(indexCache); exported != 0 {
 			t.Errorf("exporting learned tables added %d of them to the index cache, want 0; %s is described by CISCO-BGP4-MIB",
 				exported, expectedEntry)
@@ -344,14 +306,7 @@ func TestTableIndexExtraction(t *testing.T) {
 	})
 }
 
-// indexedTable is the index metadata one table of a loaded module has to
-// carry, together with one row of that table and the labels that row must
-// decode into.
-//
-// The expectations are written out from the module's own INDEX clause and from
-// the SMI index encoding rules (RFC 2578 section 7.7) rather than read back
-// from the parser, so a parser that resolves an index column to the wrong type
-// or the wrong width fails here instead of agreeing with itself.
+// indexedTable is a table's expected index metadata, one row and its decoded labels, per RFC 2578 section 7.7.
 type indexedTable struct {
 	module string
 	name   string
@@ -361,9 +316,7 @@ type indexedTable struct {
 	oid      string
 	entryOID string
 
-	// columns is the INDEX clause with every column resolved: the name the
-	// clause lists, the OID of the object it names, and the type and SMI base
-	// type that object is declared with.
+	// columns is the resolved INDEX clause: name, OID, type and SMI base type.
 	columns []mib.IndexColumn
 
 	// rowSuffix is the sub-identifiers encoding one row's index, appended to a
@@ -375,17 +328,7 @@ type indexedTable struct {
 	labels map[string]string
 }
 
-// The index columns the tables below share. The same object indexes several
-// tables -- ifIndex indexes four of IF-MIB's five, bgpPeerRemoteAddr indexes
-// four CISCO-BGP4-MIB tables from a different module entirely -- so each is
-// spelled out once.
-//
-// Two resolved types differ from the word in the MIB's SYNTAX clause because
-// libsmi reduces anonymous subtypes to the base type it derives: sysORIndex is
-// declared INTEGER (1..2147483647) and resolves to Unsigned32 because its range
-// excludes negatives, and the inline INTEGER { ... } enumerations of the
-// capability codes resolve to Enumeration. Both decode as a single
-// sub-identifier either way.
+// Shared index columns; libsmi resolves sysORIndex to Unsigned32 and inline enumerations to Enumeration.
 var (
 	ifIndexColumn             = mib.IndexColumn{Name: "ifIndex", OID: "1.3.6.1.2.1.2.2.1.1", Type: "InterfaceIndex", BaseType: "Integer32"}
 	ifStackHigherLayerColumn  = mib.IndexColumn{Name: "ifStackHigherLayer", OID: "1.3.6.1.2.1.31.1.2.1.1", Type: "InterfaceIndexOrZero", BaseType: "Integer32"}
@@ -418,16 +361,7 @@ const (
 	peerAddrValue      = "203.0.113.218"
 )
 
-// pipelineIndexedTables describes every table the three modules of
-// pipelineModules define: five in IF-MIB, ten in CISCO-BGP4-MIB and one in
-// SNMPv2-MIB. All sixteen have complete index metadata, so there is no table
-// here that the MIB set leaves without it -- including the three rows that
-// carry no INDEX clause of their own (ifXEntry and ifTestEntry augment
-// ifEntry, cbgpPeerEntry augments BGP4-MIB's bgpPeerEntry) and so have to
-// inherit the augmented row's index, and the four rows indexed by
-// bgpPeerRemoteAddr, an object of BGP4-MIB rather than of CISCO-BGP4-MIB.
-// Those seven are the cases where index metadata would go missing first, which
-// is why they are asserted by name rather than covered by a count.
+// pipelineIndexedTables describes all sixteen tables of pipelineModules, including augmenting and imported-index rows.
 var pipelineIndexedTables = []indexedTable{
 	{
 		module:    "IF-MIB",
@@ -439,8 +373,7 @@ var pipelineIndexedTables = []indexedTable{
 		labels:    map[string]string{"ifindex": "7"},
 	},
 	{
-		// AUGMENTS ifEntry: the extended interface row is indexed by the
-		// interface it extends.
+		// AUGMENTS ifEntry.
 		module:    "IF-MIB",
 		name:      "ifXTable",
 		oid:       "1.3.6.1.2.1.31.1.1",
@@ -491,9 +424,7 @@ var pipelineIndexedTables = []indexedTable{
 		labels:    map[string]string{"sysorindex": "2"},
 	},
 	{
-		// Six index columns, two of them variable-length strings. The prefix is
-		// a CbgpNetworkAddress, which the MIB gives no DISPLAY-HINT, so its
-		// octets render as hex rather than as dotted quad.
+		// Six index columns; the CbgpNetworkAddress prefix has no DISPLAY-HINT and renders as hex.
 		module:   "CISCO-BGP4-MIB",
 		name:     "cbgpRouteTable",
 		oid:      "1.3.6.1.4.1.9.9.187.1.1.1",
@@ -517,8 +448,7 @@ var pipelineIndexedTables = []indexedTable{
 		},
 	},
 	{
-		// AUGMENTS BGP4-MIB's bgpPeerEntry, so both the index column and the
-		// row it is inherited from come from a module this one only imports.
+		// AUGMENTS BGP4-MIB's bgpPeerEntry.
 		module:    "CISCO-BGP4-MIB",
 		name:      "cbgpPeerTable",
 		oid:       "1.3.6.1.4.1.9.9.187.1.2.1",
@@ -637,9 +567,7 @@ var pipelineIndexedTables = []indexedTable{
 	},
 }
 
-// assertTableIsIndexed checks one stored table against what its module's INDEX
-// clause requires of it, and then that the index cache can decode a row of that
-// table into one label per index column.
+// assertTableIsIndexed checks a stored table against its INDEX clause and that the index cache decodes a row.
 func assertTableIsIndexed(t *testing.T, indexCache *metrics.TableIndexCache, table *mib.TableInfo, want indexedTable) {
 	t.Helper()
 
@@ -709,8 +637,7 @@ const (
 	ifInOctetsColOID  = ifEntryOID + ".10"
 	ifOutOctetsColOID = ifEntryOID + ".16"
 
-	// cbgpPeer2AddrFamilyPrefixEntry, INDEX { cbgpPeer2Type,
-	// cbgpPeer2RemoteAddr, cbgpPeer2AddrFamilyAfi, cbgpPeer2AddrFamilySafi }.
+	// cbgpPeer2AddrFamilyPrefixEntry, INDEX { cbgpPeer2Type, cbgpPeer2RemoteAddr, cbgpPeer2AddrFamilyAfi, cbgpPeer2AddrFamilySafi }.
 	bgpEntryOID       = ".1.3.6.1.4.1.9.9.187.1.2.8.1"
 	bgpAcceptedColOID = bgpEntryOID + ".1" // cbgpPeer2AcceptedPrefixes
 	bgpDeniedColOID   = bgpEntryOID + ".2" // cbgpPeer2DeniedPrefixes
@@ -730,17 +657,7 @@ func bgpRowSuffix(ipv4 string, afi, safi int) string {
 	return fmt.Sprintf(".1.4.%s.%d.%d", ipv4, afi, safi)
 }
 
-// TestEndToEndPipeline drives the whole metric pipeline against real
-// components: an in-process SNMPv2c agent on loopback, the production SNMP
-// client, MIB metadata parsed from the repository's MIB files, and the
-// production Prometheus exporter writing to a remote-write endpoint that
-// decodes exactly what went on the wire.
-//
-// What it is protecting is the naming path. A table column has to arrive at
-// Prometheus under the MIB object's name with the row index in labels
-// (snmp_ifInOctets{ifindex="1"}); naming it after the instance OID
-// (snmp__1_3_6_1_2_1_2_2_1_10_1) produces one metric name per row, which
-// cannot be aggregated or queried by hand.
+// TestEndToEndPipeline drives agent, SNMP client, parsed MIBs and exporter to remote write, checking columns are named by object with index labels.
 func TestEndToEndPipeline(t *testing.T) {
 	mibStorage := loadPipelineMIBs(t, filepath.Join(t.TempDir(), "mib-storage"))
 
@@ -846,9 +763,7 @@ func TestEndToEndPipeline(t *testing.T) {
 				t.Errorf("%s reached Prometheus as %q, want snmp_cbgpPeer2AcceptedPrefixes", oid, s.name)
 			}
 
-			// Every column of the INDEX clause has to become its own label.
-			// Collapsing the row index into one opaque label, or stopping at
-			// the first index column, is the failure this catches.
+			// Every INDEX column becomes its own label.
 			if s.labels["cbgppeer2type"] != "1" {
 				t.Errorf("peer %s: cbgppeer2type=%q, want 1 (ipv4)", peer, s.labels["cbgppeer2type"])
 			}
@@ -933,14 +848,7 @@ func TestEndToEndPipeline(t *testing.T) {
 	})
 
 	t.Run("DeviceAndCallerLabelsSurviveToTheWire", func(t *testing.T) {
-		// Scoped to the samples converted from SNMP results, which are the
-		// ones this test drives; each is identified by its oid label.
-		//
-		// The info metrics built alongside them (snmp_*_info) deliberately are
-		// not checked here: internal/metrics builds their label set from the
-		// device name and the row index only, so the caller's extra labels do
-		// not reach them. That is a gap in the exporter, not in this test, and
-		// asserting it here would be asserting the gap is correct.
+		// Only samples converted from SNMP results, identified by oid; info metrics do not carry the extra labels.
 		for _, s := range written {
 			if s.labels["oid"] == "" {
 				continue

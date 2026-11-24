@@ -1,28 +1,5 @@
 #!/usr/bin/env bash
-# Fold the pending CHANGELOG entries into a release's section.
-#
-# Usage: scripts/changelog-assemble.sh [--check] <vX.Y.Z[-alpha|-rc.N]> [date]   (from the repository root)
-#
-# --check runs every validation below and writes nothing: the release
-# targets' DRY_RUN=1 runs it, so a dry run fails exactly where the release
-# would.
-#
-# A change never edits CHANGELOG.md, it adds a
-# fragment, changelog.d/<issue>-<slug>.md, holding only its entry under the
-# Keep a Changelog subsection headings it lands under. This is the release
-# step that turns them into the version's section:
-#
-#   - the entries under "## [Unreleased]" (if any) and every fragment, in file
-#     name order, are merged into one "## [X.Y.Z] - <date>" section placed
-#     directly under "## [Unreleased]", which is left empty;
-#   - entries under the same "### " heading are grouped under it once, the
-#     Keep a Changelog headings first in their usual order, any other heading
-#     (a "### Changed — BREAKING: ..." one) after them in the order first seen;
-#   - the fragments are deleted.
-#
-# CHANGELOG.md is created if it does not exist yet. A fragment with text
-# outside a "### " heading is refused, as is a release with nothing to
-# record. Nothing is committed: the release targets commit the result.
+# Fold [Unreleased] and changelog.d/ fragments into a version section of CHANGELOG.md. Usage: scripts/changelog-assemble.sh [--check] <vX.Y.Z[-alpha|-rc.N]> [date]
 
 set -euo pipefail
 
@@ -117,11 +94,7 @@ trap 'rm -f "$tmp"' EXIT
 
 {
     if [ -f CHANGELOG.md ]; then
-        # Everything up to and including the [Unreleased] heading, then the new
-        # section, then everything from the next "## " heading on: the old
-        # [Unreleased] body is what was just folded in.
-        # The section goes through the environment: awk -v would interpret
-        # backslash escapes in an entry.
+        # Splice the new section after [Unreleased], passed through the environment so awk does not interpret escapes.
         SECT="## [$ver] - $date"$'\n'"$section" awk '
             /^## \[Unreleased\][[:space:]]*$/ { print; print ""; print ENVIRON["SECT"]; print ""; skipping = 1; next }
             skipping && /^## / { skipping = 0 }

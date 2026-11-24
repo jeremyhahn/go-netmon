@@ -9,15 +9,7 @@ import (
 	"time"
 )
 
-// escapeFixture builds a sandbox with something worth stealing just outside it.
-//
-// Layout, all under t.TempDir():
-//
-//	base/outside.txt        the file every escape attempt is aiming at
-//	base/outside-dir/       a directory an escape could empty
-//	base/inside/            the root under test
-//	base/inside/escape ->   ../                (symlink out of the root)
-//	base/inside/absolute -> /etc               (absolute symlink)
+// escapeFixture builds a root under t.TempDir() with outside.txt, outside-dir/ and escaping symlinks.
 func escapeFixture(t *testing.T) (root *Root, base string) {
 	t.Helper()
 	base = t.TempDir()
@@ -61,18 +53,7 @@ func escapeFixture(t *testing.T) (root *Root, base string) {
 	return root, base
 }
 
-// TestRootRefusesEveryEscape is the test this package exists for.
-//
-// The shell tooling it replaces expressed containment as path strings and a list
-// of directories it hoped never to be pointed at; a test harness built on the
-// same idea aimed "find -delete" at /usr on the operator's host. Here every path
-// is resolved by the kernel relative to an open directory handle, so the three
-// ways out - "..", an absolute path, and a symbolic link pointing outside - are
-// not merely detected but impossible to follow.
-//
-// Each case asserts on the refusal AND on the target still being there
-// afterwards: a test that only checked for an error would pass just as happily
-// against an implementation that deleted the file and then complained.
+// TestRootRefusesEveryEscape checks "..", absolute paths and escaping links are refused and the target survives.
 func TestRootRefusesEveryEscape(t *testing.T) {
 	root, base := escapeFixture(t)
 

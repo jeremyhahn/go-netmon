@@ -11,14 +11,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// DeviceState summarizes a device's health for a fleet overview.
-//
-// It is a summary and not a new source of truth: every state is derived from
-// the status the per-device endpoint returns, which travels alongside it. Its
-// job is to make the distinctions a fleet card has to draw explicit, in
-// particular the two that are easy to conflate — a device that has never been
-// polled and a device whose polls fail — rather than leaving each client to
-// rediscover that a zero last_poll_time means the former.
+// DeviceState summarizes a device's health for the fleet view, derived from its status.
 type DeviceState string
 
 // The states a device can be in, from a fleet view's point of view.
@@ -54,13 +47,7 @@ const (
 	StateUnknown DeviceState = "unknown"
 )
 
-// FleetDeviceStatus is one device's row in the fleet overview.
-//
-// Status is verbatim what GET /api/devices/{id}/status returns for the same
-// device, nested rather than flattened, so the two endpoints cannot drift into
-// describing a device differently. Around it sit only the fields a card needs
-// to label and link the row, all of which come from the device record the fleet
-// listing already read.
+// FleetDeviceStatus is one fleet row: the per-device status nested, plus labeling fields.
 type FleetDeviceStatus struct {
 	ID      int64  `json:"id"`
 	Name    string `json:"name"`
@@ -71,12 +58,7 @@ type FleetDeviceStatus struct {
 	// Enabled is the device record's flag, stated on every row.
 	Enabled bool `json:"enabled"`
 
-	// PollInterval is the device's own interval in seconds, absent when it
-	// inherits the global default, and EffectivePollInterval is the interval it
-	// is polled at either way. They come from the device record this listing
-	// already read, so a fleet view can label every row's schedule without a
-	// request per device — and it can do so for a device the poller has never
-	// heard of, whose Status carries nothing at all.
+	// PollInterval is the device's own interval (absent when inherited); EffectivePollInterval is the one applied.
 	PollInterval          *int `json:"poll_interval,omitempty"`
 	EffectivePollInterval int  `json:"effective_poll_interval"`
 
@@ -89,11 +71,7 @@ type FleetDeviceStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
-// FleetStatusResponse is the body of GET /api/devices/status.
-//
-// Devices is always an array, empty when nothing is configured, so a client can
-// iterate it without a null check. It carries one page when the caller asked
-// for one and the whole fleet otherwise.
+// FleetStatusResponse is the body of GET /api/devices/status; Devices is never null.
 type FleetStatusResponse struct {
 	Devices []FleetDeviceStatus `json:"devices"`
 
@@ -104,11 +82,7 @@ type FleetStatusResponse struct {
 	// Configured is how many devices exist at all, regardless of any filter.
 	Configured int `json:"configured"`
 
-	// Summary counts every configured device by state, so a fleet-wide tally
-	// travels as a handful of numbers rather than as the rows behind them. It
-	// ignores the filters deliberately: "12 unreachable" is a statement about
-	// the fleet, and a chip that recounted itself against its own filter would
-	// always read as the number of rows on screen.
+	// Summary counts every configured device by state, ignoring filters.
 	Summary map[DeviceState]int `json:"summary"`
 }
 
@@ -181,12 +155,7 @@ func (q FleetQuery) page(entries []FleetDeviceStatus) []FleetDeviceStatus {
 	return entries[q.Offset:end]
 }
 
-// handleFleetStatus handles GET /api/devices/status: live status for every
-// configured device in one request.
-//
-// It exists because a fleet overview built on the per-device endpoint issues one
-// request per device on every page load, which is invisible at four devices and
-// is not at a hundred.
+// handleFleetStatus handles GET /api/devices/status: live status for every configured device in one request.
 func (s *Server) handleFleetStatus(w http.ResponseWriter, r *http.Request) {
 	query, err := parseFleetQuery(r)
 	if err != nil {
@@ -200,10 +169,7 @@ func (s *Server) handleFleetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every device is classified, because the summary counts all of them and
-	// the poller answers for all of them in the one call either way. What the
-	// narrowing saves is the serialization and the transfer, which is where the
-	// cost actually was.
+	// Every device is classified, since the summary counts all; narrowing saves serialization only.
 	all := s.fleetStatus(r.Context(), devices)
 
 	summary := make(map[DeviceState]int, len(all))
@@ -223,21 +189,7 @@ func (s *Server) handleFleetStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// fleetStatus collects every device's status in the order given.
-//
-// It asks the poller once. The poller builds its device listing from in-memory
-// worker state, so one response already carries the status of everything it
-// polls; asking per device instead cost a round trip per device, and since
-// every open overview repeats that every 30 seconds the load on the poller was
-// devices times sessions. At 10,000 devices and 25 operators that was 250,000
-// requests a tick, which queued past the collection budget and left 85% of the
-// rows blank — an overview reporting a fleet-wide outage that was not
-// happening. One request per refresh is flat in both directions.
-//
-// Order comes from the caller's slice: the storage layer sorts devices by name
-// and rows are filled in that order, so repeated requests do not reshuffle. A
-// device the poller has no record of is reported as such rather than as an
-// error, and if the poller cannot be reached at all every row says so.
+// fleetStatus collects every device's status from one poller listing call, in the caller's order; an unknown device or unreachable poller is reported per row.
 func (s *Server) fleetStatus(ctx context.Context, devices []storage.Device) []FleetDeviceStatus {
 	ctx, cancel := context.WithTimeout(ctx, FleetStatusBudget)
 	defer cancel()
@@ -330,15 +282,7 @@ func newFleetDeviceStatus(
 	return entry
 }
 
-// deviceState names the state a fleet card shows for a device.
-//
-// Unreachable outranks a failed poll because it is the stronger and more
-// actionable statement: a device answering nothing at all is a different
-// problem from one whose polls partly fail, and the poller distinguishes them.
-// The zero last_poll_time is checked after it, so a device that has never
-// answered since being registered reads as unreachable rather than as merely
-// pending — the raw last_poll_time is still in the row for anyone who needs the
-// finer fact.
+// deviceState names a device's fleet state; unreachable outranks a failed poll, then a zero last_poll_time.
 func deviceState(status *client.DeviceStatus, err error) DeviceState {
 	if err != nil {
 		var notPolled *DeviceNotPolledError

@@ -31,10 +31,7 @@ func parseModuleOIDs(t *testing.T, module string) map[string]*mib.OIDMetadata {
 	return byName
 }
 
-// TestUnitsFromObjectTypeClause verifies that the UNITS clause declared on an
-// OBJECT-TYPE is captured. gosmi exposes this on the resolved node type
-// (SmiType.Units); reading it from SmiType.GetRaw() silently drops it because
-// the raw type is the unresolved syntax, which carries no UNITS.
+// TestUnitsFromObjectTypeClause checks UNITS is read from the resolved type (SmiType.Units), not GetRaw().
 func TestUnitsFromObjectTypeClause(t *testing.T) {
 	tests := []struct {
 		module string
@@ -74,11 +71,7 @@ func TestUnitsAbsentWhenNotDeclared(t *testing.T) {
 	}
 }
 
-// TestDisplayHintResolvedThroughTextualConvention verifies that DISPLAY-HINT
-// survives for both a bare textual convention and a subtyped one. For
-// "SYNTAX DisplayString (SIZE (0..255))" the raw type is an anonymous subtype
-// with no name and no format, so the hint is only reachable via the resolved
-// type that gosmi builds by walking to the parent.
+// TestDisplayHintResolvedThroughTextualConvention checks DISPLAY-HINT survives a bare and a subtyped TC.
 func TestDisplayHintResolvedThroughTextualConvention(t *testing.T) {
 	oids := parseModuleOIDs(t, "IF-MIB")
 
@@ -143,10 +136,7 @@ func TestSyntaxPreservesConcreteTypeNames(t *testing.T) {
 	}
 }
 
-// TestEnumsResolveThroughTextualConvention verifies enum extraction works for
-// a value defined via a textual convention rather than an inline INTEGER
-// enumeration. TruthValue is a TC, so the raw anonymous type carries no named
-// numbers and only the resolved type has them.
+// TestEnumsResolveThroughTextualConvention checks enums come from the resolved TC type.
 func TestEnumsResolveThroughTextualConvention(t *testing.T) {
 	oids := parseModuleOIDs(t, "IF-MIB")
 

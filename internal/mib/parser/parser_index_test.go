@@ -35,10 +35,7 @@ func parseModuleOIDsFrom(t *testing.T, module string, dirs ...string) map[string
 	return byName
 }
 
-// TestIndexColumnsFromRealMIBs verifies that a table row records the resolved
-// type of each of its index columns, not just the column names. The types come
-// from gosmi's resolved node type; the raw SYNTAX is anonymous for subtyped
-// textual conventions and would yield an empty name.
+// TestIndexColumnsFromRealMIBs verifies index columns record their resolved types.
 func TestIndexColumnsFromRealMIBs(t *testing.T) {
 	tests := []struct {
 		module string
@@ -99,9 +96,7 @@ func TestIndexColumnsFromRealMIBs(t *testing.T) {
 	}
 }
 
-// TestIndexColumnsImplied verifies that IMPLIED is recorded, and only on the
-// final index column. Without it, a variable-length string index is decoded as
-// if it carried a leading length sub-identifier.
+// TestIndexColumnsImplied verifies IMPLIED is recorded only on the final index column.
 func TestIndexColumnsImplied(t *testing.T) {
 	oids := parseModuleOIDsFrom(t, "SNMP-TARGET-MIB", testsupport.MIBDirs("standard", "asr1001")...)
 
@@ -121,8 +116,7 @@ func TestIndexColumnsImplied(t *testing.T) {
 	})
 }
 
-// TestIndexColumnsNotImpliedForMultiIndexTable guards the "last column only"
-// rule: a table without IMPLIED must not have the flag set anywhere.
+// TestIndexColumnsNotImpliedForMultiIndexTable: no IMPLIED flag on a table without it.
 func TestIndexColumnsNotImpliedForMultiIndexTable(t *testing.T) {
 	oids := parseModuleOIDsFrom(t, "TCP-MIB", testsupport.MIBDir("standard"))
 
@@ -137,14 +131,7 @@ func TestIndexColumnsNotImpliedForMultiIndexTable(t *testing.T) {
 	}
 }
 
-// TestIndexColumnsResolveThroughImportedModules covers an index whose types
-// come from another module: ipAddressEntry indexes on InetAddressType and
-// InetAddress, both defined in INET-ADDRESS-MIB. That module used to be absent
-// from mibs/, which left gosmi with a nil node type and the base types empty —
-// the index still decoded, but only by falling back to a name heuristic.
-//
-// With the module present the base types must resolve, because that is what
-// lets an index value be decoded by its actual type rather than guessed at.
+// TestIndexColumnsResolveThroughImportedModules checks index base types resolve from INET-ADDRESS-MIB.
 func TestIndexColumnsResolveThroughImportedModules(t *testing.T) {
 	oids := parseModuleOIDsFrom(t, "IP-MIB", testsupport.MIBDir("standard"))
 

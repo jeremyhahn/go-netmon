@@ -11,12 +11,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/backup"
 )
 
-// globals holds the settings every command shares, bound to persistent flags.
-//
-// Nothing here is inferred from the working directory except the repository
-// default, which is printed back before anything happens. The compose project in
-// particular is pinned: without it compose derives one from the directory name,
-// and a command aimed at a test stack reaches the deployed one instead.
+// globals holds the settings every command shares; the compose project is pinned so commands never reach another stack.
 type globals struct {
 	repo        string
 	composeFile string

@@ -14,20 +14,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// Walking a device's OID tree.
-//
-// Answering "what does this box actually expose?" needed net-snmp on the host,
-// or a throwaway program written against internal packages. Neither is portable
-// and neither uses the credentials already stored for the device, which for
-// SNMPv3 is most of the difficulty.
-//
-// A walk is the tool for two questions that come up constantly: whether a MIB is
-// worth importing, since a module the device does not implement produces
-// nothing; and why a polled object is empty, since the device answering
-// NoSuchObject looks exactly like the poller not asking.
-//
-// Names are resolved from the imported MIBs where they are known and left as
-// raw OIDs where they are not, so a walk is useful before any MIB is imported.
+// Walking a device's OID tree with its stored credentials, naming OIDs from imported MIBs where known.
 
 // WalkDefaultRoot is where a walk starts when the caller names no subtree. It
 // is the whole internet subtree: everything standard and every vendor's own,
@@ -215,11 +202,7 @@ func statusForWalk(resp *SNMPWalkResponse) int {
 	}
 }
 
-// performSNMPWalk walks root and reports what the device answered.
-//
-// A device that answers nothing under root is a success with no varbinds, not a
-// failure: "this box does not implement that MIB" is the answer, and the most
-// common reason for walking in the first place.
+// performSNMPWalk walks root and reports what the device answered; no varbinds is a success.
 func (s *Server) performSNMPWalk(
 	ctx context.Context, probe snmpProbe, root string, limit int,
 ) *SNMPWalkResponse {
@@ -326,14 +309,7 @@ func walkSummary(resp *SNMPWalkResponse) string {
 	}
 }
 
-// oidNamer returns a lookup from an instance OID to the MIB object it belongs
-// to, or a function reporting nothing when no MIB metadata is available.
-//
-// A walked OID carries an instance suffix the MIB does not define — ".0" for a
-// scalar, the row index for a table column — so the lookup drops trailing
-// sub-identifiers until it finds a definition. Bounded, because an OID under no
-// known module would otherwise be stripped all the way to the root and match
-// something meaninglessly general.
+// oidNamer returns a lookup from an instance OID to its MIB object, stripping a bounded number of trailing sub-identifiers.
 func (s *Server) oidNamer() func(string) *mib.OIDMetadata {
 	store, err := s.mibStore()
 	if err != nil {
@@ -368,31 +344,15 @@ func (s *Server) oidNamer() func(string) *mib.OIDMetadata {
 	}
 }
 
-// maxInstanceSubIDs is how many trailing sub-identifiers a lookup will drop
-// looking for the defining object. A composite table index is several, and an
-// index containing a string is one sub-identifier per character, so this is
-// generous; what it rules out is stripping an unknown OID back to the root.
+// maxInstanceSubIDs bounds how many trailing sub-identifiers a lookup drops.
 const maxInstanceSubIDs = 24
 
-// describesAnObject reports whether metadata is a real object rather than a
-// place in the tree.
-//
-// A MIB registers names for interior nodes as well as objects — "enterprises",
-// "atenProducts", "mib-2" — and those are stored with the same shape as an
-// object but no syntax and no access. Without this check every unrecognized
-// vendor OID resolved to "enterprises", because stripping sub-identifiers
-// eventually reaches 1.3.6.1.4.1 and that node exists. Labeling 68 distinct
-// ATEN objects "enterprises" is worse than labeling none of them: it reads as
-// though the MIB were understood.
+// describesAnObject reports whether metadata is a real object rather than an interior registration node.
 func describesAnObject(object *mib.OIDMetadata) bool {
 	if object == nil {
 		return false
 	}
-	// A syntax, or a structural role in a table. Access is deliberately not
-	// part of this: the parser records "unknown" for a registration node rather
-	// than leaving it empty, so accepting a non-empty access let every
-	// registration back in — a walk of a BMC came back with 1317
-	// objects attributed to ATEN-PRODUCTS-MIB, which defines six.
+	// A syntax or a table role; access is not checked, as the parser records "unknown" for registration nodes.
 	return object.Type != "" ||
 		object.IsScalar || object.IsColumn || object.IsTable || object.IsTableEntry
 }

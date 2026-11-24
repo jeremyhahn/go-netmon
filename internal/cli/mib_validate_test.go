@@ -115,9 +115,7 @@ func TestValidateStartsFromAnEmptyLibrary(t *testing.T) {
 	}
 }
 
-// TestValidateIgnoresSMIPATH checks that validate searches exactly the
-// directories it is given. A host whose SMIPATH holds SNMPv2-SMI must not make
-// a directory without it look complete.
+// TestValidateIgnoresSMIPATH checks that validate searches only the directories it is given.
 func TestValidateIgnoresSMIPATH(t *testing.T) {
 	t.Setenv("SMIPATH", testsupport.MIBDir("standard"))
 
@@ -133,17 +131,11 @@ func TestValidateIgnoresSMIPATH(t *testing.T) {
 	}
 }
 
-// TestValidateFailsWhenAnImportIsMissing is the case the command exists for:
-// gosmi reports a module whose IMPORTS did not resolve as loaded, and the
-// deployment then produces no metrics for it with nothing in the log.
+// TestValidateFailsWhenAnImportIsMissing: gosmi loads a module with unresolved IMPORTS without error.
 func TestValidateFailsWhenAnImportIsMissing(t *testing.T) {
 	dir := t.TempDir()
 
-	// The objects hang off an identifier defined in a vendor module that is not
-	// present. Without SNMPv2-SMI gosmi still loads a module that imports only
-	// the SMI base types, with those types unresolved (a WARN) - it is the
-	// vendor root that has to be missing to reproduce the real failure, which is what
-	// CISCO-PRODUCTS-MIB does without CISCO-SMI: it loads with zero nodes.
+	// The vendor root must be missing to reproduce a module that loads with zero nodes.
 	writeMIB(t, dir, "ORPHAN-MIB.mib", `ORPHAN-MIB DEFINITIONS ::= BEGIN
 IMPORTS
     OBJECT-TYPE, Integer32
@@ -234,13 +226,7 @@ func TestValidateSkipsFilesThatAreNotMIBs(t *testing.T) {
 	}
 }
 
-// TestValidateAcceptsADefinitionsOnlyModule covers the second false positive.
-//
-// A module that defines only textual conventions correctly produces no objects.
-// SNMPv2-TC and SNMPv2-CONF are both like this and both ship in the standard
-// set, so treating "no objects" as failure condemned two of the most common
-// files there are. SNMPv2-CONF additionally mentions OBJECT-TYPE in a comment,
-// which is why comments are stripped before deciding.
+// TestValidateAcceptsADefinitionsOnlyModule: a module with only textual conventions is valid; comments are stripped first.
 func TestValidateAcceptsADefinitionsOnlyModule(t *testing.T) {
 	dir := t.TempDir()
 	writeMIB(t, dir, "TC-ONLY-MIB.mib", `TC-ONLY-MIB DEFINITIONS ::= BEGIN

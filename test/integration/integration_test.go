@@ -437,14 +437,7 @@ func probePrometheus(ctx context.Context, client *http.Client, url string) error
 	return nil
 }
 
-// waitForSNMP blocks until the SNMP agent at host:port answers a GET of
-// sysUpTime.0 with a usable value, or until the timeout expires.
-//
-// It uses the production SNMP client over a real UDP socket, so what it proves
-// is exactly what the poller needs to be true. Sleeping for a fixed interval
-// and returning nil, which is what this used to do, makes every later failure
-// look like a fault in the code under test rather than an environment that
-// never came up.
+// waitForSNMP blocks until the agent at host:port answers sysUpTime.0 through the production client, or the timeout expires.
 func waitForSNMP(host, port string, timeout time.Duration) (*snmp.Result, error) {
 	target := net.JoinHostPort(host, port)
 	device := &config.Device{
@@ -527,12 +520,7 @@ func usableVarbind(result *snmp.Result) bool {
 	}
 }
 
-// usableVarbinds returns the varbinds in a poll result that carry a value.
-//
-// A poll result is not required to be entirely usable: the profile selects
-// objects from the whole MIB and the simulator implements only some of them, so
-// noSuchInstance for an object the fixture omits is the agent behaving
-// correctly. What matters is how many varbinds carry data and which ones.
+// usableVarbinds returns the varbinds in a poll result that carry a value; noSuchInstance is expected for objects the simulator omits.
 func usableVarbinds(results []*snmp.Result) []*snmp.Result {
 	usable := make([]*snmp.Result, 0, len(results))
 	for _, result := range results {

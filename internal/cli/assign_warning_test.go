@@ -7,13 +7,7 @@ import (
 	"testing"
 )
 
-// Reporting an assignment that succeeded without achieving anything.
-//
-// "netmon device mib add" printed "Assigned <MIB>" whatever happened, because the
-// operation could only succeed or fail. A module can do neither: ATEN-PRODUCTS-MIB
-// attaches cleanly and produces no metric, ever, because it defines no readable
-// objects. The server now says so in the assignment response, and the exit code
-// stays zero — nothing failed — so the warning is the only signal there is.
+// An assignment that succeeds but will produce no metrics must print a warning and exit zero.
 
 // assignmentServer answers the catalog reads a device/MIB reference needs, plus
 // the assignment itself with the given response body.

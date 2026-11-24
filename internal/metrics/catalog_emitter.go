@@ -10,33 +10,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// The catalog is written by exactly one designated emitter, and never from a
-// device's poll path.
-//
-// Both halves of that matter. Writing it from a poll path would emit the whole
-// catalog once per device per cycle -- 20,390 series times the fleet, which at
-// a hundred thousand devices is billions of writes for data that is identical
-// every time. And letting every process emit it on its own timer would have
-// several collectors writing the same series at uncoordinated moments: the
-// first write to land sets the sample's timestamp, and a second arriving
-// behind it is rejected out of order, because out_of_order_time_window is 0 by
-// default. That failure needs more than one shard to appear at all, so it
-// would work in development and fail intermittently in production.
-//
-// Designating one emitter by configuration avoids both without a coordination
-// protocol, an election, or any reliance on how the receiver treats duplicate
-// samples. A single-process deployment designates itself; a sharded one names
-// one instance. It is a separate component from the exporter for the same
-// reason: sharding must not require restructuring it.
+// One configured emitter writes the catalog on its own timer, never from a poll path, so writes are never duplicated out of order.
 
-// CatalogInterval is how often the designated emitter republishes the catalog.
-//
-// The catalog is static between MIB loads, so this is not a data-freshness
-// question -- it is only about staying inside Prometheus's staleness window,
-// which is five minutes by default. Two minutes leaves room for one missed
-// emission without the series going stale, and puts the cost at roughly 2 MB
-// of labels before compression every two minutes, forever, regardless of how
-// many devices exist or how often they are polled.
+// CatalogInterval is how often the emitter republishes the catalog, inside the five-minute staleness window.
 const CatalogInterval = 2 * time.Minute
 
 // Self-instrumentation for the catalog.
@@ -98,14 +74,7 @@ func init() {
 	)
 }
 
-// catalogSink delivers the catalog, and delivers only the catalog.
-//
-// It is a narrower dependency than Exporter on purpose. The catalog must not
-// share a batch with device telemetry -- a rejected catalog write that put
-// device samples back with it could delay or discard measurements, so a
-// description would be able to cost a reading. Naming exactly what the emitter
-// needs is what stops a later change reaching for Export and reintroducing
-// that coupling.
+// catalogSink delivers only the catalog, so a catalog write never shares a batch with device telemetry.
 type catalogSink interface {
 	// SendCatalog delivers samples and reports whether Prometheus took them.
 	// It returns on delivery, not on queueing.
@@ -127,11 +96,7 @@ type CatalogEmitter struct {
 	once sync.Once
 }
 
-// NewCatalogEmitterFor returns an emitter publishing the catalog for what
-// exporter has sent, described by the MIB metadata it was built with.
-//
-// It does not start on construction: a process that is not the designated
-// emitter never calls Start, or never builds one at all.
+// NewCatalogEmitterFor returns an emitter for what exporter has sent; it starts only when Start is called.
 func NewCatalogEmitterFor(exporter *PrometheusExporter) *CatalogEmitter {
 	return newCatalogEmitter(exporter, exporter.TableIndexCache(), exporter.publishedMetricNames())
 }
@@ -198,10 +163,7 @@ func (e *CatalogEmitter) emit(ctx context.Context) {
 	catalogUnknownKind.Set(float64(stats.unknownKind))
 	catalogNameCollisions.Set(float64(stats.collisions))
 
-	// SendCatalog delivers rather than queues, so this outcome means the
-	// catalog reached Prometheus. Counting a success on a buffered write
-	// would give an emitter whose remote write was being refused a clean
-	// record while every description aged out.
+	// SendCatalog delivers rather than queues, so success means the catalog reached Prometheus.
 	if err := e.exporter.SendCatalog(ctx, samples); err != nil {
 		e.recordFailure(err)
 		return
@@ -219,22 +181,7 @@ type catalogStats struct {
 	collisions  int
 }
 
-// render builds the catalog series for every family the loaded MIBs can
-// describe -- not merely the families this process has published.
-//
-// Scoping emission to the local published set is wrong in the deployment this
-// exists for. Exactly one collector is designated as the emitter, and the
-// published set is process-local, so a designated shard A polling IF-MIB
-// devices never observes a shard B that publishes a BGP family: the fleet-wide
-// catalog would carry no row for it, and dashboards could not render B's
-// devices at all. The MIB corpus, by contrast, is identical on every shard, so
-// cataloging it gives one emitter complete knowledge with no cross-process
-// coordination and no second writer to collide with.
-//
-// The cost is rows for families no device answers. That is harmless here: a
-// renderer must ask Prometheus which series a given device actually has
-// regardless, and that query filters the surplus. Describing a metric that is
-// absent costs a row; omitting one that is present costs a blank dashboard.
+// render builds catalog series for every family the loaded MIBs describe, so one emitter covers every shard.
 func (e *CatalogEmitter) render() ([]*Sample, catalogStats) {
 	var stats catalogStats
 
@@ -266,9 +213,7 @@ func (e *CatalogEmitter) render() ([]*Sample, catalogStats) {
 	// series set in an identical order; map iteration alone is not stable.
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Metric < entries[j].Metric })
 
-	// The published set no longer scopes emission, but it still answers the
-	// question the coverage gauge asks: what did this collector publish that
-	// nothing can describe? Raw-OID names are the expected residue.
+	// The published set feeds the coverage gauge: published names nothing describes (raw-OID names expected).
 	for _, name := range e.published.snapshot() {
 		if _, described := catalog.entries[name]; described {
 			continue
@@ -284,13 +229,7 @@ func (e *CatalogEmitter) render() ([]*Sample, catalogStats) {
 	return catalogSamples(entries, e.now()), stats
 }
 
-// recordFailure reports a catalog that did not reach Prometheus.
-//
-// It is loud because the failure is quiet: the device metrics keep arriving
-// and look healthy while every description ages out, so the symptom presents
-// as a broken UI rather than a broken collector. The last-success gauge is
-// deliberately not touched -- its age is what says how close the catalog is to
-// falling outside the lookback consumers query it with.
+// recordFailure reports a catalog that did not reach Prometheus; the last-success gauge is left alone.
 func (e *CatalogEmitter) recordFailure(err error) {
 	catalogEmissions.WithLabelValues("error").Inc()
 	log.Printf("ERROR: the metric catalog did not reach Prometheus, so dashboards will lose "+

@@ -2,20 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// What actually crosses the wire while a dashboard is open.
-//
-// Two things used to make this grow with the size of the fleet rather than with
-// what the operator was looking at:
-//
-//   - a warm-up subscription to unqualified names ("snmp_sysUpTime"), which
-//     match every series on every device. At ten thousand devices that is about
-//     1.5MB every five seconds to every open browser, whichever device it was
-//     showing -- and nothing in the page ever read it.
-//   - re-sending every subscribed result on every five-second round, though
-//     devices are polled every 30 to 60 seconds, so most rounds carried a
-//     sample the browser already had.
-//
-// This measures the frames themselves, against the deployed container.
+// Measures the websocket frames sent while a dashboard is open, against the deployed container.
 
 import { BASE } from '../target';
 import { deviceByName } from '../stack';
@@ -63,16 +50,7 @@ async function serveWorkingTree(page: Page) {
   });
 }
 
-// watch records every reading the browser receives, of either kind.
-//
-// A reading arrives either whole (metric_snapshot) or as what changed
-// (metric_delta). Heartbeats are excluded: they carry no data and one covers
-// every steady query in a round.
-//
-// Both kinds are counted deliberately. Watching for one name only is how this
-// measurement came to pass while measuring nothing at all: the frames were
-// renamed and the filter matched none of them, so a test whose whole point is
-// that the wire is quiet reported a quiet wire because it had stopped looking.
+// watch records every metric_snapshot and metric_delta the browser receives; heartbeats are excluded.
 function watch(page: Page, frames: Frame[]) {
   page.on('websocket', ws => {
     ws.on('framereceived', f => {

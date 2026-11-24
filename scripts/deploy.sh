@@ -1,18 +1,5 @@
 #!/usr/bin/env bash
-# Deploy go-netmon to a host as native systemd services.
-#
-# The target needs an SSH account that can sudo, and nothing else — no Docker,
-# no container runtime, no Go toolchain, no checkout of this repository. The
-# binaries are built here and streamed over the same SSH connection. That is
-# deliberate: the deployment target is a small monitoring appliance, and
-# compiling on it is the one thing guaranteed to make it a bad one.
-#
-# Re-running is the normal way to use this. Every step converges rather than
-# repeats: binaries are replaced in place, an existing config.yaml is never
-# rewritten, and units are only reinstalled when they actually differ.
-#
-# WHAT THIS WILL NOT OVERWRITE: /etc/go-netmon/config.yaml, prometheus.yml, and
-# everything under /var/lib. Those are operator data — see deploy/install.sh.
+# Deploy go-netmon to a host over SSH as native systemd services; idempotent, never overwrites config.yaml, prometheus.yml or /var/lib.
 
 set -euo pipefail
 
@@ -196,10 +183,7 @@ if [[ -n "$dry_run" || -n "$no_start" ]]; then
     exit 0
 fi
 
-# webui_ready_timeout bounds the wait for the web UI to answer. It matches
-# TimeoutStartSec in deploy/go-netmon-webui.service so that this script never
-# gives up on a start systemd is still prepared to wait for — the two giving
-# different answers about the same start is its own kind of false report.
+# webui_ready_timeout bounds the wait for the web UI; it matches TimeoutStartSec in deploy/go-netmon-webui.service.
 webui_ready_timeout="${WEBUI_READY_TIMEOUT:-900}"
 
 # wait_serving polls a URL on the target until it answers 200, or until the
@@ -239,14 +223,7 @@ for u in $units; do
     fi
 done
 
-# THE PORT, NOT THE UNIT. `systemctl is-active` was the only check this script
-# made, and for the web UI it was worse than no check at all: the unit was
-# Type=simple, so it reported active for the ~3.5 minutes the process spent
-# parsing MIBs with nothing listening, and this script printed "Deployed" into
-# that window. The unit is Type=notify now and is-active is honest again — but
-# what a deploy has to assert is that the service SERVES, and the only thing
-# that can assert that is a request that gets an answer. Both checks stay: the
-# unit check catches a process that died, the request catches everything else.
+# Check the unit is active and that the service answers on its port.
 not_serving=
 if [[ -z "$failed" ]]; then
     step "waiting for the web UI to serve (up to ${webui_ready_timeout}s; a cold MIB catalog takes minutes)"

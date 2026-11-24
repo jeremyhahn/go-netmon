@@ -7,11 +7,7 @@ import (
 
 // --- containment ----------------------------------------------------------
 
-// PathEscapeError reports a path that cannot be expressed inside a root.
-//
-// It is returned before any system call is attempted. The kernel-level check in
-// os.Root refuses the same paths; this type exists so the refusal carries the
-// root, its stated purpose and the reason, which a bare syscall error does not.
+// PathEscapeError reports a path that cannot be expressed inside a root, before any system call.
 type PathEscapeError struct {
 	// Purpose is the reason the root was opened, as given to Open or Create.
 	Purpose string
@@ -309,11 +305,7 @@ func (e *ChecksumFileError) Error() string {
 	return "backup: checksums.sha256: " + e.Reason
 }
 
-// MemberError reports a member of the archive that failed verification.
-//
-// Every member check - presence, size, digest and a full decompression - reports
-// through this one type so a caller can treat "the archive is not trustworthy"
-// as a single condition.
+// MemberError reports an archive member that failed presence, size, digest or decompression checks.
 type MemberError struct {
 	Member   string
 	Check    string
@@ -369,10 +361,7 @@ func (e *ProjectMismatchError) Error() string {
 		" - pass --force-project if that is genuinely intended"
 }
 
-// DryRunError reports a restore that printed its plan and changed nothing.
-//
-// It is an error so that a scripted "restore" without the explicit opt-in exits
-// non-zero rather than looking like it succeeded.
+// DryRunError reports a restore that printed its plan and changed nothing, so it exits non-zero.
 type DryRunError struct {
 	Dir string
 }
@@ -413,10 +402,7 @@ func (e *DockerError) Error() string {
 
 func (e *DockerError) Unwrap() error { return e.Err }
 
-// DockerOutputError reports Docker output this tool cannot make sense of.
-//
-// Unexpected output is fatal rather than something to guess at: every decision
-// made from it decides what gets overwritten.
+// DockerOutputError reports Docker output this tool cannot parse; it is always fatal.
 type DockerOutputError struct {
 	Command string
 	Reason  string
@@ -435,11 +421,7 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// LogicalFetchError reports a failed request during the logical export.
-//
-// The export runs against a live web UI before anything is stopped, and every
-// one of its failures is survivable: the backup records
-// logical.status=unavailable and carries on with the physical copy.
+// LogicalFetchError reports a failed request during the logical export; the backup records logical.status=unavailable and continues.
 type LogicalFetchError struct {
 	Path   string
 	Status int

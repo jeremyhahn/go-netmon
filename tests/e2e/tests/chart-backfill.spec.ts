@@ -2,26 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// A chart opens with history rather than accumulating it a point at a time.
-//
-// Every chart on this page started EMPTY and gained one point per series per
-// five-second tick: blank at t=0, a single dot at t=5, a hairline at t=10, and
-// about a minute before it read as a line. That is half of "the dashboard takes
-// an extremely long time to load" -- the other half being how many series are
-// drawn -- and it is not a slow query or a slow render. There was no query for
-// history at all: the stream is an INSTANT read and the chart appended what it
-// returned. loadChartData was written against the range endpoint and never
-// called from anywhere.
-//
-// THE ASSERTION IS ON TIMESTAMPS OLDER THAN THE PAGE LOAD, deliberately. "The
-// chart has data" is true of a chart holding one live point, so a test asserting
-// that would pass at t=5s whether or not backfill ran -- the same defect as a
-// bound test whose ceiling equals the unbounded behaviour. Only points stamped
-// before the browser opened the page distinguish backfilled from live-appended.
-//
-// Everything is served locally: the assets come from the working tree and every
-// API response is intercepted, so this depends on nothing the deployment holds
-// and writes nothing.
+// A chart opens with history: points stamped before page load prove backfill. All API responses are intercepted.
 
 import { BASE } from '../target';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
@@ -166,19 +147,7 @@ async function waitForPoints(page: Page): Promise<number[]> {
 async function openDashboard(page: Page) {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
 
-  // Wait for the device to be IN the selector before opening it.
-  //
-  // openFleetDevice sets select.value and dispatches change -- and setting
-  // .value to an option that does not exist yet is a silent no-op: the select
-  // keeps its old value, the change event opens nothing, and no card is ever
-  // rendered. Measured: ~30% of runs, in which the assertion timed out 20
-  // seconds later with no [id^="chart-"] element in the DOM at all, so this is
-  // a hard failure rather than a slow render.
-  //
-  // This is not a wait that hides a race. It establishes the precondition the
-  // production call documents -- "opening a device goes through the selector"
-  // -- and "no device in the selector" is a different observable state from
-  // "device opened, chart empty", which is what the test is about.
+  // Wait for the device to be in the selector before opening it.
   await page.waitForFunction(() => {
     const select = document.getElementById('dashboardDeviceSelect') as HTMLSelectElement | null;
     return !!select && [...select.options].some(option => option.value === '4');
@@ -191,8 +160,7 @@ test('a chart opens with history rather than accumulating it', async ({ page }) 
   await serveWorkingTree(page);
   await stubDashboard(page, { history: true });
 
-  // Captured BEFORE the page loads. Every point the live ticker could produce
-  // is stamped after this; every backfilled point is stamped before it.
+  // Captured before page load: backfilled points are stamped before this.
   const openedAt = Date.now();
   await openDashboard(page);
 
@@ -204,23 +172,14 @@ test('a chart opens with history rather than accumulating it', async ({ page }) 
     + 'chart did before backfill existed, and what it would still do if the range '
     + 'read were never issued').toBeGreaterThan(1);
 
-  // And the history has to be a SPAN, not one stale dot: the complaint is that
-  // the chart does not read as a line.
+  // The history must span time, not be one point.
   const span = Math.max(...older) - Math.min(...older);
   expect(span, 'the backfilled points cover no time, so the chart still has nothing to draw a line through')
     .toBeGreaterThan(5 * 60 * 1000);
 });
 
 test('a device with no history yet leaves the page working, not broken', async ({ page }) => {
-  // A device polled for the first time has nothing to backfill, and so does any
-  // series that is not currently reporting. That has to degrade to the previous
-  // behaviour -- an empty chart filling from the live stream -- rather than to a
-  // thrown exception that takes the dashboard with it.
-  //
-  // This asserts what it can see without a live stream: that nothing throws, and
-  // that an empty history invents no points. It deliberately does NOT claim to
-  // verify live appending, which needs a socket this test does not mock; saying
-  // otherwise in the title would be the test claiming more than it checks.
+  // An empty history must not throw or invent points.
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(String(error)));
 
@@ -241,14 +200,7 @@ test('a device with no history yet leaves the page working, not broken', async (
 });
 
 test('history is merged behind live points rather than replacing them', async ({ page }) => {
-  // The request is in flight while the stream is already delivering, so the
-  // first live points can be on the chart before the history arrives. Assigning
-  // the history would discard them -- the newest readings on the chart, thrown
-  // away by the thing fetching the oldest.
-  //
-  // Driven directly rather than through a mocked socket: the live point is
-  // seeded into the series and backfill is then run against it, which is the
-  // interleaving without the timing.
+  // Backfill must merge with live points already plotted, not replace them.
   await serveWorkingTree(page);
   await stubDashboard(page, { history: true });
   await openDashboard(page);
@@ -261,11 +213,7 @@ test('history is merged behind live points rather than replacing them', async ({
     const [target] = [...subscription.objects.values()];
     const chart = app.chartFor(target.elementId);
 
-    // A reading from the live stream, stamped INSIDE the history window. A
-    // chart open for a while has exactly this: live points reaching back into
-    // the span the backfill covers. Seeding one newer than all of the history
-    // would let a merge that never sorts come out in order by accident, and
-    // the ordering would go untested.
+    // A live reading inside the history window, so the merge must sort.
     const live = Date.now() - 30 * 60 * 1000 + 1234;
     const [row] = [...chart._panelSeries.values()];
     row.points.push([live, 4242]);
@@ -291,14 +239,7 @@ test('history is merged behind live points rather than replacing them', async ({
 });
 
 test('an empty feed keeps the line and says the reading is not current', async ({ page }) => {
-  // clearPanel used to wipe the series when the stream reported no current
-  // reading, so a metric that stopped reporting lost its entire plotted past --
-  // the chart destroying the only information it had left at the moment that
-  // information mattered most.
-  //
-  // BOTH halves are asserted, because fixing only the first is worse than the
-  // bug: a populated chart reads as current, so a device that went quiet an
-  // hour ago would look healthy. That is absence rendered as health.
+  // A metric with no current reading keeps its plotted history and is shown as not current.
   await serveWorkingTree(page);
   await stubDashboard(page, { history: true });
   await openDashboard(page);

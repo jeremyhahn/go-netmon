@@ -1,35 +1,5 @@
 #!/usr/bin/env bash
-# lint-early-exit-pipes.sh: refuse a pipe into a consumer that exits early
-# (grep -q, grep -...q..., head) in any shell file that sets pipefail.
-#
-# Usage: scripts/lint-early-exit-pipes.sh FILE...
-#
-# Why: grep -q exits at its first match and head at its last wanted line. That
-# closes the pipe; a producer still writing takes SIGPIPE and exits 141, and
-# pipefail reports the 141. So the pipeline fails exactly when the answer is
-# yes -- but only once the producer writes more than a pipe buffer, which is
-# why such a check passes on a small fixture and inverts on a real one. Written
-# "if ! producer | grep -q x; then abort" it ships what it was meant to stop.
-#
-# Instead, point the tool at the file (grep -q x file), count to EOF
-# ([ "$(producer | grep -c x)" -gt 0 ]), capture first and test the capture
-# (out="$(producer)"; grep -q x <<<"$out"), or use the producer's own limit
-# (find ... -print -quit, grep -m1).
-#
-# A site that is safe for a reason the lint cannot see is allowed by an inline
-# marker carrying that reason, on the consumer's line or the line its pipe is on:
-#
-#     printf '%s\n' "$one_word" | grep -qx foo  # pipefail-ok: one short write
-#
-# A marker with no reason is not an allowance.
-#
-# What it sees: a "|" (not "||") followed on the same line, or at the start of
-# the next line, by grep with a q-carrying short option, --quiet or --silent, or
-# by head. Whole-line comments are skipped. It is a line scanner, not a parser:
-# it errs towards flagging, and the marker is the answer to a false positive.
-#
-# Exits 0 when clean, 1 when a site is found (each printed as file:line: text),
-# 2 on a usage error or an unreadable file.
+# Usage: scripts/lint-early-exit-pipes.sh FILE... -- flags pipes into grep -q or head under pipefail; allow a site with '# pipefail-ok: <reason>'; exit 0 clean, 1 found, 2 usage error.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then

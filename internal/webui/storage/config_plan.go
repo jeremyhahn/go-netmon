@@ -13,22 +13,14 @@ const (
 	ConfigActionDelete = "delete"
 )
 
-// ConfigPlan is what importing a document would do to this instance.
-//
-// It is computed from the configuration actually stored, never from what a
-// previous run reported, so a plan shown to an operator describes the machine in
-// front of them.
+// ConfigPlan is what importing a document would do, computed from stored configuration.
 type ConfigPlan struct {
 	Profiles []ConfigChange `json:"profiles"`
 	Devices  []ConfigChange `json:"devices"`
 	Counts   ConfigCounts   `json:"counts"`
 }
 
-// ConfigChange is one record an import would create, update or delete.
-//
-// An update carries the fields that differ. A create or a delete carries Detail
-// instead: listing every field of a record that is wholly arriving or wholly
-// going does not tell an operator anything the record's own summary does not.
+// ConfigChange is one record an import would create, update or delete; updates carry the differing fields.
 type ConfigChange struct {
 	Action string `json:"action"`
 	Name   string `json:"name"`
@@ -218,13 +210,7 @@ func profileDetail(p ConfigProfile) string {
 	return detail
 }
 
-// deviceFieldChanges reports every field of a device that differs.
-//
-// The community string is reported like any other field. Redacting it here
-// would only make the diff lie about what is changing: the document being
-// imported carries the credential in clear, and so does the configuration the
-// poller already fetches, so a diff that hid it would protect nothing while
-// hiding a change of credential from the person approving it.
+// deviceFieldChanges reports every differing device field, the community string included.
 func deviceFieldChanges(before, after ConfigDevice) []ConfigFieldChange {
 	changes := scalarChanges([]scalarField{
 		{"address", before.Address, after.Address},
@@ -264,10 +250,7 @@ func scalarChanges(fields []scalarField) []ConfigFieldChange {
 	return changes
 }
 
-// assignmentChanges reports the MIB assignments that arrive, leave or change.
-//
-// A rule that changes is reported field by field, because "IF-MIB changed" does
-// not say whether a device started polling more or stopped polling most of it.
+// assignmentChanges reports MIB assignments that arrive, leave or change, field by field.
 func assignmentChanges(before, after []ConfigAssignment) []ConfigFieldChange {
 	beforeByModule := assignmentsByModule(before)
 	afterByModule := assignmentsByModule(after)

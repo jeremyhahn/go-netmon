@@ -7,21 +7,14 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// Warning an operator that a MIB will produce nothing.
-//
-// ATEN-PRODUCTS-MIB was assigned to a device and the dashboard stayed empty,
-// with nothing anywhere saying why. The module is a registry: six OBJECT
-// IDENTIFIER assignments naming products, no OBJECT-TYPE, and — because the
-// ATEN-SMI module it IMPORTS is not in the store — no resolved OIDs either. Both
-// facts are visible at assignment time.
+// Warning that an assigned MIB will produce nothing.
 
 // readable is an object the poller would ask a device for.
 func readable(name, oid string) *mib.OIDMetadata {
 	return &mib.OIDMetadata{Name: name, OID: oid, Access: "read-only", Status: "current"}
 }
 
-// TestARegistryModuleIsReportedAsProducingNothing is the ATEN-PRODUCTS-MIB case
-// with its imports resolved: names in a tree, nothing measurable.
+// TestARegistryModuleIsReportedAsProducingNothing covers a registry-only module with its imports resolved.
 func TestARegistryModuleIsReportedAsProducingNothing(t *testing.T) {
 	objects := []*mib.OIDMetadata{
 		{Name: "kvmProducts", OID: "1.3.6.1.4.1.21317.1", Access: "not-accessible", Status: "current"},
@@ -56,8 +49,7 @@ func TestARegistryModuleIsReportedAsProducingNothing(t *testing.T) {
 	}
 }
 
-// TestAnUnresolvedImportIsNamedAsTheCause is the fixable case, and the one worth
-// separating: every object lost its OID because a module it IMPORTS is absent.
+// TestAnUnresolvedImportIsNamedAsTheCause checks the missing imported module is named.
 func TestAnUnresolvedImportIsNamedAsTheCause(t *testing.T) {
 	objects := []*mib.OIDMetadata{
 		{Name: "kvmPortCount", Access: "read-only", Status: "current"},

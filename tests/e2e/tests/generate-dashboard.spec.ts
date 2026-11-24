@@ -2,21 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// The "Generate dashboard" button on a device page.
-//
-// It rendered the generated configuration itself, into a ".metrics-grid" that the
-// dashboard redesign had removed. The renderer's first statement therefore threw
-// on a null element every time — but only after switching to the dashboard view,
-// so the button appeared to work and simply never showed the device's MIBs. That
-// was reported as "it took me to the dashboard, but I still don't see the new
-// MIB", and no Go test could see it.
-//
-// Rendering now goes through the device selector, the same path openFleetDevice
-// uses, and the generate endpoint's own contribution is the diagnosis: which MIBs
-// produced panels and why the others did not.
-//
-// Everything is served locally — the API responses are intercepted, so this does
-// not depend on what the deployment currently holds and writes nothing.
+// The Generate dashboard button opens the device dashboard and reports which MIBs produced panels; API responses are intercepted.
 
 import { BASE } from '../target';
 const STATIC = path.resolve(__dirname, '../../../internal/webui/static');
@@ -49,8 +35,7 @@ async function serveWorkingTree(page: Page) {
   });
 }
 
-// The device the button is pressed on: the ATEN KVM, whose two assigned MIBs are
-// one that produces data and one that never will.
+// The device under test: one assigned MIB produces data, one never will.
 const DEVICE = {
   id: 4,
   name: 'bastion',
@@ -62,14 +47,6 @@ const DEVICE = {
 };
 
 // The generate endpoint's answer, in the shape the server produces.
-//
-// This fixture used to carry `charts` and a coverage note claiming a module
-// "will never add a panel". Both are gone with the MIB-parsing generator: the
-// payload is `panels`, and the note deliberately does NOT claim permanence,
-// because reading Prometheus can tell "reporting nothing" from "reporting
-// things I cannot describe" but cannot tell "will never report" from "has not
-// reported yet". A fixture asserting the old wording was asserting a claim the
-// server stopped making on purpose.
 const SYS_UPTIME_PANEL = {
   id: 'SNMPv2-MIB_snmp_sysUpTime',
   title: 'SNMPv2-MIB - sysUpTime',

@@ -7,18 +7,7 @@ import (
 	"testing"
 )
 
-// What an operator is told when a backup or a restore refuses.
-//
-// These messages are the whole interface at the moment something goes wrong.
-// A restore that stops is doing its job; a restore that stops saying "operation
-// failed" has made the situation worse, because the next move -- retry, fix a
-// label, pick another archive, or stop and think -- depends entirely on which
-// refusal this was.
-//
-// Every message is checked for the two things that make it actionable: the
-// subject it is about (a volume, a path, a component, a file) and the reason.
-// A wrapped cause has to survive too, or errors.As stops working for the code
-// that branches on these.
+// Refusal messages must name their subject and reason and keep the wrapped cause.
 
 func TestErrorMessagesNameTheirSubjectAndReason(t *testing.T) {
 	t.Parallel()
@@ -280,13 +269,7 @@ func TestAnUnarchivableEntryNamesItsKind(t *testing.T) {
 	}
 }
 
-// TestTheTwoRestoreOutcomesThatAreNotFailures covers the pair an operator meets
-// most often, and which must not read as crashes.
-//
-// A dry run that changed nothing has to exit non-zero -- otherwise a script
-// treats "I did not do it" as "I did it" -- while saying plainly that nothing
-// happened and how to actually do it. A failed safety backup has to say what it
-// was protecting and how to proceed anyway.
+// TestTheTwoRestoreOutcomesThatAreNotFailures covers the dry run and the failed safety backup messages.
 func TestTheTwoRestoreOutcomesThatAreNotFailures(t *testing.T) {
 	t.Parallel()
 

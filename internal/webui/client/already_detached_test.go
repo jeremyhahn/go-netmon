@@ -8,14 +8,7 @@ import (
 	"time"
 )
 
-// TestRemovingADeviceThePollerDoesNotHaveIsASuccess covers the answer that
-// makes a failed delete retryable.
-//
-// A device is not deleted until nothing is polling it, so the question a remove
-// asks is "are you polling this?". A poller that answers 404 is answering no,
-// which is the condition the caller needs. Treating that as a failure would
-// leave a device that had already been detached permanently undeletable: every
-// retry would ask again, get 404 again, and refuse again.
+// TestRemovingADeviceThePollerDoesNotHaveIsASuccess: a poller 404 on remove is success.
 func TestRemovingADeviceThePollerDoesNotHaveIsASuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"device not found","message":"device bastion not found"}`, http.StatusNotFound)

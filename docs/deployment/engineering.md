@@ -75,10 +75,8 @@ The code defaulted two paths to container mount points. A native install has no
 | `MIB_UPLOADED_PATH` | `/app/data/uploaded` | `/var/lib/go-netmon/poller/uploaded` |
 | `DASHBOARD_PATH` | `/app/dashboards` | `/var/lib/go-netmon/dashboards` |
 
-`DASHBOARD_PATH` was added by this feature (`cmd/go-netmon/main.go`,
-`dashboardPath`); it mirrors the existing `MIB_UPLOADED_PATH` override rather
-than inventing a second mechanism. The defaults are unchanged, so the container
-image behaves exactly as before.
+`DASHBOARD_PATH` (`cmd/go-netmon/main.go`, `dashboardPath`) works the same way
+as the `MIB_UPLOADED_PATH` override.
 
 ## 5. The single-writer rule
 

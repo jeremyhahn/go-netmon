@@ -6,17 +6,7 @@ import (
 	"strings"
 )
 
-// DisplayHint is a parsed DISPLAY-HINT clause from a TEXTUAL-CONVENTION.
-//
-// RFC 2579 defines two grammars, chosen by the underlying base type:
-//
-//   - Integer types take a single specifier: "d" (decimal), "d-N" (decimal
-//     with N implied fraction digits), "x" (hex), "o" (octal), "b" (binary).
-//   - Octet-string types take a sequence of specifiers, each consuming a run
-//     of octets and rendering them in one format, optionally followed by a
-//     separator character.
-//
-// A parsed hint is immutable and safe to share between goroutines.
+// DisplayHint is a parsed RFC 2579 DISPLAY-HINT, integer or octet-string grammar; immutable.
 type DisplayHint struct {
 	// Integer form.
 	IntFormat   byte // 'd', 'x', 'o' or 'b'; zero when this is an octet hint.
@@ -53,8 +43,7 @@ func (h *DisplayHint) IsOctetHint() bool {
 	return len(h.Octets) > 0
 }
 
-// ParseDisplayHint parses a DISPLAY-HINT string. isInteger selects which of the
-// two grammars applies, since "d" is valid in both and means different things.
+// ParseDisplayHint parses a DISPLAY-HINT; isInteger selects the grammar.
 func ParseDisplayHint(hint string, isInteger bool) (*DisplayHint, error) {
 	if hint == "" {
 		return nil, &DisplayHintError{Hint: hint, Reason: "empty"}
@@ -92,13 +81,7 @@ func parseIntegerHint(hint string) (*DisplayHint, error) {
 	}
 }
 
-// parseOctetHint handles the repeating octet-string grammar:
-//
-//	octet-hint     = *( [ "*" ] length format [ separator [ terminator ] ] )
-//	length         = 1*DIGIT
-//	format         = "a" / "b" / "d" / "o" / "x"
-//	separator      = <any non-alphanumeric character>
-//	terminator     = <any non-alphanumeric character>
+// parseOctetHint parses the repeating RFC 2579 octet-string grammar.
 func parseOctetHint(hint string) (*DisplayHint, error) {
 	parsed := &DisplayHint{}
 
@@ -190,8 +173,7 @@ func formatSignedBase(value int64, base int) string {
 	return strconv.FormatInt(value, base)
 }
 
-// formatScaledDecimal renders value with an implied decimal point, so that
-// DISPLAY-HINT "d-2" turns 1234 into "12.34".
+// formatScaledDecimal renders value with an implied decimal point ("d-2": 1234 is "12.34").
 func formatScaledDecimal(value int64, decimals int) string {
 	sign := ""
 	if value < 0 {
@@ -208,9 +190,7 @@ func formatScaledDecimal(value int64, decimals int) string {
 	return sign + digits[:split] + "." + digits[split:]
 }
 
-// FormatOctets renders a byte slice according to an octet-string DISPLAY-HINT.
-// Octets beyond what the specifiers consume are rendered by repeating the last
-// specifier, which is how RFC 2579 handles values longer than the hint.
+// FormatOctets renders bytes by an octet-string DISPLAY-HINT, repeating the last specifier (RFC 2579).
 func (h *DisplayHint) FormatOctets(value []byte) string {
 	if len(h.Octets) == 0 {
 		return string(value)
@@ -237,10 +217,7 @@ func (h *DisplayHint) FormatOctets(value []byte) string {
 			out.WriteString(formatOctetRun(value[pos:end], spec.Format))
 			pos = end
 
-			// A separator joins two runs, so it is only correct when another
-			// run will actually follow. A declared repeat count larger than
-			// the octets present (e.g. hint "*1x:" over {9, 0xaa}) would
-			// otherwise leave a dangling "aa:".
+			// A separator only when another run follows.
 			if spec.Separator != 0 && r < repeats-1 && pos < len(value) {
 				out.WriteByte(spec.Separator)
 			}

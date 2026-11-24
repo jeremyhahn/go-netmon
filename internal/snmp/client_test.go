@@ -117,9 +117,7 @@ func TestNewClient_UnsupportedVersion(t *testing.T) {
 	device := &config.Device{
 		Name:    "test",
 		Address: "203.0.113.1",
-		// "2" is not a version this speaks. It used to be "1", which is
-		// supported now — a v1-only device could be configured and never
-		// polled, so the client learned to speak it.
+		// "2" is not a supported version.
 		SNMPVersion: "2",
 		Community:   "public",
 		Enabled:     true,

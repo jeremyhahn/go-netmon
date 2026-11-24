@@ -6,11 +6,7 @@ import (
 	"strings"
 )
 
-// RestoreOptions selects what a restore applies and how far it is allowed to go.
-//
-// Every field's zero value is the safe choice: no restore happens without Apply,
-// a safety backup is taken unless it is refused, a project mismatch is fatal, and
-// a populated MIB source tree is left alone.
+// RestoreOptions selects what a restore applies; every zero value is the safe choice.
 type RestoreOptions struct {
 	// From is the backup directory to restore.
 	From string
@@ -61,15 +57,7 @@ type restorePlan struct {
 	treeState  treeState
 }
 
-// Restore replaces a deployment's data with a backup's.
-//
-// It is built so that every way it can fail leaves the current data intact. The
-// archive is verified in full before any Docker call; the backup's compose
-// project must match the target; the target must hold no container this compose
-// file did not create and no volume without its label; nothing happens without
-// Apply; the current state is preserved first; and the one destination that is
-// not a Docker volume - the MIB source tree in the operator's own working copy -
-// needs its own opt-in on top of Apply.
+// Restore verifies the archive and ownership, takes a safety backup, then replaces a deployment's data with a backup's.
 func (s *Service) Restore(ctx context.Context, opts RestoreOptions) (*RestoreResult, error) {
 	archive, err := s.Verify(opts.From)
 	if err != nil {
@@ -201,13 +189,7 @@ func (s *Service) resolveRestoreVolumes(ctx context.Context, plan *restorePlan) 
 	return nil
 }
 
-// resolveRestoreTree locates where the MIB source tree would land and what is
-// already there.
-//
-// The destination is the TARGET deployment's answer, not the backup's: restoring
-// into a different checkout is normal, so it comes from the compose file being
-// restored into, and a difference from the recorded origin is reported rather
-// than silently followed.
+// resolveRestoreTree locates the target's MIB tree and what is already there.
 func (s *Service) resolveRestoreTree(ctx context.Context, plan *restorePlan, opts RestoreOptions) error {
 	if !containsComponent(plan.components, ComponentMIBs) {
 		return nil
@@ -235,10 +217,7 @@ func (s *Service) resolveRestoreTree(ctx context.Context, plan *restorePlan, opt
 	return nil
 }
 
-// reportImageDrift reports, but does not enforce, a difference between the
-// images the data was produced by and the images now deployed. Restoring onto a
-// newer build is a normal upgrade path; whether a build can read the data is not
-// something an image tag can answer, so the operator gets the facts.
+// reportImageDrift reports, without enforcing, image differences between backup and deployment.
 func (s *Service) reportImageDrift(ctx context.Context, m *Manifest) {
 	services, err := s.cfg.Docker.ComposeServices(ctx)
 	if err != nil {
@@ -252,12 +231,7 @@ func (s *Service) reportImageDrift(ctx context.Context, m *Manifest) {
 	}
 }
 
-// takeSafetyBackup preserves exactly what is about to be destroyed.
-//
-// 'mibs' is dropped when the destination holds nothing: a backup refuses an
-// empty MIB tree, correctly, and there is by definition nothing there to
-// preserve. Aborting over it would block precisely the fresh-host recovery this
-// tool exists for.
+// takeSafetyBackup preserves what is about to be replaced; an empty MIB tree is skipped.
 func (s *Service) takeSafetyBackup(ctx context.Context, plan *restorePlan, opts RestoreOptions) (string, error) {
 	if opts.NoSafetyBackup {
 		s.warn("--no-safety-backup: the current data will not be recoverable after this")
@@ -386,12 +360,7 @@ func (s *Service) restoreVolume(ctx context.Context, plan *restorePlan, c Compon
 	return s.cfg.Docker.ImportVolume(ctx, volume, gz)
 }
 
-// restoreTree replaces the MIB source tree with the backup's copy.
-//
-// The replacement is wholesale, matching a volume import and the exact-copy
-// semantics of the config files: the directory is emptied, then extracted into.
-// Merging would leave modules from a newer tree alongside the restored ones, and
-// the deployment would resolve against a set matching neither.
+// restoreTree empties the MIB source tree, then extracts the backup's copy into it.
 func (s *Service) restoreTree(plan *restorePlan) error {
 	info, ok := plan.archive.Manifest.Tree(ComponentMIBs)
 	if !ok {

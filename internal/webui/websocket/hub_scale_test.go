@@ -10,17 +10,7 @@ import (
 	"time"
 )
 
-// What the hub costs when a room full of operators is watching.
-//
-// Every tick, the hub asked Prometheus about every subscribed query, one
-// goroutine per query, with nothing bounding how many ran at once and nothing
-// stopping the next tick from starting while the last was still going. A
-// dashboard subscribes ~22 queries, so 25 browsers on different devices is ~550
-// queries a tick; if Prometheus takes longer than the tick to answer them, the
-// next tick piles another 550 on top, and the pile never drains.
-//
-// These tests pin the two properties that keep it bounded: a ceiling on how
-// many queries are in flight at once, and no overlapping ticks.
+// Hub scale: queries in flight are capped and ticks never overlap.
 
 // slowQuery answers after delay, recording how many calls overlap.
 type slowQuery struct {

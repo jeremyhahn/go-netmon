@@ -45,10 +45,7 @@ test.describe('device dashboard', () => {
 
     await selector.selectOption({ label: SEEDED_DEVICE });
 
-    // The failure mode was an empty state showing for a device that does have
-    // MIBs assigned, so assert it is not VISIBLE. The element stays in the DOM
-    // and is merely hidden, so a text assertion against the body would pass
-    // even when the page is broken.
+    // Assert the empty state is not visible; it stays in the DOM.
     await expect(page.locator('#dashboardContent'))
       .toBeHidden({ timeout: 45000 });
     await expect(page.locator('#mibTabsContainer'))
@@ -88,8 +85,7 @@ test.describe('device dashboard', () => {
   });
 
   test('the MIB availability filter answers quickly', async ({ page }) => {
-    // This endpoint previously took over 30 seconds and killed the dashboard.
-    // A generous ceiling still catches a return to per-module scanning.
+    // A generous ceiling that still catches per-module scanning.
     const started = Date.now();
     const response = await page.request.get(`${BASE}/api/mibs?filter=available`, { timeout: 30000 });
     const elapsed = Date.now() - started;

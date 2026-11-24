@@ -6,20 +6,7 @@ import (
 	"testing"
 )
 
-// Explaining a dashboard that comes back without the MIB you just assigned.
-//
-// These notes changed shape when the dashboard stopped parsing MIBs, and one
-// of the old outcomes is now unanswerable ON PURPOSE. The UI used to claim a
-// module "has no pollable objects, so it will never add a panel" -- it could
-// only know that by parsing the module itself, which is the coupling this
-// design removes. Reading Prometheus can distinguish "reporting nothing" from
-// "reporting things I cannot describe"; it cannot distinguish "will never
-// report" from "has not reported yet", so it no longer pretends to.
-//
-// Every test here drives the real generator. An earlier version called
-// coverageNote with structs assembled by hand, which proved the notes read
-// well and nothing else: the generator could not actually produce the input
-// that triggered the most important one, and the test could not notice.
+// Coverage notes for a dashboard missing an assigned MIB, driven through the real generator.
 
 // coverageFor finds one module's row in a generated dashboard.
 func coverageFor(t *testing.T, dash Dashboard, module string) MIBCoverage {
@@ -50,13 +37,7 @@ func warningsOf(t *testing.T, dash Dashboard) []string {
 	return dash.Warnings
 }
 
-// TestAModuleReportingNothingTellsTheReaderToWait is the case that was once
-// mistaken for a bug -- a MIB assigned a moment ago, before the first poll.
-//
-// It is also the case the generator could not produce. Coverage was built only
-// while iterating the metrics a device REPORTS, so a module reporting nothing
-// contributed no row and disappeared from the table instead of explaining
-// itself. The note existed; nothing could reach it.
+// TestAModuleReportingNothingTellsTheReaderToWait checks a module reporting nothing gets a row telling the reader to wait.
 func TestAModuleReportingNothingTellsTheReaderToWait(t *testing.T) {
 	// The device answers for IF-MIB and says nothing about the KVM. Both are
 	// assigned.
@@ -90,13 +71,7 @@ func TestAModuleReportingNothingTellsTheReaderToWait(t *testing.T) {
 	}
 }
 
-// TestUncatalogedMetricsExplainThemselvesWithoutReadingAsAFault covers the
-// bucket that has no equivalent in the old model.
-//
-// A metric with no catalog row is still charted -- it has data by
-// construction. The note has to say why it is unlabeled without implying
-// breakage, because a raw-OID name is the ordinary outcome for an OID no
-// loaded MIB describes.
+// TestUncatalogedMetricsExplainThemselvesWithoutReadingAsAFault checks the uncataloged note does not imply a fault.
 func TestUncatalogedMetricsExplainThemselvesWithoutReadingAsAFault(t *testing.T) {
 	s := catalogStub(t, nil, nil,
 		"snmp_1_3_6_1_4_1_9999_1", "snmp_1_3_6_1_4_1_9999_2")
@@ -110,8 +85,7 @@ func TestUncatalogedMetricsExplainThemselvesWithoutReadingAsAFault(t *testing.T)
 	if !strings.Contains(cov.Note, "raw-OID") {
 		t.Errorf("the note does not name the expected cause: %q", cov.Note)
 	}
-	// It should also say what a CHANGE in the number would mean, since the
-	// count is the coverage signal an operator watches.
+	// It should say what a change in the count would mean.
 	if !strings.Contains(cov.Note, "emitter") && !strings.Contains(cov.Note, "resolving") {
 		t.Errorf("the note does not say what a jump in the count would mean: %q", cov.Note)
 	}
@@ -140,13 +114,7 @@ func TestAFullyDescribedModuleIsSilent(t *testing.T) {
 	}
 }
 
-// TestAModuleTheCatalogCannotLabelIsReportedWithBothCounts is the middle case:
-// the panels exist, but some carry no words at all.
-//
-// This is what an unresolved MIB import looks like from the dashboard. gosmi
-// resolves no type node for the object, so it reaches the catalog with a row
-// but no description, unit or enumeration -- a panel with a line on it and
-// nothing to say what the line is.
+// TestAModuleTheCatalogCannotLabelIsReportedWithBothCounts checks a module with undescribed panels reports both counts.
 func TestAModuleTheCatalogCannotLabelIsReportedWithBothCounts(t *testing.T) {
 	s := catalogStub(t,
 		[]map[string]interface{}{
@@ -172,15 +140,7 @@ func TestAModuleTheCatalogCannotLabelIsReportedWithBothCounts(t *testing.T) {
 	}
 }
 
-// TestDerivedFamiliesAreNotWarnedAbout keeps the unattributed bucket from
-// crying wolf.
-//
-// It groups the metrics no MIB module CLAIMS, which is not the same as the
-// metrics the catalog cannot describe. Optical power is published under a name
-// derived from its unit, carries a unit and a description, and has no MIB
-// object behind it -- perfectly healthy, and it landed in the bucket whose note
-// announced it as a metric that had stopped resolving. On core-01 that note
-// appeared on every tab, about snmp_system_info, which the catalog describes.
+// TestDerivedFamiliesAreNotWarnedAbout checks described families without a module are not flagged as unresolved.
 func TestDerivedFamiliesAreNotWarnedAbout(t *testing.T) {
 	s := catalogStub(t,
 		[]map[string]interface{}{

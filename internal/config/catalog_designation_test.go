@@ -2,15 +2,7 @@ package config
 
 import "testing"
 
-// TestCatalogEmissionDefaultsToOff checks that designation must be a decision
-// somebody made.
-//
-// Defaulting to on is fail-open: every shard whose configuration predates the
-// field becomes an emitter the moment it is upgraded, and because the catalog
-// shares a buffer with device telemetry a rejected catalog write can delay or
-// reject device samples too. The cost of failing closed is a fresh install
-// without a catalog until somebody says so, and that is loud -- no catalog
-// series exist and MetricCatalogNotBeingPublished fires.
+// TestCatalogEmissionDefaultsToOff checks that catalog emission is off unless configured.
 func TestCatalogEmissionDefaultsToOff(t *testing.T) {
 	var cfg PrometheusConfig
 	if cfg.CatalogEmissionEnabled() {

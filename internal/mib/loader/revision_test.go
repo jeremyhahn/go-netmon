@@ -33,14 +33,7 @@ func newRevisionLoader(t *testing.T) *Loader {
 	return mibLoader
 }
 
-// TestRevisionAdvancesOnlyWhenTheStoreChanges is the contract in one test: a
-// module that is parsed moves the revision, a module that was already present
-// does not, and a module that will not parse does not either.
-//
-// The middle case is the one the coalescing depends on. Seventeen EnsureModule
-// calls for a device whose modules are already loaded must leave the revision
-// alone, or every device registration would rebuild the consumer's index for no
-// new metadata.
+// TestRevisionAdvancesOnlyWhenTheStoreChanges checks only a parsed module moves the revision.
 func TestRevisionAdvancesOnlyWhenTheStoreChanges(t *testing.T) {
 	mibLoader := newRevisionLoader(t)
 

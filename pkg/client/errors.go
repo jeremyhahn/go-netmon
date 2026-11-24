@@ -25,13 +25,7 @@ func (e *APIError) NotFound() bool {
 	return e.StatusCode == 404
 }
 
-// TransportError reports a failure to reach the management API at all.
-//
-// This is the error an operator hits most often and the one that says least on
-// its own: "connection refused" from a URL the user may not have chosen — it
-// can come from a default — is not a diagnosis. The message therefore names the
-// two things worth checking before anything else, while the cause stays
-// wrapped so callers can still inspect it with errors.As.
+// TransportError reports a failure to reach the management API, naming what to check and wrapping the cause.
 type TransportError struct {
 	Method string
 	URL    string
@@ -94,12 +88,7 @@ func (e *PatternError) Error() string {
 
 func (e *PatternError) Unwrap() error { return e.Err }
 
-// PollIntervalError reports a per-device poll interval that is not a schedule.
-//
-// It is returned before the request is sent, so the value named here never
-// reached the server and never reached the poller. It says how to ask for the
-// global default, because that is what an operator who wrote 0 or a negative
-// number was almost certainly after.
+// PollIntervalError reports a per-device poll interval that is not a schedule, caught before sending.
 type PollIntervalError struct {
 	Device   string
 	Interval int

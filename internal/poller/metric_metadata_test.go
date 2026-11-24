@@ -11,12 +11,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
-// The exporter names and labels samples from MIB metadata it read when it was
-// constructed. Hydration loads modules into that store afterwards, so unless
-// something tells the exporter, every object of every hydrated module falls
-// back to a raw-OID metric name. These tests pin when that rebuild happens and,
-// just as importantly, when it does not: a device carries seventeen modules,
-// and rebuilding per module would sweep the whole MIB store seventeen times.
+// Tests when hydration rebuilds the exporter's MIB metadata: once per device, not once per module.
 
 // countingExporter records how often its MIB-derived state was rebuilt. It
 // exports nothing: these tests are about the rebuild trigger, and a device that

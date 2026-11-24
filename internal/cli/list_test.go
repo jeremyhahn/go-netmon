@@ -650,8 +650,7 @@ func assignedMIBSet() []client.AssignedMIB {
 	}
 }
 
-// TestDeviceMIBListSearchAndLimit covers a device's MIB listing, including that
-// the SOURCE column keeps telling the truth under a search.
+// TestDeviceMIBListSearchAndLimit covers a device's MIB listing, including the SOURCE column under a search.
 func TestDeviceMIBListSearchAndLimit(t *testing.T) {
 	all := assignedMIBSet()
 
@@ -720,8 +719,7 @@ func TestDeviceMIBListSearchAndLimit(t *testing.T) {
 		if len(report.AllMIBs) != 1 || report.AllMIBs[0].Name != "IP-MIB" {
 			t.Errorf("all_mibs = %+v, want only the searched module", report.AllMIBs)
 		}
-		// direct_mibs is what the SOURCE column is decided against, so a search
-		// over the printed list must not narrow it.
+		// SOURCE is decided against direct_mibs, which a search must not narrow.
 		if len(report.DirectMIBs) != 1 || report.DirectMIBs[0].Name != "CISCO-PROCESS-MIB" {
 			t.Errorf("direct_mibs = %+v, want the device's own assignment", report.DirectMIBs)
 		}

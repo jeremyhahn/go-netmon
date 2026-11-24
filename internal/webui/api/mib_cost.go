@@ -19,13 +19,7 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/promname"
 )
 
-// MIBSeriesEstimate answers the question that has to be asked before a MIB is
-// enabled on a device: how many Prometheus series will it add?
-//
-// Object count is the wrong number. Every pollable column costs one series per
-// table row, so a module offering 624 pollable objects produced 31,836 series
-// on a live router — a 51x multiplier that comes entirely from table instances.
-// Series is the number that decides whether a device can carry the MIB.
+// MIBSeriesEstimate is how many Prometheus series enabling a MIB on a device would add.
 type MIBSeriesEstimate struct {
 	MIB         string `json:"mib"`
 	Device      string `json:"device"`
@@ -49,22 +43,12 @@ func (e *ResourceNotFoundError) Error() string {
 	return fmt.Sprintf("%s %d not found", e.Kind, e.ID)
 }
 
-// seriesEvidence carries the observations the estimator reasons over: what the
-// MIB defines, what Prometheus already holds for the device, and what tables
-// the poller has walked. Grouping them in one value keeps the rules pure, so
-// they can be exercised without a Prometheus server or a running poller.
+// seriesEvidence carries what the MIB defines, what Prometheus holds for the device, and the tables the poller walked.
 type seriesEvidence struct {
 	// objects are every stored object of the MIB, pollable or not. The
 	// estimator applies the pollability rule itself so the rule stays visible.
 	objects []*mib.OIDMetadata
-	// deviceInstanceOIDs is the set of instance OIDs Prometheus holds for the
-	// device, read from the "oid" label every SNMP series carries. One polled
-	// instance -- a scalar, or one row of one column -- yields one instance
-	// OID and one series, so counting them counts series.
-	//
-	// Metric names cannot be counted instead: the exporter names a metric
-	// after the MIB object, so one name covers every row of a table column
-	// and counting names would report a 5,000-row table as a single series.
+	// deviceInstanceOIDs is the set of instance OIDs (oid label) Prometheus holds for the device, one per series.
 	deviceInstanceOIDs map[string]bool
 	// learned maps a table entry OID to what the poller has discovered about
 	// it. The learner is process-wide rather than per device, so it describes
@@ -84,10 +68,6 @@ func (s *Server) estimateMIBSeries(ctx context.Context, deviceName, mibName stri
 }
 
 // estimateObjectSeries prices a module whose objects the caller already holds.
-//
-// It exists so that an endpoint needing both the cost and the objects — the
-// object plan does — reads the module once and still gets its price from this
-// estimator rather than a second one written to avoid the re-read.
 func (s *Server) estimateObjectSeries(
 	ctx context.Context,
 	deviceName, mibName string,
@@ -100,16 +80,7 @@ func (s *Server) estimateObjectSeries(
 	})
 }
 
-// estimateSeries applies the cost rules, in order:
-//
-//  1. If the device already reports series for this MIB, count them. That is
-//     the truth, and nothing estimated can improve on it.
-//  2. Otherwise every pollable scalar costs 1 series and every pollable column
-//     costs one series per table row, where the row count is the median across
-//     the tables this device already reports.
-//  3. Objects the poller will never fetch cost nothing. Not-accessible index
-//     columns fall out here: they reach Prometheus as labels on other series,
-//     never as series of their own.
+// estimateSeries counts observed series if any, else prices scalars at 1 and columns at the median row count; unpolled objects cost 0.
 func estimateSeries(device, mibName string, ev seriesEvidence) *MIBSeriesEstimate {
 	est := &MIBSeriesEstimate{MIB: mibName, Device: device}
 
@@ -150,14 +121,7 @@ func estimateSeries(device, mibName string, ev seriesEvidence) *MIBSeriesEstimat
 	return est
 }
 
-// pollableKeys splits a module's objects into the scalars and columns that will
-// actually be fetched, keyed by their normalized OID.
-//
-// Pollability is decided by mib.OIDMetadata.IsPollable, the same predicate the
-// poller uses to build a device's OID list (internal/poller/selection.go), so
-// the estimate covers exactly the objects that will be walked. Objects the MIB
-// marks not-accessible — table nodes, row nodes and not-accessible index
-// columns — are excluded here and cost nothing.
+// pollableKeys splits a module's pollable objects (mib.OIDMetadata.IsPollable) into scalars and columns by normalized OID.
 func pollableKeys(objects []*mib.OIDMetadata) (scalars, columns map[string]bool) {
 	scalars = make(map[string]bool)
 	columns = make(map[string]bool)
@@ -179,13 +143,7 @@ func pollableKeys(objects []*mib.OIDMetadata) (scalars, columns map[string]bool)
 	return scalars, columns
 }
 
-// countObservedSeries counts the device's existing series that belong to the
-// MIB, split by whether they came from a scalar or from a table column.
-//
-// An instance OID is an object's OID followed by the instance: ".0" for a
-// scalar, the row index for a table column. Walking its prefixes from longest
-// to shortest therefore finds the object it came from, whatever the width of
-// the index.
+// countObservedSeries counts the device's series belonging to the MIB, split into scalar and column series.
 func countObservedSeries(deviceInstanceOIDs, scalars, columns map[string]bool) (scalarSeries, columnSeries int) {
 	for instance := range deviceInstanceOIDs {
 		switch key := longestPrefixMatch(instance, scalars, columns); {
@@ -218,16 +176,7 @@ func instancesPerTable(ev seriesEvidence) (int, string) {
 	return 1, "no tables observed yet on this device; assuming 1 instance per table, so tables may cost far more"
 }
 
-// observedTableRows counts the rows this device actually reports for each table
-// the poller has learned.
-//
-// This is the strongest instance evidence available: the learner supplies the
-// table's column OIDs, and the device's own series supply how many rows sit
-// under them. A table's row count is the widest of its columns, because a
-// sparse column is not evidence that the table is small.
-//
-// Every instance OID is examined once and matched against a column index, so
-// cost grows with the number of series rather than with series times columns.
+// observedTableRows counts the rows the device reports for each learned table, the widest column deciding.
 func observedTableRows(deviceInstanceOIDs map[string]bool, learned map[string]*metrics.LearnedTableInfo) []int {
 	if len(deviceInstanceOIDs) == 0 || len(learned) == 0 {
 		return nil
@@ -264,18 +213,7 @@ func observedTableRows(deviceInstanceOIDs map[string]bool, learned map[string]*m
 	return rows
 }
 
-// learnedSampleRatios derives a row count per learned table from the learner's
-// own counters: SampleCount is the distinct instances it has seen spread over
-// len(ColumnOIDs) columns, so the table has SampleCount/len(ColumnOIDs) rows.
-//
-// A table with no columns recorded yields no ratio rather than a division by
-// zero, and so does a table with fewer samples than columns, which has not been
-// walked completely enough to say anything.
-//
-// This evidence is weaker than observedTableRows because the learner is
-// process-wide: the rows it counted may have come from another device with a
-// table of a different size. It is used only when the device has no series of
-// its own.
+// learnedSampleRatios derives a row count per learned table as SampleCount/len(ColumnOIDs); used only without device series.
 func learnedSampleRatios(learned map[string]*metrics.LearnedTableInfo) []int {
 	ratios := make([]int, 0, len(learned))
 	for _, table := range learned {
@@ -315,13 +253,7 @@ func oidKey(oid string) string {
 	return strings.TrimPrefix(strings.TrimSpace(oid), ".")
 }
 
-// longestPrefixMatch returns the longest object key any of the sets holds for
-// an instance OID, or "" when the instance belongs to none of them. The
-// instance's own OID is tested first, so a MIB that stores a scalar with its
-// ".0" instance suffix still matches.
-//
-// Whole sub-identifiers are walked rather than characters, so column
-// 1.3.6.1.2.1.2.2.1.2 cannot claim an instance of 1.3.6.1.2.1.2.2.1.20.
+// longestPrefixMatch returns the longest whole-sub-identifier object key matching an instance OID, or "".
 func longestPrefixMatch(instance string, sets ...map[string]bool) string {
 	key := oidKey(instance)
 	for key != "" {
@@ -417,10 +349,7 @@ func (s *Server) learnedTables(ctx context.Context) map[string]*metrics.LearnedT
 	return learnedResp.Tables
 }
 
-// handleEstimateMIBSeries reports the series a MIB would cost on a device.
-//
-// The MIB need not be assigned to the device — asking before committing is the
-// entire purpose of the endpoint.
+// handleEstimateMIBSeries reports the series a MIB would cost on a device, assigned or not.
 func (s *Server) handleEstimateMIBSeries(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 

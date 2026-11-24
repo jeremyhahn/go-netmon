@@ -8,9 +8,7 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// fakeAgent answers GETs the way a real one does: it refuses any request with
-// more than maxVarbinds by returning an EMPTY response carrying the tooBig
-// status, which gosnmp reports as a successful call.
+// fakeAgent answers more than maxVarbinds with an empty tooBig response, as real agents do.
 type fakeAgent struct {
 	maxVarbinds int
 	requests    [][]string

@@ -1,33 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the go-netmon backup and restore tooling.
-#
-# This library is sourced, never executed. Callers are responsible for
-# "set -euo pipefail".
-#
-# SAFETY MODEL
-#
-# Everything here addresses Docker objects by explicit, derived name and then
-# proves ownership through the com.docker.compose.project label before acting.
-# Nothing is ever matched by pattern, prefix or guesswork. A stray volume whose
-# name merely resembles a stack volume (this host has an unlabelled
-# "go-netmon-data" that nothing mounts, distinct from the project's
-# "go-netmon_go-netmon-data") must never be reachable by this tooling, and the
-# label check is what makes that a checked fact rather than a naming convention.
-#
-# The same discipline as test/integration/run-tests.sh applies: the compose
-# project is pinned rather than inherited from the working directory, and a
-# project holding containers this repository's compose file did not create is
-# treated as a fatal collision rather than something to operate on.
-#
-# HOST DIRECTORIES
-#
-# One backed-up component, "mibs", is not a Docker volume but a directory in the
-# operator's working tree, bind-mounted into two services. Writing there is a
-# different and more surprising act than writing into a volume, so it carries
-# its own resolution, its own safety checks (assert_safe_tree_dir) and, in
-# restore.sh, its own gate. The host path is never assumed: it is read back out
-# of the rendered compose file, so a deployment that mounts its MIBs from
-# somewhere else is handled without editing this tooling.
+# Shared helpers for backup and restore; sourced. Docker objects are addressed by derived name and checked by compose project label.
 
 # --- configuration --------------------------------------------------------
 
@@ -38,10 +10,7 @@ NETMON_PROJECT="${NETMON_PROJECT:-go-netmon}"
 # without a Docker daemon or the live stack.
 DOCKER="${DOCKER:-docker}"
 
-# The compose-project ownership check. This file is its only caller today: the
-# integration harness's guard still carries its own enumeration, and whether it
-# should source this library is an open question. See the header of that
-# file for the two defects a second copy here used to carry.
+# The compose-project ownership check.
 # shellcheck source=lib/compose-ownership.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/compose-ownership.sh"
 
@@ -57,13 +26,7 @@ NETMON_WEBUI_URL="${NETMON_WEBUI_URL:-http://localhost:8082}"
 # Prometheus base URL used for state verification. Published on 9091.
 NETMON_PROM_URL="${NETMON_PROM_URL:-http://localhost:9091}"
 
-# Manifest schema. Bump only for changes a previous restore cannot understand.
-#
-# 1: volumes[] and config_files[].
-# 2: adds trees[] - host directories carried as members. A schema-1 restore
-#    would ignore trees[] entirely and report "restore complete" having left
-#    the MIB source tree unrestored, so it must refuse the archive instead.
-#    Restores still accept schema 1; trees[] is simply absent there.
+# Manifest schema: 1 has volumes[] and config_files[]; 2 adds trees[] for host directories. Restore accepts both.
 # shellcheck disable=SC2034  # consumed by backup.sh and restore.sh
 NETMON_MANIFEST_SCHEMA=2
 
@@ -82,10 +45,7 @@ NETMON_CONFIG_FILES=(config.yaml prometheus.yml)
 # shellcheck disable=SC2034  # consumed by backup.sh
 NETMON_REFERENCE_FILES=(docker-compose.yml)
 
-# Container path the MIB source tree is bind-mounted at. This is the contract
-# between the images and config.yaml's mib.paths (all under /app/mibs), and it
-# is what the host-side directory is identified by - the host path itself is
-# whatever the compose file says it is.
+# Container path of the MIB source tree bind mount (config.yaml mib.paths are under /app/mibs).
 NETMON_MIB_MOUNT_TARGET="${NETMON_MIB_MOUNT_TARGET:-/app/mibs}"
 
 # Host directory holding the MIB source tree. Left empty here on purpose:
@@ -170,28 +130,12 @@ compose() {
     "$DOCKER" compose -p "$NETMON_PROJECT" -f "$NETMON_COMPOSE_FILE" "$@"
 }
 
-# assert_project_ownership refuses to continue if the target compose project
-# holds a container that was not created from our compose file. Acting on such
-# a project would mean stopping, and potentially overwriting the data of, a
-# deployment this repository does not own.
-#
-# The check itself lives in compose-ownership.sh, which exists to be the single
-# implementation of this property -- today this function is its only caller, and
-# that file's header says so. It used to be a second implementation here, and it
-# carried two defects the harness copy had already been corrected for and
-# documents in its own comments: a "label=KEY!=VALUE" filter that docker matches
-# nothing with, and "2>/dev/null || true" that turned a FAILED query into
-# "nothing foreign". Between them this function could not refuse -- not for a
-# project full of foreign containers, and not when docker was unreachable --
-# while two tests asserted that it could.
+# assert_project_ownership refuses a target project holding containers not created from our compose file.
 assert_project_ownership() {
     local foreign status=0
     foreign="$(compose_foreign_containers "$DOCKER" "$NETMON_PROJECT" "$NETMON_COMPOSE_FILE")" || status=$?
 
-    # Exit 2 is "the question could not be answered", which is a refusal. It is
-    # deliberately NOT the same as an empty answer: treating an unanswered
-    # question as a clean bill of health is how this function came to be
-    # unable to fail.
+    # Exit 2 means the question could not be answered: refuse.
     if [ "$status" -ne 0 ]; then
         die "refusing to operate: could not establish ownership of project '$NETMON_PROJECT'"
     fi
@@ -225,10 +169,7 @@ compose_service_images() {
         jq -r '.services | to_entries[] | "\(.key)\t\(.value.image // "")"')
 }
 
-# compose_bind_sources lists the distinct host paths bind-mounted at a given
-# container path, across every service in the rendered compose file. Compose
-# resolves relative bind sources to absolute paths, so what comes back is the
-# real directory regardless of how the file spells it.
+# compose_bind_sources lists the distinct absolute host paths bind-mounted at a container path.
 compose_bind_sources() {
     local target="$1"
     compose config --format json 2>/dev/null | jq -r --arg t "$target" '
@@ -345,25 +286,14 @@ report_unmanaged_volumes() {
 
 # --- volume streaming -----------------------------------------------------
 
-# volume_export streams a volume's contents to stdout as an uncompressed tar.
-#
-# Read-only mount, no network, numeric owner. Numeric ownership matters: the
-# Prometheus and Grafana images run as non-root uids (65534 and 472) and a
-# restore that loses ownership produces a container that cannot write its own
-# data directory.
+# volume_export streams a volume to stdout as a tar with numeric owners, read-only and offline.
 volume_export() {
     local vol="$1"
     "$DOCKER" run --rm --network none -v "$vol":/src:ro "$NETMON_HELPER_IMAGE" \
         tar -C /src --numeric-owner -cf - .
 }
 
-# volume_import replaces a volume's contents with the tar stream on stdin.
-#
-# The destination is emptied first so the restore is a replacement rather than
-# a merge; a merge would leave behind files the backup does not contain, which
-# is precisely the "silently half-matches" outcome a restore must not produce.
-# "find -mindepth 1 -delete" is used rather than a glob so dotfiles are removed
-# and the mount point itself survives.
+# volume_import empties a volume, keeping the mount point and removing dotfiles, then extracts the tar on stdin.
 volume_import() {
     local vol="$1"
     "$DOCKER" run --rm -i --network none -v "$vol":/dst "$NETMON_HELPER_IMAGE" \
@@ -372,18 +302,7 @@ volume_import() {
 
 # --- host directory trees -------------------------------------------------
 
-# resolve_mib_tree sets NETMON_MIB_TREE and NETMON_MIB_TREE_SOURCE, or dies.
-#
-# It must run in the caller's own shell, never inside a command substitution:
-# die() in a subshell would exit only that subshell and leave the caller
-# carrying on with an unset path. The same trap validate_component_list
-# documents.
-#
-# The path is read from the rendered compose file rather than assumed to be
-# <repo>/mibs, because that is where the deployment's own answer lives. A
-# compose file that mounts its MIBs from elsewhere therefore needs no change
-# here, and one that mounts nothing at the target is a fatal ambiguity rather
-# than something to guess at.
+# resolve_mib_tree sets NETMON_MIB_TREE and NETMON_MIB_TREE_SOURCE from the rendered compose file; call in the caller's shell.
 resolve_mib_tree() {
     if [ -n "$NETMON_MIB_TREE" ]; then
         NETMON_MIB_TREE_SOURCE="explicit override"
@@ -423,22 +342,7 @@ resolve_mib_tree() {
     esac
 }
 
-# assert_safe_tree_dir refuses destinations that "find -mindepth 1 -delete"
-# must never be pointed at, and publishes the checked, symlink-resolved path in
-# NETMON_SAFE_TREE_DIR.
-#
-# The result is a global rather than a printed value on purpose: a caller
-# reading it through "$(...)" would run every die() below in a subshell, which
-# exits the subshell and lets the caller carry on with an unchecked path - the
-# same trap documented on validate_component_list, but with deletion at the end
-# of it.
-#
-# Unlike a Docker volume, a host directory has no ownership label to check and
-# no container boundary to contain a mistake: a wrong path here deletes the
-# operator's files with no undo, and this repository has no git history to
-# recover them from. The checks are deliberately blunt - a legitimate MIB tree
-# is a leaf directory well inside a checkout, never a system root, a home
-# directory or the repository root itself.
+# assert_safe_tree_dir refuses unsafe delete targets and sets NETMON_SAFE_TREE_DIR; call in the caller's shell.
 assert_safe_tree_dir() {
     local dir="$1" resolved parent depth
 
@@ -496,24 +400,12 @@ tree_bytes() {
     du -sb "$1" | cut -f1
 }
 
-# tree_export streams a host directory to stdout as an uncompressed tar.
-#
-# No --numeric-owner, unlike volume_export: these are the operator's own files
-# on the operator's own machine, and the uid that took the backup is not
-# necessarily the uid that restores it. Ownership is deliberately not part of
-# what is carried; content, layout and mode are.
+# tree_export streams a host directory to stdout as a tar, without ownership.
 tree_export() {
     tar -C "$1" -cf - .
 }
 
-# tree_import replaces a host directory's contents with the tar stream on
-# stdin. Call assert_safe_tree_dir first.
-#
-# Wholesale replacement, matching volume_import and the exact-copy semantics of
-# the config files. Merging would be worse than it sounds for MIBs specifically:
-# a module left behind from a newer tree keeps being parsed alongside the
-# restored one, so the deployment resolves against a set that matches neither
-# the backup nor what the operator had.
+# tree_import replaces a host directory's contents with the tar on stdin; call assert_safe_tree_dir first.
 tree_import() {
     local dir="$1"
     mkdir -p "$dir"
@@ -528,11 +420,7 @@ sha256_of() {
     sha256sum "$1" | cut -d' ' -f1
 }
 
-# tar_entry_count decompresses a member end to end and counts its entries.
-#
-# This doubles as a full-stream integrity check: a truncated or corrupted
-# gzip member fails here rather than halfway through overwriting a live
-# volume. It is deliberately a second pass over the data.
+# tar_entry_count decompresses a member fully and counts entries, as an integrity check.
 tar_entry_count() {
     local member="$1" count
     count="$(tar -tzf "$member" 2>/dev/null | wc -l)" || return 1
@@ -550,15 +438,7 @@ manifest_get() {
     jq -r "$expr" "$(manifest_path "$backup_dir")"
 }
 
-# validate_component_list aborts unless every name in a comma-separated list is
-# a known component. An unknown name is fatal: silently ignoring a typo in
-# "--only" would back up or restore more, or less, than the operator asked for.
-#
-# This is deliberately separate from parse_component_list. Callers consume the
-# parsed list through "mapfile < <(...)", and a die() inside that process
-# substitution would exit only the subshell, leaving the caller to carry on
-# with a silently truncated selection. Validation therefore has to happen in
-# the caller's own shell, before the list is read.
+# validate_component_list aborts on an unknown component name; run it in the caller's shell before parse_component_list.
 validate_component_list() {
     local raw="$1" item items
     IFS=',' read -r -a items <<<"$raw"

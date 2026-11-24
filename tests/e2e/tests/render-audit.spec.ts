@@ -2,18 +2,7 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// What actually renders, device by device.
-//
-// The API reports a panel count and whether each panel names a metric that
-// exists. Neither says the panel drew anything: a card can carry the right
-// metric name, subscribe to it, and still show "Waiting for data…" forever
-// because the widget type is wrong for the value, the value never reaches the
-// chart, or the series is there under a shape the renderer does not read.
-//
-// This walks every device's dashboard in a real browser and reports what each
-// card ended up as. It is a diagnostic first and a regression second: the
-// assertions at the end are deliberately about the fleet, not about one panel,
-// so it fails when rendering breaks rather than when a device changes.
+// Walks every device dashboard in a browser and reports what each card rendered; asserts fleet-wide.
 
 import { BASE } from '../target';
 import { deviceByName, SEEDED_DEVICES } from '../stack';
@@ -148,12 +137,7 @@ async function auditDevice(page: Page, deviceId: number) {
   });
 }
 
-// Every device the stack seeded (stack.ts). The two simulated devices share
-// their MIBs but not their data, and a card that draws on one is not proof it
-// draws on the next.
-//
-// AUDIT_DEVICES narrows the run to named devices, which is how a device that
-// only fails late in a long session gets examined on its own.
+// Every seeded device (stack.ts); AUDIT_DEVICES narrows the run.
 const DEVICES: string[] = process.env.AUDIT_DEVICES
   ? process.env.AUDIT_DEVICES.split(',')
   : [...SEEDED_DEVICES];

@@ -10,28 +10,10 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-// ConfigSchemaVersion is the version of the configuration document this build
-// reads and writes.
-//
-// It exists so that a document written by a future build is refused outright
-// rather than half-understood: a field this build does not know about is a
-// configuration the operator asked for and would not get, and silently polling
-// less than was asked for is the failure mode this whole feature is meant to
-// prevent.
+// ConfigSchemaVersion is the configuration document version this build reads and writes; newer documents are refused.
 const ConfigSchemaVersion = 1
 
-// Config is the portable form of everything an operator configures: the devices
-// polled, the profiles that bundle MIBs, and every per-assignment rule that says
-// how each MIB is polled.
-//
-// It is keyed by name throughout. Record IDs are local to one instance — the
-// same module is id 12 here and id 140 there — so a document that carried them
-// could not be moved between instances, which is the point of having one.
-//
-// Everything in it is configuration. Metric history is not here, and neither is
-// the parsed MIB catalog: MIBs is a list of the modules the configuration
-// references, and the source files that go with it travel beside the document
-// rather than inside it.
+// Config is the portable, name-keyed form of the devices, profiles and MIB assignments an operator configures.
 type Config struct {
 	SchemaVersion int       `json:"schema_version"`
 	ExportedAt    time.Time `json:"exported_at"`
@@ -45,11 +27,7 @@ type Config struct {
 	Devices  []ConfigDevice  `json:"devices"`
 }
 
-// ConfigMIB is one MIB module the configuration depends on.
-//
-// File and SHA256 are set when the document travels inside a bundle that
-// carries the module's source; they are absent from a bare document, which then
-// requires the module to be imported on the target already.
+// ConfigMIB is one MIB module the configuration depends on; File and SHA256 are set only inside a bundle.
 type ConfigMIB struct {
 	Name   string   `json:"name"`
 	File   string   `json:"file,omitempty"`
@@ -87,12 +65,7 @@ type ConfigDevice struct {
 	MIBs     []ConfigAssignment `json:"mibs,omitempty"`
 }
 
-// ConfigAssignment is one MIB assignment: the module, and the rule that says how
-// it is polled.
-//
-// The assignment's own fields are flattened into the object so the document
-// reads as one record per module rather than a module wrapped around a nested
-// rule.
+// ConfigAssignment is one MIB assignment: the module and its flattened polling rule.
 type ConfigAssignment struct {
 	Module string `json:"module"`
 	MIBAssignment
@@ -105,11 +78,7 @@ type ConfigExportOptions struct {
 	ReferencedMIBsOnly bool
 }
 
-// ExportConfig returns the instance's whole logical configuration.
-//
-// The document is fully ordered — devices, profiles, modules and assignments
-// all by name — so two exports of the same configuration are byte-identical and
-// a diff between two instances shows only real differences.
+// ExportConfig returns the instance's whole logical configuration, fully ordered by name.
 func (s *Storage) ExportConfig(ctx context.Context, opts ConfigExportOptions) (*Config, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -304,10 +273,7 @@ func (st *configState) configDevices() []ConfigDevice {
 	return devices
 }
 
-// assignments renders one owner's join rows as document assignments, ordered by
-// module name. A row naming a module that is no longer in the catalog is left
-// out: it is a dangling reference the store has, not a configuration anyone can
-// act on, and carrying it would make the document fail its own validation.
+// assignments renders one owner's join rows as assignments ordered by module name, skipping modules no longer in the catalog.
 func (st *configState) assignments(byMIB map[int64]MIBAssignment) []ConfigAssignment {
 	if len(byMIB) == 0 {
 		return nil

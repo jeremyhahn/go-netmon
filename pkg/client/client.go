@@ -20,11 +20,7 @@ import (
 // objects server-side, so this is generous by CLI standards.
 const DefaultTimeout = 60 * time.Second
 
-// Client talks to the go-netmon management API.
-//
-// A Client is safe for concurrent use and must not be copied: it memoizes the
-// name→ID lookups the resolvers perform, which is what keeps a command that
-// names several resources from listing the catalog once per argument.
+// Client talks to the go-netmon management API; it is safe for concurrent use, must not be copied, and memoizes name lookups.
 type Client struct {
 	baseURL string
 	http    *http.Client
@@ -223,10 +219,7 @@ func (c *Client) DeviceStatus(ctx context.Context, id int64) (*DeviceStatus, err
 	return &status, nil
 }
 
-// TestDeviceSNMP probes a stored device's SNMP agent using its saved credentials.
-//
-// A device that does not answer is reported as the probe result it is, not as
-// an API failure, so callers render one shape either way.
+// TestDeviceSNMP probes a stored device's SNMP agent with its saved credentials; an unreachable device is a probe result.
 func (c *Client) TestDeviceSNMP(ctx context.Context, id int64) (*SNMPTestResponse, error) {
 	var resp SNMPTestResponse
 	if err := c.do(ctx, http.MethodPost, "/api/devices/"+itoa(id)+"/test-snmp", nil, &resp); err != nil {
@@ -244,12 +237,7 @@ func (c *Client) TestSNMP(ctx context.Context, req SNMPTestRequest) (*SNMPTestRe
 	return &resp, nil
 }
 
-// probeResult recovers the structured probe result carried by a failed probe.
-//
-// The server reports an unreachable device with a gateway status and the same
-// body a successful probe returns, so the negative result is data the caller
-// can render — naming the device and why it failed — rather than an opaque
-// "504 Gateway Timeout". Anything that is not a probe result stays an error.
+// probeResult recovers the structured probe result from a failed probe response.
 func probeResult(err error) (*SNMPTestResponse, error) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
@@ -277,9 +265,7 @@ func (c *Client) DeviceMIBs(ctx context.Context, id int64) (*DeviceMIBs, error) 
 	return &mibs, nil
 }
 
-// MIBAssignmentResult is what assigning a MIB to a device will produce. A module can
-// be attached successfully and yield nothing — a registry of OBJECT IDENTIFIERs,
-// or one whose IMPORTS did not resolve — and Warning is how the server says so.
+// MIBAssignmentResult is what assigning a MIB to a device will produce; Warning says when it yields nothing.
 type MIBAssignmentResult struct {
 	MIB    string `json:"mib"`
 	Device string `json:"device"`
@@ -335,12 +321,7 @@ type SNMPWalkResponse struct {
 	Rejected bool   `json:"rejected,omitempty"`
 }
 
-// WalkDevice walks a stored device's OID tree using the credentials the server
-// already holds for it. An empty oid walks from 1.3.6.1, and a limit of 0 takes
-// the server's default.
-//
-// A device that answers nothing is a successful walk with no varbinds: "this box
-// does not implement that MIB" is the answer, not a failure.
+// WalkDevice walks a stored device's OID tree with its saved credentials; empty oid means 1.3.6.1, limit 0 the server default.
 func (c *Client) WalkDevice(
 	ctx context.Context, deviceID int64, oid string, limit int,
 ) (*SNMPWalkResponse, error) {
@@ -491,21 +472,13 @@ func (c *Client) ProfileDevices(ctx context.Context, id int64) ([]Device, error)
 
 // ---------------------------------------------------------------- MIBs
 
-// ListMIBs returns imported MIBs. When availableOnly is set, the server
-// restricts the list to modules that actually have data flowing.
-//
-// It is the whole catalog: use SearchMIBs to have the server narrow it.
+// ListMIBs returns every imported MIB, or only those with data when availableOnly is set.
 func (c *Client) ListMIBs(ctx context.Context, availableOnly bool) ([]MIB, error) {
 	mibs, _, err := c.SearchMIBs(ctx, MIBQuery{AvailableOnly: availableOnly})
 	return mibs, err
 }
 
-// SearchMIBs returns the module catalog narrowed by q, together with the counts
-// that say what was left out. The page is nil when q narrowed nothing, in which
-// case the returned slice is the whole catalog.
-//
-// The catalog is ordered by module name, so a given offset means the same
-// modules on every request.
+// SearchMIBs returns the catalog narrowed by q, ordered by name, with counts; the page is nil when q narrowed nothing.
 func (c *Client) SearchMIBs(ctx context.Context, q MIBQuery) ([]MIB, *Page, error) {
 	if err := q.validate(); err != nil {
 		return nil, nil, err
@@ -521,23 +494,12 @@ func (c *Client) SearchMIBs(ctx context.Context, q MIBQuery) ([]MIB, *Page, erro
 	return resp.MIBs, resp.Page, nil
 }
 
-// GetMIB returns a MIB module together with every object it defines.
-//
-// A large module is large: CISCO-ENTITY-VENDORTYPE-OID-MIB is 1.6 MiB of JSON.
-// Use SearchMIBObjects when only some of the objects are wanted.
+// GetMIB returns a MIB module with every object it defines; use SearchMIBObjects for a subset.
 func (c *Client) GetMIB(ctx context.Context, id int64) (*MIBDetail, error) {
 	return c.SearchMIBObjects(ctx, id, ObjectQuery{})
 }
 
-// SearchMIBObjects returns a MIB module with its objects narrowed by q.
-//
-// The module's own fields are unaffected by the narrowing — ObjectCount still
-// counts the module, not the page — and Page reports what the query selected.
-// Page is nil when q narrowed nothing.
-//
-// Objects come back in the order the server's metadata store holds them, which
-// is the same on every request, so paging through a module visits each object
-// once.
+// SearchMIBObjects returns a MIB module with its objects narrowed by q, in stable order; Page is nil when nothing was narrowed.
 func (c *Client) SearchMIBObjects(ctx context.Context, id int64, q ObjectQuery) (*MIBDetail, error) {
 	if err := q.validate(); err != nil {
 		return nil, err
@@ -573,10 +535,7 @@ func (c *Client) SetMIBTags(ctx context.Context, id int64, tags []string) error 
 	return c.do(ctx, http.MethodPut, "/api/mibs/"+itoa(id)+"/tags", body, nil)
 }
 
-// ImportMIB uploads and parses a MIB file, storing it as a new module.
-//
-// A module that is already imported is refused; use ImportMIBFile with
-// Replace set to refresh one in place.
+// ImportMIB uploads and parses a new MIB; use ImportMIBFile with Replace to refresh one.
 func (c *Client) ImportMIB(ctx context.Context, path string, tags []string) (*MIB, error) {
 	result, err := c.ImportMIBFile(ctx, path, MIBImportOptions{Tags: tags})
 	if err != nil {
@@ -585,14 +544,7 @@ func (c *Client) ImportMIB(ctx context.Context, path string, tags []string) (*MI
 	return &result.MIB, nil
 }
 
-// ImportMIBFile uploads a MIB file and reports what the server did with it.
-//
-// With Replace set, a module that is already imported has its parsed metadata —
-// its objects and their types, units and display hints, its object count and
-// its description — refreshed in place. The module keeps its ID, its name and
-// its tags, and every device and profile assignment, including each
-// assignment's enable state and filters, stays attached. Without Replace, an
-// upload of an already-imported module is refused with 409 Conflict.
+// ImportMIBFile uploads a MIB; with Replace an existing module is refreshed in place, keeping ID, tags and assignments, else 409.
 func (c *Client) ImportMIBFile(
 	ctx context.Context,
 	path string,
@@ -685,26 +637,12 @@ func (c *Client) EstimateMIBSeries(ctx context.Context, deviceID, mibID int64) (
 	return &estimate, nil
 }
 
-// DeviceMIBObjects reports which of a MIB's objects a device is polling, and
-// the reason for each one it is not. The MIB has to be assigned to the device,
-// directly or through a profile.
-//
-// It returns the whole plan; use SearchDeviceMIBObjects to have the server
-// narrow it.
+// DeviceMIBObjects reports which of an assigned MIB's objects a device polls and why not the rest.
 func (c *Client) DeviceMIBObjects(ctx context.Context, deviceID, mibID int64) (*MIBObjectPlan, error) {
 	return c.SearchDeviceMIBObjects(ctx, deviceID, mibID, PlanQuery{})
 }
 
-// SearchDeviceMIBObjects returns a device's object plan with its objects
-// narrowed by q.
-//
-// Total and Polled still describe the whole module, and Page reports what the
-// query selected, so a paged view can say both "showing 51-100 of 293 matching"
-// and "12 polled of 293". Page is nil when q narrowed nothing.
-//
-// The objects keep the order the poller sees them in, whatever the query: a
-// max_oids cap is spent in that order, so a page is a slice of it and never a
-// re-sort of it.
+// SearchDeviceMIBObjects returns a device's object plan narrowed by q, in poller order; Page is nil when nothing was narrowed.
 func (c *Client) SearchDeviceMIBObjects(
 	ctx context.Context,
 	deviceID, mibID int64,

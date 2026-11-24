@@ -695,17 +695,7 @@ func TestHandleGetPollerConfigSerializesModuleFilters(t *testing.T) {
 	}
 }
 
-// TestDeviceTagsAreStableAcrossReCreation is the guard on which device
-// attributes become Prometheus labels.
-//
-// A label is part of a series' identity, so a label whose value changes when a
-// device is deleted and added back under the same name forks every series that
-// device has: the old ones go stale and a graph that should be continuous shows
-// a gap and then a second line. device_id and created_at both did that, and
-// deleting a device to correct an address or a community string is routine.
-//
-// The test re-creates the device rather than asserting on a list of forbidden
-// names, so any future tag with the same defect fails here too.
+// TestDeviceTagsAreStableAcrossReCreation checks device tags do not change when a device is re-created.
 func TestDeviceTagsAreStableAcrossReCreation(t *testing.T) {
 	store, err := storage.New(t.TempDir() + "/webui.db")
 	if err != nil {

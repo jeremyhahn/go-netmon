@@ -2,15 +2,7 @@
 
 package snmp
 
-// The counterpart to v3_legacy.go. This build does not provide MD5, SHA-1 or
-// DES, and records why so that an operator whose device is configured for one
-// is told what happened rather than that the setting is invalid.
-//
-// The distinction matters at three in the morning: "want SHA224, SHA256, ..."
-// reads as a typo in the config file and sends someone looking for one. The
-// message below says the protocol is real, is understood, and is not in this
-// binary -- which is a different problem with a different fix (deploy the
-// ordinary build, or reconfigure the device).
+// The fips build omits MD5, SHA-1 and DES and says so when a device is configured for one.
 func init() {
 	const authFix = "; configure the device for SHA224, SHA256, SHA384 or SHA512"
 	const privFix = "; configure the device for AES, AES192 or AES256"
