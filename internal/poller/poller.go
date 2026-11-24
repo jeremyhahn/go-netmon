@@ -75,7 +75,10 @@ func (p *Poller) liveWorker(name string) *worker {
 // Option configures a Poller at construction.
 type Option func(*Poller)
 
-// WithLogger routes the poller's diagnostics to logger; without it they are discarded.
+// WithLogger routes the poller's level-gated diagnostics to logger.
+//
+// Without it the poller discards them, so a caller that never configures
+// logging pays nothing for the debug statements on the polling path.
 func WithLogger(logger *slog.Logger) Option {
 	return func(p *Poller) { p.logger = logging.OrDiscard(logger) }
 }
@@ -694,7 +697,11 @@ func (p *Poller) GetWorkerStatus() map[string]WorkerStatus {
 	return status
 }
 
-// WorkerStatus returns one worker's status and whether the poller has a worker for that device.
+// WorkerStatus returns one worker's status, and whether the poller has a worker
+// for that device at all.
+//
+// Answering for a single device exists so a status request does not have to
+// build the whole fleet's status to read one row of it.
 func (p *Poller) WorkerStatus(deviceName string) (WorkerStatus, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -795,7 +802,15 @@ func (p *Poller) AddDevice(ctx context.Context, device *config.Device) error {
 	return p.startWorker(device)
 }
 
-// RemoveDevice removes a device; the poller lock is released before the possibly slow connection teardown.
+// RemoveDevice dynamically removes a device from the poller.
+//
+// The poller lock is released before the connection is torn down. Closing an
+// SNMP client does not wait for a request in flight -- it takes the client's
+// read lock and closes the socket, interrupting that request -- but it does
+// queue behind Connect, which holds the client's write lock for the whole
+// dial and so, for an unreachable device, can take a long time. Teardown is
+// therefore not bounded, and holding the poller lock across it would stall
+// every other device's registration and status lookup behind one dead box.
 func (p *Poller) RemoveDevice(deviceName string) error {
 	p.mu.Lock()
 	w := p.liveWorker(deviceName)

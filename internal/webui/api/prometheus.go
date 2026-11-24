@@ -45,13 +45,26 @@ type prometheusResponse struct {
 	ErrorType string `json:"errorType,omitempty"`
 }
 
-// Query returns an instant query's samples, dropping rows with no usable value; see QueryReportingDiscards.
+// Query executes an instant query
+// Query returns the samples an instant query produced, dropping any row that
+// carries no usable value.
+//
+// Callers that need to know a row was dropped use QueryReportingDiscards.
+// Silence is the right answer for a renderer -- there is nothing to draw -- and
+// the wrong answer for anything deciding what a set of rows AGREES about, since
+// a discarded row is not a row that agrees.
 func (p *PrometheusClient) Query(ctx context.Context, query string) ([]websocket.MetricValue, error) {
 	metrics, _, err := p.QueryReportingDiscards(ctx, query)
 	return metrics, err
 }
 
-// QueryReportingDiscards is Query plus the label sets of rows that produced no usable value, in returned order.
+// QueryReportingDiscards is Query, and also says which rows produced no usable
+// value: their label sets, in the order Prometheus returned them.
+//
+// A row can be discarded for five reasons below, and every one of them is a row
+// Prometheus DID return. Reading the survivors as the whole answer turns "three
+// rows, one unreadable" into "two rows that agree", which is a different claim
+// and a false one.
 func (p *PrometheusClient) QueryReportingDiscards(ctx context.Context, query string) ([]websocket.MetricValue, []map[string]string, error) {
 	u := fmt.Sprintf("%s/api/v1/query", p.baseURL)
 
@@ -186,7 +199,12 @@ func (p *PrometheusClient) QueryRange(ctx context.Context, query string, start, 
 	return results, nil
 }
 
-// LabelValueWindow is how far back a label lookup looks; it must exceed the slowest poll interval.
+// LabelValueWindow is how far back a label lookup looks.
+//
+// Without a window the label API answers across the whole retention period, so
+// a metric that stopped being collected would still be reported as present.
+// It has to be comfortably longer than the slowest poll interval, or a device
+// polled every five minutes would look as though it had stopped.
 const LabelValueWindow = 30 * time.Minute
 
 // QueryLabelValues queries Prometheus for unique values of a label

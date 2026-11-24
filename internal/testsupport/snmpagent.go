@@ -134,7 +134,12 @@ func (a *SNMPAgent) SetSilent(silent bool) {
 	a.silent.Store(silent)
 }
 
-// SilenceSubtree stops the agent answering requests into the subtree at oid; an empty OID restores normal answers.
+// SilenceSubtree makes the agent stop answering requests that reach into the
+// subtree rooted at oid, while answering everything else as usual. Passing an
+// empty OID restores the agent to answering everything.
+//
+// This is a partially answering device: reachable, talking, and timing out on
+// one branch of its MIB.
 func (a *SNMPAgent) SilenceSubtree(oid string) {
 	if oid == "" {
 		a.silentSubtree.Store(nil)

@@ -17,7 +17,10 @@ type changeReport struct {
 	Ref    string `json:"ref"`
 	ID     int64  `json:"id,omitempty"`
 
-	// Note explains a successful change that will not do what was expected; empty otherwise.
+	// Note is what the operator needs to know about a change that succeeded
+	// without doing what they expected — a MIB assigned to a device that has no
+	// pollable objects, and so will never produce a metric. Empty when the
+	// change speaks for itself.
 	Note string `json:"note,omitempty"`
 }
 

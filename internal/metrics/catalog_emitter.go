@@ -10,9 +10,33 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// One configured emitter writes the catalog on its own timer, never from a poll path, so writes are never duplicated out of order.
+// The catalog is written by exactly one designated emitter, and never from a
+// device's poll path.
+//
+// Both halves of that matter. Writing it from a poll path would emit the whole
+// catalog once per device per cycle -- 20,390 series times the fleet, which at
+// a hundred thousand devices is billions of writes for data that is identical
+// every time. And letting every process emit it on its own timer would have
+// several collectors writing the same series at uncoordinated moments: the
+// first write to land sets the sample's timestamp, and a second arriving
+// behind it is rejected out of order, because out_of_order_time_window is 0 by
+// default. That failure needs more than one shard to appear at all, so it
+// would work in development and fail intermittently in production.
+//
+// Designating one emitter by configuration avoids both without a coordination
+// protocol, an election, or any reliance on how the receiver treats duplicate
+// samples. A single-process deployment designates itself; a sharded one names
+// one instance. It is a separate component from the exporter for the same
+// reason: sharding must not require restructuring it.
 
-// CatalogInterval is how often the emitter republishes the catalog, inside the five-minute staleness window.
+// CatalogInterval is how often the designated emitter republishes the catalog.
+//
+// The catalog is static between MIB loads, so this is not a data-freshness
+// question -- it is only about staying inside Prometheus's staleness window,
+// which is five minutes by default. Two minutes leaves room for one missed
+// emission without the series going stale, and puts the cost at roughly 2 MB
+// of labels before compression every two minutes, forever, regardless of how
+// many devices exist or how often they are polled.
 const CatalogInterval = 2 * time.Minute
 
 // Self-instrumentation for the catalog.
@@ -96,7 +120,11 @@ type CatalogEmitter struct {
 	once sync.Once
 }
 
-// NewCatalogEmitterFor returns an emitter for what exporter has sent; it starts only when Start is called.
+// NewCatalogEmitterFor returns an emitter publishing the catalog for what
+// exporter has sent, described by the MIB metadata it was built with.
+//
+// It does not start on construction: a process that is not the designated
+// emitter never calls Start, or never builds one at all.
 func NewCatalogEmitterFor(exporter *PrometheusExporter) *CatalogEmitter {
 	return newCatalogEmitter(exporter, exporter.TableIndexCache(), exporter.publishedMetricNames())
 }

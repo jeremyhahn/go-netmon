@@ -15,7 +15,14 @@ func init() {
 	gosnmp.PasswordCaching(false)
 }
 
-// Credentials are a device's SNMP secrets sealed in go-enclave memory, opened only for one request; the sealer destroys them.
+// Credentials are a device's SNMP secrets, sealed in go-enclave protected
+// memory: the v1/v2c community string and the v3 authentication and privacy
+// passphrases. The v3 username and protocols are not secret and stay on the
+// device.
+//
+// A client opens them only for the length of one request (see Client.call)
+// and they are never held as a Go string or []byte between requests. Whoever
+// seals them owns them and destroys them with the device.
 type Credentials struct {
 	community    *credential.Secret
 	authPassword *credential.Secret

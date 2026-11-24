@@ -24,7 +24,12 @@ const (
 	ConfigErrorStorage     = "storage"
 )
 
-// ConfigErrorResponse is the JSON body every failed configuration request carries.
+// ConfigErrorResponse is the body every failed configuration request carries.
+//
+// It is JSON rather than the plain text the older endpoints use because the
+// answers here are lists — every field that is wrong, every module that is
+// missing — and a client that has to show an operator what to fix cannot do it
+// from a sentence.
 type ConfigErrorResponse struct {
 	Kind    string `json:"kind"`
 	Message string `json:"message"`

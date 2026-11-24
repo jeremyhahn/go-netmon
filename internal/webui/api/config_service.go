@@ -27,7 +27,10 @@ const (
 // safetyExportPrefix names the export taken just before an import is applied.
 const safetyExportPrefix = "pre-import-"
 
-// ImportReport is what an import did or, on a dry run, would do.
+// ImportReport is what an import did, or would do.
+//
+// The same shape answers a dry run and an apply, so a client renders one thing
+// and the only difference an operator sees is whether Applied is set.
 type ImportReport struct {
 	Applied       bool `json:"applied"`
 	SchemaVersion int  `json:"schema_version"`
@@ -42,7 +45,9 @@ type ImportReport struct {
 	Profiles []storage.ConfigChange `json:"profiles"`
 	Devices  []storage.ConfigChange `json:"devices"`
 
-	// SafetyExport is where the replaced configuration was written; set only on an apply.
+	// SafetyExport is where the configuration that was replaced was written, so
+	// a wrong import is recoverable by importing that file back. It is present
+	// only on an apply.
 	SafetyExport string `json:"safety_export,omitempty"`
 }
 
@@ -66,7 +71,10 @@ type ImportCounts struct {
 type ExportResult struct {
 	Bundle *ConfigBundle
 
-	// MissingSources names modules whose source could not be read, recorded as prerequisites.
+	// MissingSources names modules whose source file could not be read, so the
+	// bundle records them as prerequisites instead of carrying them. A restore
+	// onto an instance that lacks those modules will fail naming them, which is
+	// why the export says so at the time it is taken.
 	MissingSources []string
 }
 
@@ -461,7 +469,12 @@ func (e *ConfigSafetyExportError) Error() string {
 
 func (e *ConfigSafetyExportError) Unwrap() error { return e.Err }
 
-// ConfigMIBImportError reports a bundle MIB source that failed to import and which modules were imported.
+// ConfigMIBImportError reports a MIB source in a bundle that could not be
+// imported, and says exactly how far the import got.
+//
+// The modules it names as imported are still imported. That is deliberate and
+// harmless: a module nothing references polls nothing, and the configuration —
+// the part that decides what is collected — was not touched.
 type ConfigMIBImportError struct {
 	Module   string
 	Imported []string

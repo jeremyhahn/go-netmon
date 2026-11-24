@@ -276,7 +276,14 @@ func (s *Server) handleAssignMIBToDevice(w http.ResponseWriter, r *http.Request)
 	respondJSON(w, http.StatusOK, s.describeAssignment(r.Context(), deviceID, req.MibID))
 }
 
-// MIBAssignmentResult is what an assignment will produce, returned to the caller.
+// MIBAssignmentResult is what an assignment will produce, reported back to whoever
+// made it.
+//
+// The assignment used to answer 204, which is honest about the storage write
+// and silent about the outcome. A module can be assigned successfully and yield
+// nothing — ATEN-PRODUCTS-MIB is six OBJECT IDENTIFIER registrations, so the
+// only symptom was an empty dashboard some minutes later, with no way to tell a
+// module that produces nothing from one that has not been polled yet.
 type MIBAssignmentResult struct {
 	MIB    string `json:"mib"`
 	Device string `json:"device"`

@@ -11,7 +11,10 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// LimitError reports a --limit value the CLI cannot honor, before any request.
+// LimitError reports a --limit value the CLI cannot honor.
+//
+// It is returned before the command makes any request, so a typo costs nothing
+// and, under --refresh, fails once instead of once per frame.
 type LimitError struct {
 	Limit int
 }

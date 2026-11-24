@@ -1,4 +1,8 @@
-// Package cli implements the netmon CLI as a client of the go-netmon management API.
+// Package cli implements the netmon command-line interface.
+//
+// Every command is a client of the go-netmon management API — the same API the
+// web UI calls. Keeping one transport means the CLI and the GUI cannot drift
+// into two half-featured surfaces.
 package cli
 
 import (

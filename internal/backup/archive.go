@@ -148,7 +148,14 @@ func countEntries(r io.Reader) (int, error) {
 	}
 }
 
-// WriteTree streams a directory inside a root to w as an uncompressed tar without ownership and reports the entry count.
+// WriteTree streams a directory inside a root to w as an uncompressed tar and
+// reports how many entries it wrote.
+//
+// Ownership is deliberately not carried. These are the operator's own files on
+// the operator's own machine, and the uid that took the backup is not
+// necessarily the uid that restores it; content, layout and mode are what
+// matters. Docker volumes are the opposite case and are streamed by the runtime
+// with numeric ownership intact.
 func WriteTree(src *Root, base string, w io.Writer) (int, error) {
 	tw := tar.NewWriter(w)
 	entries := 0
@@ -228,7 +235,12 @@ func copyFileInto(w io.Writer, src *Root, rel string) error {
 	return err
 }
 
-// ExtractTree replaces a directory inside a root with a tar stream's contents, refusing entries that escape the root.
+// ExtractTree replaces a directory inside a root with the contents of a tar
+// stream and reports how many entries it read.
+//
+// Every entry lands through the root, so an archive carrying "../etc/passwd" or
+// "/etc/passwd" as an entry name is refused instead of being sanitized into
+// something plausible and written anyway.
 func ExtractTree(dst *Root, base string, r io.Reader) (int, error) {
 	if err := dst.MkdirAll(base, 0o755); err != nil {
 		return 0, err

@@ -11,14 +11,30 @@ import (
 	"time"
 )
 
-// Root anchors every filesystem operation on one directory, using os.Root so escapes are refused by the kernel.
+// Root is the only way this package touches the filesystem.
+//
+// It anchors every operation on one explicitly chosen directory and refuses any
+// path that would leave it. Containment is not a string comparison: the
+// underlying os.Root resolves each path component with openat2/O_NOFOLLOW
+// semantics, so ".." components, absolute paths and symbolic links pointing
+// outside are refused by the kernel, not by this code guessing at what a path
+// means.
+//
+// A Root also carries the reason it was opened. Every destructive plan this
+// package prints names the roots it is about to write through, so an operator
+// reading the plan can see the blast radius before anything happens.
+//
+// The zero value is not usable; construct one with Open, Create or Ensure.
 type Root struct {
 	root    *os.Root
 	dir     string
 	purpose string
 }
 
-// Open anchors a root on an existing directory; purpose appears in errors and the plan.
+// Open anchors a root on an existing directory.
+//
+// purpose is a short human phrase naming what the root is for; it appears in
+// every error and in the operator-facing plan.
 func Open(purpose, dir string) (*Root, error) {
 	abs, err := absDir(purpose, dir)
 	if err != nil {
@@ -38,7 +54,12 @@ func Open(purpose, dir string) (*Root, error) {
 	return &Root{root: r, dir: abs, purpose: purpose}, nil
 }
 
-// Create makes dir inside an existing parent and anchors a root on it.
+// Create makes dir's final path element inside its parent and anchors a root on
+// it. The parent must already exist and dir must not.
+//
+// Exactly one directory level is created, inside a parent the operator named.
+// Creating a chain of missing directories from a mistyped path is how a tool
+// ends up writing somewhere nobody intended, so it is not offered.
 func Create(purpose, dir string) (*Root, error) {
 	parent, base, err := splitDir(purpose, dir)
 	if err != nil {
@@ -111,7 +132,16 @@ func absDir(purpose, dir string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-// ResolveDir returns the absolute, symlink-free path a root would anchor on, without opening it.
+// ResolveDir turns a caller-supplied directory into the absolute, symlink-free
+// path a root would be anchored on, without opening anything.
+//
+// Deciding WHICH directory to make a root of is the one judgement os.Root cannot
+// make: containment bounds the paths reachable inside a root, not the choice of
+// the root itself. That choice therefore gets its own resolution step here and
+// its own checks in the caller, and the resolved path is what every plan prints.
+//
+// A path whose final element does not exist yet resolves through its parent, so
+// a destination that is about to be created still resolves to a real location.
 func ResolveDir(purpose, dir string) (string, error) {
 	abs, err := absDir(purpose, dir)
 	if err != nil {
@@ -315,7 +345,10 @@ func (r *Root) Remove(name string) error {
 	return r.opErr("remove", name, r.root.Remove(rel))
 }
 
-// RemoveAll deletes a path inside the root; symbolic links are removed, never followed.
+// RemoveAll deletes a path inside the root and everything beneath it.
+//
+// A symbolic link is removed as a link: its target is never followed, so a link
+// pointing outside cannot be used to delete anything out there.
 func (r *Root) RemoveAll(name string) error {
 	rel, err := r.rel(name)
 	if err != nil {
@@ -345,7 +378,12 @@ func (r *Root) Rename(from, to string) error {
 	return r.opErr("rename", from+" -> "+to, r.root.Rename(relFrom, relTo))
 }
 
-// Symlink creates a link inside the root, refusing targets outside it.
+// Symlink creates a symbolic link inside the root.
+//
+// The target is refused unless it also resolves inside the root. os.Root would
+// refuse to follow an escaping link later, but a link that cannot be followed is
+// a restored tree that silently does not work, so it is rejected at the point it
+// would be written instead.
 func (r *Root) Symlink(target, name string) error {
 	rel, err := r.rel(name)
 	if err != nil {
@@ -402,7 +440,13 @@ func (r *Root) Chtimes(name string, atime, mtime time.Time) error {
 	return r.opErr("chtimes", name, r.root.Chtimes(rel, atime, mtime))
 }
 
-// Empty removes everything under a directory inside the root, keeping the directory.
+// Empty removes everything under a directory inside the root, leaving the
+// directory itself in place.
+//
+// Restores replace rather than merge, so the destination is emptied first. The
+// entries are listed through the root and removed through the root one at a
+// time; there is no path string handed to anything that could interpret it as
+// something outside.
 func (r *Root) Empty(name string) error {
 	rel, err := r.rel(name)
 	if err != nil {

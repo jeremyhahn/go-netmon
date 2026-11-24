@@ -13,7 +13,15 @@ import (
 // caller that only needs to know a module loaded degraded can use errors.Is.
 var ErrUnresolvedImports = errors.New("mib module has unresolved imports")
 
-// UnresolvedImportsError warns that some IMPORTS were not found, leaving dependent objects untyped; the module still loads.
+// UnresolvedImportsError says a module parsed, but not completely: some of
+// the modules its IMPORTS name could not be found, and the objects that take
+// their type from one of them came out with no type.
+//
+// It is a warning, not a load failure. The module's objects are still
+// returned and still pollable by OID; what they lose is everything read from
+// the type -- Type, Units, DisplayHint and EnumValues -- so an enumerated
+// status polls as a bare integer. Getting this as a value, rather than a
+// module that silently looks fine, is the point.
 type UnresolvedImportsError struct {
 	// Module is the module that was parsed.
 	Module string

@@ -60,7 +60,12 @@ type volumeTarget struct {
 	docker    string
 }
 
-// Backup checks everything first, stops the stack, copies its data at rest and restarts what was running.
+// Backup stops the stack, copies its data at rest and starts again exactly what
+// was running.
+//
+// Everything that can fail is proved first: the compose project's ownership,
+// every volume's label, and the MIB source tree's location and contents, so a
+// problem never takes the stack down for nothing.
 func (s *Service) Backup(ctx context.Context, opts Options) (*Result, error) {
 	plan, err := s.planBackup(ctx, opts)
 	if err != nil {

@@ -43,7 +43,11 @@ type PollerDeviceRequest struct {
 	Modules      []string          `json:"modules,omitempty"`
 	Tags         map[string]string `json:"tags,omitempty"`
 
-	// ModuleFilters narrows what is polled within a module, keyed by module name.
+	// ModuleFilters narrows what is polled within a module, keyed by module
+	// name. Without it the poller has only the module list and fetches every
+	// pollable object of every module -- which is what happened to every filter
+	// an operator set: stored, shown in the UI, counted by the cost estimator,
+	// and then ignored by the thing actually doing the polling.
 	ModuleFilters map[string]config.ModuleFilter `json:"module_filters,omitempty"`
 }
 
@@ -58,18 +62,34 @@ type DeviceStatus struct {
 	PollInterval     string            `json:"poll_interval"`
 	Tags             map[string]string `json:"tags,omitempty"`
 
-	// Unreachable is set while the device answers no SNMP at all and is retried on a widening interval.
+	// Unreachable is set while the poller is getting no SNMP answers at all
+	// from the device and is retrying it on a widening interval. A device that
+	// answers some objects and errors on others is not this: it is reachable
+	// and still collecting.
 	Unreachable bool `json:"unreachable"`
 
 	// ConsecutiveFailures counts the polls in a row the device answered no part
 	// of, and is what NextPollTime is backed off by.
 	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
 
-	// NextPollTime is when the poller next tries the device; absent from JSON until a retry is scheduled.
+	// NextPollTime is when the poller will next try the device.
+	//
+	// ABSENT from the JSON means no retry is scheduled yet -- the state a device
+	// is in for the whole of its first poll. Treat a missing next_poll_time as
+	// "not yet known", not as an error. See MarshalJSON.
 	NextPollTime time.Time `json:"next_poll_time,omitempty"`
 }
 
-// MarshalJSON omits a zero next_poll_time, matching internal/api.DeviceStatus.MarshalJSON.
+// MarshalJSON omits next_poll_time while no retry has been scheduled.
+//
+// The `omitempty` tag cannot do this by itself: encoding/json treats only
+// false, 0, nil pointers and interfaces, and empty arrays, slices, maps and
+// strings as empty, and time.Time is a struct, so a zero value would marshal as
+// "0001-01-01T00:00:00Z". This mirrors internal/api.DeviceStatus.MarshalJSON --
+// the two shapes are one wire contract and must not drift.
+//
+// LastPollTime keeps its always-present zero deliberately: that is what
+// distinguishes "never polled" from "polled and failed".
 func (s DeviceStatus) MarshalJSON() ([]byte, error) {
 	// The local type sheds the method set so this does not recurse; the
 	// shadowing pointer field at depth 0 wins over the embedded one at depth 1.
@@ -122,7 +142,32 @@ func NewPollerClient(baseURL string, timeout time.Duration) *PollerClient {
 	}
 }
 
-// RegisterDevice registers a device with the poller; a 409 (already held) is success, and disabled devices are not sent.
+// RegisterDevice registers a device with the poller service.
+//
+// A poller that answers 409 already has the device. That is not a failure: the
+// outcome this call exists to reach is a poller polling the device, and a
+// poller that already polls it has reached it. The web UI re-registers every
+// stored device each time it starts, so this is the ordinary case on any
+// instance whose poller has been up longer than its web UI -- and treating it
+// as a failure is what produced roughly 1,300 HTTP 500s a day on monitor-01, each one
+// a device the web UI then recorded as unregistered while it was polling
+// normally.
+//
+// The poller is not the thing that was wrong. "Already exists", for a device
+// that does exist, is the correct answer to the question asked; it stays an
+// error there, and the poller still refuses to overwrite a live worker behind
+// the caller's back. What changes is that the caller stops reading a truthful
+// answer as a fault.
+//
+// Deliberately narrow. Only 409 -- the poller stating that it holds this device
+// -- is a success. Every other failure, including a poller that did not answer
+// at all, stays an error, because "the poller did not say" is not the same as
+// "the poller has it" and only one of those means the device is being polled.
+//
+// A disabled device is not sent at all. The poller's control API starts a
+// worker for every device it is given, whatever the request's enabled field
+// says, so registering a disabled device would poll it. Leaving it out is the
+// only way this call can respect the flag.
 func (c *PollerClient) RegisterDevice(
 	ctx context.Context, device *storage.Device,
 	mibNames []string, filters map[string]config.ModuleFilter,
@@ -153,7 +198,11 @@ func (c *PollerClient) RegisterDevice(
 	return nil
 }
 
-// UpdateDevice replaces or adds the device in the poller; a disabled device is removed instead.
+// UpdateDevice updates an existing device in the poller service.
+//
+// The poller replaces the device it holds, or adds it if it holds none, so an
+// update is also how a device that was disabled starts polling again. Updating
+// a disabled device removes it instead, for the reason RegisterDevice gives.
 func (c *PollerClient) UpdateDevice(
 	ctx context.Context, device *storage.Device,
 	mibNames []string, filters map[string]config.ModuleFilter,
@@ -179,7 +228,18 @@ func (c *PollerClient) UpdateDevice(
 	return nil
 }
 
-// RemoveDevice removes a device from the poller; a 404 is success, every other failure an error.
+// RemoveDevice removes a device from the poller service.
+//
+// A poller that answers 404 does not have the device, which is precisely the
+// state this call exists to reach, so it is a success. Reporting it as a
+// failure would make every re-issued delete -- and every delete of a device the
+// poller had already dropped, which is any device added while the poller was
+// down -- look like the poller and storage disagreeing when they agree.
+//
+// This is deliberately narrow: 404 is the poller stating what it holds. Every
+// other failure, including one that leaves the answer unknown, stays an error,
+// because "the poller did not say" is not the same as "the poller does not have
+// it" and only one of the two is safe to call done.
 func (c *PollerClient) RemoveDevice(ctx context.Context, deviceName string) error {
 	url := fmt.Sprintf("%s/api/poller/devices/%s", c.baseURL, deviceName)
 	_, err := c.doRequestWithRetry(ctx, http.MethodDelete, url, nil)

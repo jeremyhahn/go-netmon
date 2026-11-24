@@ -34,10 +34,13 @@ const (
 	// all, either because it is unassigned or because its assignment is off.
 	ReasonModuleDisabled Reason = "module-disabled"
 
-	// ReasonNotAccessible marks an object whose MAX-ACCESS is neither read-only nor read-write.
+	// ReasonNotAccessible marks an object the agent can never return, because
+	// its MAX-ACCESS is neither read-only nor read-write. Not-accessible index
+	// columns reach a client as labels on other series, never on their own.
 	ReasonNotAccessible Reason = "not-accessible"
 
-	// ReasonNotCurrent marks a readable object whose STATUS is deprecated or obsolete.
+	// ReasonNotCurrent marks a readable object whose STATUS is deprecated or
+	// obsolete, which the poller declines to spend a varbind on.
 	ReasonNotCurrent Reason = "not-current"
 
 	// ReasonCoveredByTable marks a row node or a column whose table is already
@@ -56,7 +59,11 @@ const (
 	// contributed max_oids objects by the time the object was reached.
 	ReasonMaxOIDs Reason = "capped-by-max-oids"
 
-	// ReasonUnresolved marks an object with no OID: a module its IMPORTS names is missing.
+	// ReasonUnresolved marks an object that carries no OID, so there is nothing
+	// to ask a device for. It means the module was parsed without one of the
+	// modules its IMPORTS names, and it is worth its own reason because the
+	// remedy is different from every other: import the missing module, rather
+	// than adjust a filter or accept that the object is obsolete.
 	ReasonUnresolved Reason = "unresolved-oid"
 )
 
@@ -77,7 +84,29 @@ type Decision struct {
 	Reason Reason
 }
 
-// Plan decides, in input order, whether a device polling the named modules fetches each object: readable scalars, whole tables, not their columns or entries, within filters.
+// Plan decides, for every object given, whether a device polling the named
+// modules would fetch it, and why.
+//
+// What counts as worth fetching depends on how the poller gets it:
+//
+//   - Scalars are fetched with GET, so they must be readable. A not-accessible
+//     scalar can never be returned and asking costs a varbind every poll.
+//   - Tables are fetched with a walk of the table node. That node is itself
+//     not-accessible in essentially every MIB — MAX-ACCESS describes the node,
+//     not its subtree — so readability is the wrong test for it. One walk of a
+//     table returns every column and every row.
+//   - Columns are therefore redundant when their table is already selected;
+//     walking each of them separately turns one request into dozens.
+//   - Entry (row) nodes describe structure and add nothing over the table.
+//
+// A module may also carry a filter narrowing it further, which is how a device
+// polls part of a large MIB rather than all of it. A filter that excludes a
+// column still leaves its table walked, so filters that need to reduce SNMP
+// traffic should exclude the table.
+//
+// Decisions come back in the order the objects were given, which matters: a
+// module's max_oids cap is spent in that order, so the same objects must be
+// presented in the same order to get the same answer.
 func Plan(objects []*mib.OIDMetadata, modules []string, filters map[string]config.ModuleFilter) []Decision {
 	selected := make(map[string]bool, len(modules))
 	for _, module := range modules {
@@ -100,7 +129,12 @@ func Plan(objects []*mib.OIDMetadata, modules []string, filters map[string]confi
 	return decisions
 }
 
-// Polled returns the objects Plan accepts.
+// Polled returns the objects a device polling the named modules will fetch.
+//
+// It is Plan with the rejected objects dropped, which is deliberate: the poller
+// and anything explaining the poller must not be able to disagree, and the only
+// way to guarantee that is for there to be one rule and one implementation of
+// it.
 func Polled(objects []*mib.OIDMetadata, modules []string, filters map[string]config.ModuleFilter) []*mib.OIDMetadata {
 	decisions := Plan(objects, modules, filters)
 

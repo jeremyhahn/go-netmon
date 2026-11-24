@@ -11,7 +11,14 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// MIBObjectPlan reports, for one device and MIB, which objects are polled and why the rest are not.
+// MIBObjectPlan answers, for one device and one MIB, the question a checkbox
+// list has to answer before it can be drawn: which of this module's objects is
+// this device actually polling, and why not the rest?
+//
+// The answer depends on the assignment's filters and on the poller's own rules
+// about tables, columns and access, so it cannot be worked out from the
+// assignment alone. It is computed here, by the same code the poller runs, and
+// not reimplemented in a browser or a CLI.
 type MIBObjectPlan struct {
 	DeviceID int64  `json:"device_id"`
 	Device   string `json:"device"`
@@ -37,14 +44,25 @@ type MIBObjectPlan struct {
 	// Instances, so the per-object costs and the module total agree.
 	Estimate *MIBSeriesEstimate `json:"estimate"`
 
-	// Objects are the module's objects in poller order, in which a max_oids cap is spent.
+	// Objects are the module's objects, in the order the poller sees them. The
+	// order matters: a max_oids cap is spent in it, so re-sorting this list
+	// client-side changes which objects appear capped. A narrowed request
+	// carries a slice of that order rather than a different order.
 	Objects []MIBObjectDecision `json:"objects"`
 
-	// Page describes the slice Objects carries; absent when unnarrowed. Total and Polled count the whole plan.
+	// Page describes which slice of the plan Objects carries, and is absent
+	// from an unnarrowed request, which carries all of them. Total and Polled
+	// above always count the whole plan, so a paged response still says what
+	// the device does with the module as a whole.
 	Page *Page `json:"page,omitempty"`
 }
 
-// MIBObjectDecision is one object with its verdict; embedded Pollable is what the MIB says.
+// MIBObjectDecision is one object with the verdict on it.
+//
+// The MIB's own fields are flattened in, so a client that already renders
+// MIBObject elsewhere keeps working. Polled and Reason are the fields this
+// endpoint exists for; the embedded Pollable reports what the MIB says about
+// the object, not what this device does with it.
 type MIBObjectDecision struct {
 	MIBObject
 
@@ -55,7 +73,10 @@ type MIBObjectDecision struct {
 	// Polled reports whether this device fetches the object right now.
 	Polled bool `json:"polled"`
 
-	// Reason is "polled" or one of not-accessible, not-current, covered-by-table-walk, excluded-by-filter, not-included-by-filter, capped-by-max-oids, module-disabled.
+	// Reason is "polled", or the machine-usable name of what stopped it: one
+	// of not-accessible, not-current, covered-by-table-walk,
+	// excluded-by-filter, not-included-by-filter, capped-by-max-oids or
+	// module-disabled.
 	Reason string `json:"reason"`
 
 	// Series is what the object costs in Prometheus series, 0 when it is not
@@ -63,7 +84,10 @@ type MIBObjectDecision struct {
 	Series int `json:"series"`
 }
 
-// MIBNotAssignedError reports a MIB the device does not poll, directly or through a profile.
+// MIBNotAssignedError reports a MIB the device does not poll at all, neither
+// directly nor through a profile. There is nothing to explain about a module
+// that is not attached, and answering with an all-disabled list would suggest
+// the assignment exists and is merely turned off.
 type MIBNotAssignedError struct {
 	Device string
 	MIB    string
@@ -73,7 +97,17 @@ func (e *MIBNotAssignedError) Error() string {
 	return "mib " + e.MIB + " is not assigned to device " + e.Device
 }
 
-// PlanMIBObjects reports what a device polls from one module via selector.Plan; instances is the rows per table used for pricing.
+// PlanMIBObjects reports what a device polls from one module's objects, given
+// the assignment that governs it.
+//
+// The decision comes from selector.Plan, which is the function the poller's own
+// selection is built on: selector.Polled is that plan with the rejected objects
+// dropped. There is one rule and one implementation of it, so an object this
+// reports as polled is an object the poller fetches by construction rather than
+// by two pieces of code happening to agree.
+//
+// instances is the rows per table the cost estimate assumed, used to price
+// table-valued objects.
 func PlanMIBObjects(
 	objects []*mib.OIDMetadata,
 	module string,

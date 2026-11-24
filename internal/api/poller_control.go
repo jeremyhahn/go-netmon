@@ -52,7 +52,8 @@ type RegisterDeviceRequest struct {
 	Profile      string            `json:"profile"`
 	Tags         map[string]string `json:"tags,omitempty"`
 
-	// ModuleFilters narrows what is polled within a module, keyed by module name; a module with no entry is polled in full.
+	// ModuleFilters narrows what is polled within a module, keyed by module
+	// name. A module with no entry is polled in full.
 	ModuleFilters map[string]config.ModuleFilter `json:"module_filters,omitempty"`
 }
 

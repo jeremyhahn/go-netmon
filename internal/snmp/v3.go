@@ -8,7 +8,21 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// SNMPv3 user-based security; the security level and MsgFlags follow from which protocols are configured.
+// SNMPv3 user-based security, in one place.
+//
+// There were two implementations of this: the poller's client and the web UI's
+// connectivity tester. They disagreed, which is the usual outcome. The client
+// set MsgFlags to authPriv unconditionally, so a device configured for
+// authentication without encryption — a real and common setting — was refused
+// by gosnmp before a packet left the host, with
+// "securityParameters.PrivacyProtocol is required". The tester, fixed later,
+// derived the flags correctly. A device could therefore pass its connectivity
+// test and still be unpollable.
+//
+// The security level is not a separate setting an operator chooses; it follows
+// from which protocols are configured, and the flags have to agree with the
+// message's actual contents or the agent rejects it before looking at the
+// credentials.
 
 // V3Credentials is what user-based security needs. An empty protocol means that
 // layer is off, which is what makes authNoPriv and noAuthNoPriv expressible.

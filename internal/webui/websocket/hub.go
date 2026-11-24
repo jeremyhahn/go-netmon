@@ -15,13 +15,29 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/logging"
 )
 
-// MaxQueriesInFlight caps how many Prometheus requests one streaming round has open at once.
+// MaxQueriesInFlight caps how many Prometheus requests one streaming round has
+// open at once.
+//
+// A round used to open one request per subscribed query simultaneously. A
+// device dashboard subscribes about twenty, so a room of operators on different
+// devices reached into the thousands, all landing on one Prometheus at the same
+// instant. The ceiling turns that into a queue: the same work, at a rate a
+// single Prometheus can actually serve.
 const MaxQueriesInFlight = 32
 
-// MaxSubscriptionsPerClient caps how many queries one browser may subscribe to; a refused subscription is answered.
+// MaxSubscriptionsPerClient caps how many queries one browser may subscribe to.
+//
+// Every subscription is re-queried on every round on that client's behalf, so
+// an unbounded count lets a single session set the load on Prometheus for
+// everyone. The richest real dashboard measured here holds 179 — core-01
+// across ten modules — so the ceiling is well clear of a legitimate page while
+// still bounding a client that never lets go, or one that is not a browser at
+// all. A refused subscription is answered rather than dropped silently, so the
+// page can say the dashboard is too large instead of quietly missing cards.
 const MaxSubscriptionsPerClient = 2048
 
-// DefaultStreamInterval is how often a hub re-reads its subscribed queries and pushes changes when the caller does not say.
+// DefaultStreamInterval is how often a hub re-reads its subscribed queries and
+// pushes what changed, when its caller does not say.
 const DefaultStreamInterval = 5 * time.Second
 
 // Hub maintains the set of active clients and broadcasts messages to them
@@ -85,19 +101,42 @@ type MetricValue struct {
 const (
 	MessageTypeSubscribe   = "subscribe"
 	MessageTypeUnsubscribe = "unsubscribe"
-	// MessageTypeMetricSnapshot carries a query's whole reading and its sequence number.
+	// MessageTypeMetricSnapshot carries a query's WHOLE reading, with the
+	// sequence number that names it. It is what a client gets when it is new
+	// to a query, when it has fallen behind, and periodically regardless, so
+	// that nothing can drift indefinitely.
 	MessageTypeMetricSnapshot = "metric_snapshot"
 
-	// MessageTypeMetricDelta carries only what changed and the sequence it applies to; other clients must request a snapshot.
+	// MessageTypeMetricDelta carries only what changed, and names the sequence
+	// it must be applied to. A client at any other sequence must discard it
+	// and ask for a snapshot: applying a delta to something other than what it
+	// was computed against is the one way a stale value could render as a
+	// current one.
 	MessageTypeMetricDelta = "metric_delta"
 
-	// CapabilityAllSteady is announced by a browser that accepts the collapsed all-steady heartbeat.
+	// CapabilityAllSteady is what a browser announces to be sent the collapsed
+	// all-steady heartbeat instead of the full query list. The name is the
+	// field it unlocks, so an older server that has never heard of it ignores
+	// the announcement and a newer one needs no version table.
 	CapabilityAllSteady = "all_steady"
 
-	// MessageTypeMetricsUnchanged names the queries re-read this round and found unchanged, so charts can advance.
+	// MessageTypeMetricsUnchanged names the queries that were re-read this
+	// round and found to be exactly as the client already has them.
+	//
+	// The dashboard is a tick-based live view: a chart has to keep advancing
+	// while a value holds steady, or its line stops at the last change and
+	// reads as data having stopped. Sending the whole result again to say
+	// "still 37" is what this replaces -- the browser has the reading, so one
+	// frame naming the queries lets it carry every one of them forward.
 	MessageTypeMetricsUnchanged = "metrics_unchanged"
 
-	// MessageTypeResync is a client reporting a delta whose base sequence it does not hold; the next round sends the whole reading.
+	// MessageTypeResync is a client saying it has lost its place -- a delta
+	// whose base sequence it does not hold. The server forgets what it
+	// believed that client had, and the next round sends the whole reading.
+	//
+	// The server already resends on a frame it could not queue; this is the
+	// half it cannot see, where the frame was queued, the socket accepted it
+	// and the browser never applied it.
 	MessageTypeResync = "resync"
 
 	MessageTypeError = "error"
@@ -108,7 +147,20 @@ type ClientMessage struct {
 	Type    string   `json:"type"`
 	Queries []string `json:"queries,omitempty"`
 
-	// Supports names the frame shapes this browser can apply; a client that says nothing gets only the baseline frames.
+	// Supports names the frame shapes this browser knows how to apply.
+	//
+	// It exists because a page that is ALREADY OPEN cannot be taught anything.
+	// Deploying a server that sends a frame the loaded script does not
+	// understand does not degrade that tab, it silently stops it: the old
+	// handler reads a field that is not there, advances nothing, and every
+	// chart holds its last value while the connection stays up and the page
+	// looks fine. In a monitoring tool a line that stops moving reads as calm.
+	//
+	// So the SERVER is the side that has to be careful, and it is careful by
+	// default: a client that says nothing is sent the frames that have always
+	// worked. Only a browser that announces a shape is sent it. A version
+	// number would not do -- it would have to be checked by the very script
+	// that is too old to know it should look.
 	Supports []string `json:"supports,omitempty"`
 }
 
@@ -133,14 +185,23 @@ type ServerMessage struct {
 	// is set, because then the client already knows the whole set.
 	Queries []string `json:"queries,omitempty"`
 
-	// AllSteady says every subscription of this client was steady this round, so no query is named.
+	// AllSteady says every one of this client's subscriptions was steady this
+	// round. It is the common steady-state case -- a dashboard of a couple
+	// hundred queries none of which moved -- and it lets the frame name none
+	// of them: the client advances every reading it holds. Without it the
+	// heartbeat re-lists every subscribed query string on every round, which
+	// on a large dashboard is the query text of the whole page every five
+	// seconds to say nothing changed.
 	AllSteady bool `json:"all_steady,omitempty"`
 
 	Error     string `json:"error,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 }
 
-// NewHub creates a Hub that reports its stream tracing to logger; a nil logger discards it.
+// NewHub creates a new Hub that reports its stream tracing to logger.
+//
+// A nil logger discards those records, so a caller that has not configured
+// logging pays nothing for them.
 func NewHub(queryFunc QueryFunc, logger *slog.Logger, opts ...HubOption) *Hub {
 	h := &Hub{
 		clients:       make(map[*Client]bool),
@@ -164,7 +225,11 @@ func NewHub(queryFunc QueryFunc, logger *slog.Logger, opts ...HubOption) *Hub {
 // HubOption adjusts a Hub at construction.
 type HubOption func(*Hub)
 
-// WithStreamInterval sets how often the hub pushes a round; a non-positive duration keeps DefaultStreamInterval.
+// WithStreamInterval sets how often the hub pushes a round.
+//
+// A non-positive duration is ignored rather than rejected, so a caller wiring
+// an unset configuration field through gets DefaultStreamInterval instead of a
+// hub that spins.
 func WithStreamInterval(d time.Duration) HubOption {
 	return func(h *Hub) {
 		if d > 0 {
@@ -493,7 +558,11 @@ func (h *Hub) traceResult(ctx context.Context, query string, metrics []MetricVal
 	}
 }
 
-// Subscribe adds a client to a query subscription, reporting whether it was accepted.
+// Subscribe adds a client to a query subscription, reporting whether it was
+// accepted.
+//
+// The client remembers what it subscribed to, which is what lets it be removed
+// later without walking the whole hub, and lets its total be capped.
 func (h *Hub) Subscribe(client *Client, query string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()

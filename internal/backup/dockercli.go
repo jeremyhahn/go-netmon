@@ -11,7 +11,11 @@ import (
 	"strings"
 )
 
-// DefaultHelperImage is the pinned image for the containers that stream volume contents.
+// DefaultHelperImage is the image used for the throwaway containers that stream
+// volume contents in and out.
+//
+// It needs nothing but a POSIX tar and find. It is pinned so that a backup and
+// the restore that follows it cannot disagree about tar behavior.
 const DefaultHelperImage = "alpine:3.19"
 
 // DefaultDockerBinary is the client this package drives.
@@ -21,7 +25,10 @@ const DefaultDockerBinary = "docker"
 type CLIOptions struct {
 	// Binary is the docker client to run. Empty means DefaultDockerBinary.
 	Binary string
-	// Project is the compose project, always pinned by the caller.
+	// Project is the compose project to operate on. It is pinned by the
+	// caller, never inherited from the working directory: without -p, compose
+	// derives the project from the directory name, and a command aimed at a
+	// test stack reaches the deployed one instead.
 	Project string
 	// ComposeFile is the absolute path of the compose file defining the stack.
 	ComposeFile string
@@ -29,7 +36,22 @@ type CLIOptions struct {
 	HelperImage string
 }
 
-// CLI drives the docker client with argument vectors only, never a shell.
+// CLI drives the Docker command-line client.
+//
+// Every invocation is built as an explicit argument vector and handed to
+// os/exec, which executes the binary directly. No string is ever assembled into
+// a command line, and no shell is involved at any point - not on the host, and
+// not inside the helper containers, whose commands are argument vectors too.
+// There is therefore nothing for a volume name, a path or a project name to be
+// interpreted as.
+//
+// The command-line client is used rather than the Docker SDK because half of
+// what this tool needs - the compose project, its service list, its volume
+// definitions and its bind mounts - is a compose plugin concept that the SDK
+// does not model at all. Driving one tool for both keeps the ownership checks
+// and the operations they guard reading from the same source of truth, and it
+// keeps the dependency surface of a disaster-recovery binary to the client the
+// deployment already requires.
 type CLI struct {
 	binary      string
 	project     string
@@ -247,7 +269,12 @@ func (c *CLI) VolumeNames(ctx context.Context) ([]string, error) {
 	return lines(out), nil
 }
 
-// VolumeProject reports a volume's compose project label; only an unknown volume reads as absent.
+// VolumeProject reports the compose project label on a volume.
+//
+// A volume the runtime does not know is reported as absent. That is the only
+// failure treated as "not there": any other error from the daemon is returned,
+// because a decision about what to overwrite must not be made from a question
+// that went unanswered.
 func (c *CLI) VolumeProject(ctx context.Context, volume string) (string, bool, error) {
 	if !validName(volume) {
 		return "", false, &InvalidNameError{Kind: "volume", Name: volume}
@@ -268,7 +295,11 @@ func (c *CLI) VolumeProject(ctx context.Context, volume string) (string, bool, e
 	return project, true, nil
 }
 
-// VolumeBytes reports a volume's size from a read-only, networkless helper container.
+// VolumeBytes reports the on-disk size of a volume's contents.
+//
+// It runs in a helper container so the answer is right regardless of storage
+// driver and needs no root on the host. The volume is mounted read-only and the
+// container has no network.
 func (c *CLI) VolumeBytes(ctx context.Context, volume string) (int64, error) {
 	if !validName(volume) {
 		return 0, &InvalidNameError{Kind: "volume", Name: volume}
@@ -287,7 +318,11 @@ func (c *CLI) VolumeBytes(ctx context.Context, volume string) (int64, error) {
 	return size, nil
 }
 
-// ExportVolume writes a volume's contents to w as a tar, keeping numeric ownership.
+// ExportVolume writes a volume's contents to w as an uncompressed tar.
+//
+// Numeric ownership is preserved: the Prometheus and Grafana images run as
+// non-root uids, and a restore that loses ownership produces a container that
+// cannot write its own data directory.
 func (c *CLI) ExportVolume(ctx context.Context, volume string, w io.Writer) error {
 	if !validName(volume) {
 		return &InvalidNameError{Kind: "volume", Name: volume}
@@ -297,7 +332,14 @@ func (c *CLI) ExportVolume(ctx context.Context, volume string, w io.Writer) erro
 		"tar", "-C", "/src", "--numeric-owner", "-cf", "-", ".")
 }
 
-// ImportVolume empties the volume, then unpacks the tar stream in r into it.
+// ImportVolume replaces a volume's contents with the tar stream in r.
+//
+// Two containers, two argument vectors, no shell. The destination is emptied
+// first so the restore is a replacement rather than a merge: a merge leaves
+// behind files the backup does not contain, which is precisely the "silently
+// half-matches" outcome a restore must not produce. The deletion runs inside a
+// container whose only mount is this volume, so its reach is the volume and
+// nothing else.
 func (c *CLI) ImportVolume(ctx context.Context, volume string, r io.Reader) error {
 	if !validName(volume) {
 		return &InvalidNameError{Kind: "volume", Name: volume}
@@ -312,7 +354,11 @@ func (c *CLI) ImportVolume(ctx context.Context, volume string, r io.Reader) erro
 		"tar", "-C", "/dst", "--numeric-owner", "-xf", "-")
 }
 
-// ImageID resolves an image reference to its id; a missing image is an empty id.
+// ImageID resolves an image reference to its content id.
+//
+// An image the host does not have is reported as an empty id rather than an
+// error: the manifest records what was there, and a missing image is a fact
+// about the host, not a reason to abandon a backup.
 func (c *CLI) ImageID(ctx context.Context, image string) (string, error) {
 	if strings.TrimSpace(image) == "" {
 		return "", nil

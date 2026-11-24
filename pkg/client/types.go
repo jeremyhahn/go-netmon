@@ -1,4 +1,8 @@
-// Package client is a Go SDK for the go-netmon management API, the same HTTP API the web UI uses.
+// Package client is a Go SDK for the go-netmon management API.
+//
+// It speaks the same HTTP API the web UI uses, so anything the GUI can do is
+// reachable from here — that is what keeps the CLI and the GUI in parity
+// rather than letting them drift into two half-featured surfaces.
 package client
 
 import (
@@ -28,13 +32,27 @@ type Device struct {
 	PrivProtocol string `json:"priv_protocol,omitempty"`
 	PrivPassword string `json:"priv_password,omitempty"`
 
-	// PollInterval is the poll interval in seconds, nil to inherit the global default; use PollIntervalOf and InheritPollInterval.
+	// PollInterval is how often this device is polled, in seconds. It is nil on
+	// a device that inherits the server's global default, which is the state
+	// every device starts in.
+	//
+	// On a write, nil means "inherit"; use PollIntervalOf and InheritPollInterval
+	// rather than taking the address of a literal, so that a caller reading a
+	// device, changing one field and writing it back cannot accidentally pin the
+	// interval to today's default.
 	PollInterval *int `json:"poll_interval,omitempty"`
 
-	// Enabled is whether the device is polled; nil means enabled on create and unchanged on update. Use EnabledOf.
+	// Enabled is whether the device is polled. The server states it on every
+	// read; it is nil only on a device built locally that never said, and use
+	// EnabledOf rather than dereferencing it. Nil on a create means enabled,
+	// and nil on an update keeps the stored value, so a read-modify-write that
+	// carries the field through never switches polling back on.
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// EffectivePollInterval is the interval in seconds the device is polled at, computed by the server and ignored on write.
+	// EffectivePollInterval is the interval in seconds the device is actually
+	// polled at: PollInterval when it has one, the server's global default when
+	// it does not. It is computed by the server on every read and ignored on a
+	// write.
 	EffectivePollInterval int `json:"effective_poll_interval,omitempty"`
 
 	// Warnings are configurations the server accepted but flagged, such as a
@@ -141,7 +159,14 @@ type MIBObject struct {
 	IsIndex     bool             `json:"is_index,omitempty"`
 	TableOID    string           `json:"table_oid,omitempty"`
 
-	// Index names the INDEX columns of a table entry, in order, telling index labels from enrichment labels.
+	// Index names the columns of a conceptual row's INDEX clause, in INDEX
+	// order, and is present only on a table entry.
+	//
+	// It is what identifies a series' genuine index labels. The exporter labels
+	// every sample of a table column with the lowercased name of each INDEX
+	// column, and with enrichment labels beside them — ifname, ifdescr and the
+	// rest — that are not part of the row's identity. Holding the INDEX clause
+	// is how a client tells the two apart without a list of names to ignore.
 	Index []string `json:"index,omitempty"`
 }
 
@@ -190,7 +215,11 @@ type MIBAssignment struct {
 	MaxOIDs int `json:"max_oids,omitempty"`
 }
 
-// Validate reports the first filter the server would reject, compiling patterns locally.
+// Validate reports the first filter the server would reject.
+//
+// Patterns are compiled in the caller's process so a malformed one is named
+// where it was typed instead of coming back as a 400 several layers away, and
+// so it never reaches a poller worker.
 func (a MIBAssignment) Validate() error {
 	groups := []struct {
 		field    string
@@ -217,12 +246,21 @@ func (a MIBAssignment) Validate() error {
 }
 
 // AssignedMIB is a MIB together with how it is polled.
+//
+// The server flattens the MIB's own fields into the object rather than nesting
+// them, so the MIB is embedded here: a listing reports every module's polling
+// state without a request per module.
 type AssignedMIB struct {
 	MIB
 	Assignment MIBAssignment `json:"assignment"`
 }
 
-// MIBSeriesEstimate is how many Prometheus series a MIB would add to a device.
+// MIBSeriesEstimate answers the question that has to be asked before a MIB is
+// enabled on a device: how many Prometheus series will it add?
+//
+// Object count is the wrong number, because every pollable column costs one
+// series per table row. Series is the number that decides whether a device can
+// carry the MIB.
 type MIBSeriesEstimate struct {
 	MIB         string `json:"mib"`
 	Device      string `json:"device"`
@@ -234,7 +272,11 @@ type MIBSeriesEstimate struct {
 	Explanation string `json:"explanation"` // one sentence a human can act on
 }
 
-// MIBObjectPlan says which of a MIB's objects a device polls and why not the rest, computed by the poller's code.
+// MIBObjectPlan answers, for one device and one MIB, which of the module's
+// objects the device is actually polling and why not the rest.
+//
+// It is computed on the server by the same code the poller runs, so a client
+// never has to reproduce the rule about tables, columns, access and filters.
 type MIBObjectPlan struct {
 	DeviceID int64  `json:"device_id"`
 	Device   string `json:"device"`
@@ -286,7 +328,12 @@ type MIBObjectDecision struct {
 	Series int `json:"series"`
 }
 
-// DeviceMIBs separates a device's direct MIB assignments from the effective set including its profiles.
+// DeviceMIBs separates a device's directly assigned MIBs from the full set it
+// inherits through its profiles.
+//
+// The direct entries carry the device's own assignment, which is what a write
+// to that MIB's assignment edits; the combined entries carry the effective one,
+// which is what the poller acts on.
 type DeviceMIBs struct {
 	DirectMIBs []AssignedMIB `json:"direct_mibs"`
 	AllMIBs    []AssignedMIB `json:"all_mibs"`
@@ -317,7 +364,11 @@ type SNMPTestResult struct {
 	Value string `json:"value"`
 }
 
-// SNMPTestResponse is the outcome of a connectivity test, success or failure.
+// SNMPTestResponse is the outcome of a connectivity test.
+//
+// The server answers with this same shape whether the probe succeeded or the
+// device never replied, so a failure is a result to render rather than a
+// transport error to guess at.
 type SNMPTestResponse struct {
 	Success  bool   `json:"success"`
 	Message  string `json:"message"`
@@ -339,7 +390,10 @@ type SNMPTestResponse struct {
 	SysLocation string           `json:"sys_location,omitempty"`
 }
 
-// DeviceStatus reports what the poller knows about a device; callers fill Address from the device record.
+// DeviceStatus reports what the poller knows about a device.
+//
+// Address is not part of the poller's response; callers that display it fill
+// it in from the device record.
 type DeviceStatus struct {
 	Name             string            `json:"name"`
 	Connected        bool              `json:"connected"`
@@ -350,14 +404,21 @@ type DeviceStatus struct {
 	PollInterval     string            `json:"poll_interval"`
 	Tags             map[string]string `json:"tags,omitempty"`
 
-	// Unreachable is set while the device gives no SNMP answers and is retried on a widening interval.
+	// Unreachable is set while the poller is getting no SNMP answers at all
+	// from the device and is retrying it on a widening interval. It is not the
+	// same as a failed poll: a device that answers some objects and errors on
+	// others fails polls while staying perfectly reachable.
 	Unreachable bool `json:"unreachable"`
 
 	// ConsecutiveFailures counts the polls in a row the device answered no part
 	// of, and is what NextPollTime is backed off by.
 	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
 
-	// NextPollTime is the next poll attempt; absent from JSON until a retry is scheduled. See MarshalJSON.
+	// NextPollTime is when the poller will next try the device.
+	//
+	// ABSENT from the JSON means no retry is scheduled yet -- the state a device
+	// is in for the whole of its first poll. Treat a missing next_poll_time as
+	// "not yet known", not as an error. See MarshalJSON.
 	NextPollTime time.Time `json:"next_poll_time,omitempty"`
 
 	// Address is populated by the client from the device record so status
@@ -365,7 +426,16 @@ type DeviceStatus struct {
 	Address string `json:"address,omitempty"`
 }
 
-// MarshalJSON omits next_poll_time while it is zero, matching internal/api.DeviceStatus.MarshalJSON; LastPollTime is always present.
+// MarshalJSON omits next_poll_time while no retry has been scheduled.
+//
+// The `omitempty` tag cannot do this by itself: encoding/json treats only
+// false, 0, nil pointers and interfaces, and empty arrays, slices, maps and
+// strings as empty, and time.Time is a struct, so a zero value would marshal as
+// "0001-01-01T00:00:00Z". This mirrors internal/api.DeviceStatus.MarshalJSON --
+// the two shapes are one wire contract and must not drift.
+//
+// LastPollTime keeps its always-present zero deliberately: that is what
+// distinguishes "never polled" from "polled and failed".
 func (s DeviceStatus) MarshalJSON() ([]byte, error) {
 	// The local type sheds the method set so this does not recurse; the
 	// shadowing pointer field at depth 0 wins over the embedded one at depth 1.

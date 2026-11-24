@@ -1,4 +1,34 @@
-// Package backup makes cold backups and restores of a deployed go-netmon stack, writing only through a Root.
+// Package backup creates and restores cold backups of a deployed go-netmon
+// stack: its Docker volumes, the repository configuration bind-mounted into it
+// and the MIB source tree on the host.
+//
+// # Containment
+//
+// Every filesystem mutation this package makes goes through a Root, which is an
+// os.Root anchored on one explicitly chosen directory. Paths that would leave
+// that directory - "..", absolute paths, symbolic links pointing outside - are
+// refused by the kernel rather than by string inspection, and a path that cannot
+// be expressed inside the root is an error rather than something to sanitize and
+// carry on with. No function in this package takes a caller-supplied path and
+// mutates it; a mutation needs a Root, and a Root has to be opened deliberately,
+// with a stated purpose that appears in the plan and in every error.
+//
+// The one judgement containment cannot make is which directory to anchor on.
+// That choice is derived - from the pinned compose project, from the compose
+// file's own bind mounts - never defaulted to something broad, and it is checked
+// separately, printed in the plan before anything is written, and gated behind
+// an explicit opt-in where it lands in the operator's own working tree.
+//
+// # Consistency
+//
+// Backups are cold: every service in the compose project is stopped, the data is
+// copied at rest, and exactly the services that were running are started again,
+// on every exit path including interruption. The web UI and poller stores are
+// PebbleDB (single-writer, exclusive LOCK) and this deployment's Prometheus runs
+// without --web.enable-admin-api, so there is no supported way to snapshot
+// either while running. A hot copy of them would not be slightly risky, it would
+// be unverifiable: the damage stays invisible until the restore, which is the
+// worst moment to discover it.
 package backup
 
 import (
@@ -23,7 +53,10 @@ type Config struct {
 	// ComposeFile is the absolute path of the compose file defining the stack.
 	ComposeFile string
 
-	// Project is the compose project, always pinned by the caller.
+	// Project is the compose project the stack occupies. Pinned by the caller,
+	// never inherited: without it, compose derives the project from the working
+	// directory, which is how a command aimed at a test stack reaches the
+	// deployed one.
 	Project string
 
 	// MIBMountTarget is the container path the MIB source tree is mounted at.
@@ -56,7 +89,10 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
-// Service performs backups and restores; it is the only entry point.
+// Service performs backups and restores.
+//
+// It is the only entry point: the command-line tool holds no logic of its own,
+// so the checks below cannot be bypassed by calling something further in.
 type Service struct {
 	cfg Config
 }

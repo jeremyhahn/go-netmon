@@ -38,7 +38,13 @@ type PollerDeviceConfig struct {
 	Tags          map[string]string             `json:"tags,omitempty"`
 }
 
-// PollerModuleFilter is config.ModuleFilter: patterns match OID or name, excludes win.
+// PollerModuleFilter narrows the objects the poller reads from one module.
+//
+// It mirrors the poller's own module filter: patterns are regular expressions
+// matched against an object's OID or name, and excludes win over includes.
+// It is config.ModuleFilter under another name: the poller reads that type, the
+// YAML config declares it, and the control API carries it. Three copies of the
+// same five fields is how they drift apart.
 type PollerModuleFilter = config.ModuleFilter
 
 // newPollerModuleFilter converts the filtering half of a stored assignment to

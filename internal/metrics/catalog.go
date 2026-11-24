@@ -58,21 +58,43 @@ const (
 	// text in a label rather than as a number.
 	MetricKindString MetricKind = "string"
 
-	// MetricKindUnknown marks an object whose type did not resolve, usually from missing IMPORTS.
+	// MetricKindUnknown is a metric whose type could not be determined.
+	//
+	// This is a diagnosis, not a default. An object gets it when its MIB
+	// module parsed but gosmi resolved no type node -- which happens when a
+	// module the MIB IMPORTS from is absent, and which silently costs the
+	// object its units, display hint and enumeration in the same stroke
+	// (internal/mib/parser/parser.go:314). Measured at 730 of 9,638 pollable
+	// objects across 198 modules, entirely from modules with unresolved
+	// imports. Publishing it as a countable value is how that becomes
+	// visible rather than being papered over with a guess.
 	MetricKindUnknown MetricKind = "unknown"
 )
 
-// CatalogEntry describes one published metric, keyed by published name rather than MIB object.
+// CatalogEntry describes one published metric.
+//
+// The primary key is Metric -- the name as published -- and not the MIB object
+// it came from. That distinction is load-bearing: entity sensor readings are
+// published under a name derived from their unit (snmp_entity_sensor_dbm),
+// because one metric holding dBm and celsius and volts cannot be aggregated.
+// No MIB object is called entity_sensor_dbm, so a catalog keyed on object name
+// could not describe the readings this collector exists to produce.
 type CatalogEntry struct {
 	// Metric is the published metric name, and the key consumers join on.
 	Metric string
 
-	// Module and Object are provenance, empty for derived metrics.
+	// Module and Object are provenance. They are empty for a metric this
+	// collector derives rather than reads, which is not a gap: a derived
+	// metric's meaning is in Kind and Unit, and its MIB object would name a
+	// raw column that is deliberately not published.
 	Module string
 	Object string
 	OID    string
 
-	// Unit is decorative; most objects declare no UNITS.
+	// Unit is decorative and must never be load-bearing. Fewer than a fifth
+	// of MIB objects declare UNITS (1,821 of 9,638 measured), so a renderer
+	// that keys an axis on it is blank four times in five. An empty unit
+	// renders a unitless axis; it never suppresses a panel.
 	Unit string
 
 	// Kind is what a renderer keys on.
@@ -81,7 +103,19 @@ type CatalogEntry struct {
 	// Description is the MIB DESCRIPTION, carried in full.
 	Description string
 
-	// IdentityLabel is a name label on the series itself; IdentityInfoMetric is the info metric to join on the index labels for the name.
+	// IdentityLabel names the label on the series itself that identifies one
+	// line of a panel, when there is one. Entity sensor readings carry
+	// entphysicalname directly, so theirs is set.
+	//
+	// IdentityInfoMetric is the other case, and the common one: for an
+	// ordinary table column the series carries only its index labels, and
+	// the human-readable name lives in a separate info metric that has to be
+	// joined on those indexes. snmp_ifInOctets has ifindex and no ifname;
+	// the name is on snmp_ifname_info.
+	//
+	// Both are published because both are real. Which of them a renderer
+	// uses is not a preference: it is whether the name is on the series or
+	// one join away.
 	IdentityLabel      string
 	IdentityInfoMetric string
 
@@ -132,7 +166,9 @@ func isTextualType(typeName string) bool {
 	return textualTypes[typeName]
 }
 
-// IndexLabelsValue renders the index tuple as one label value in INDEX-clause order.
+// IndexLabelsValue renders the index tuple as one label value, in INDEX-clause
+// order, which is the order the sub-identifiers appear in the OID. Order is
+// part of the meaning, so it is preserved rather than sorted.
 func (e *CatalogEntry) IndexLabelsValue() string {
 	return strings.Join(e.IndexLabels, ",")
 }

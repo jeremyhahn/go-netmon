@@ -57,7 +57,10 @@ func (e *TooBigError) Error() string {
 		"; its maximum response size cannot hold one varbind"
 }
 
-// ResponseError reports an SNMP response with a non-zero error status, which gosnmp returns as success.
+// ResponseError reports an SNMP response carrying a non-zero error status.
+//
+// gosnmp returns these as successful calls, so a caller that only checks the
+// Go error treats them as an empty but valid result.
 type ResponseError struct {
 	Status gosnmp.SNMPError
 	Index  uint8
@@ -70,7 +73,14 @@ func (e *ResponseError) Error() string {
 		" (error index " + strconv.Itoa(int(e.Index)) + ")"
 }
 
-// WalkError reports an unfinished walk; Received counts varbinds that arrived, proving the device answered.
+// WalkError reports a walk that did not finish.
+//
+// Received is how many varbinds arrived before it failed, and is the field that
+// makes the difference between a device which is not there and one which is
+// merely awkward: an agent that streamed part of a table before falling silent
+// answered, and a caller deciding whether the device is reachable must not
+// count that as silence. gosnmp discards the partial rows, so this count is the
+// only surviving evidence that they existed.
 type WalkError struct {
 	Op       string
 	OID      string
@@ -84,7 +94,10 @@ func (e *WalkError) Error() string {
 
 func (e *WalkError) Unwrap() error { return e.Err }
 
-// UnsupportedVersionError reports an SNMP version other than v1, v2c or v3.
+// UnsupportedVersionError reports an SNMP version this client cannot speak.
+//
+// The set is v1, v2c and v3. v1 is here because a good deal of embedded
+// equipment — KVM switches, PDUs, older UPSs — offers it and nothing else.
 type UnsupportedVersionError struct {
 	Version string
 }

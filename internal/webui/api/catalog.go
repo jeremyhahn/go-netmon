@@ -32,7 +32,19 @@ const (
 	catValueLabel = "value"
 )
 
-// CatalogLookback is how far back the retained catalog read reaches; see currentCatalogQuery for superseded rows.
+// CatalogLookback is how far back the RETAINED catalog read reaches.
+//
+// It buys availability and nothing else. The emitter republishes every two
+// minutes, so a window this wide keeps every description on screen through a
+// restart or a spell of refused remote writes -- and every panel depends on
+// the catalog, so its failure mode is a fleet-wide loss of every label at once
+// while the metrics themselves look perfectly healthy.
+//
+// The same width is what makes a SUPERSEDED row visible: a MIB reload that
+// changes a description writes a different series, the emitter stops writing
+// the old one, and the window keeps it queryable for the rest of the hour. See
+// currentCatalogQuery for how that is resolved. Widening this without that
+// second read would surface two rows describing one metric differently.
 const CatalogLookback = "1h"
 
 // Two reads: a retained last_over_time window and a current instant read, which drops superseded rows; range functions stamp evaluation time.
@@ -55,7 +67,12 @@ type CatalogEntry struct {
 	Kind        string
 	Description string
 
-	// Identity is a name label on the series; IdentityInfo is an info metric to join for the name; at most one is set.
+	// Identity and IdentityInfo are mutually exclusive and answer "what names
+	// each line in this panel?". Identity is a label on the series itself
+	// (entphysicalname on an optical reading). IdentityInfo names a separate
+	// info metric holding the name one join away (snmp_ifname_info for an
+	// ordinary interface column, which carries only ifindex). Which one is set
+	// is not a preference -- it is where the name physically is.
 	Identity     string
 	IdentityInfo string
 
@@ -66,7 +83,11 @@ type CatalogEntry struct {
 	Enum map[string]string
 }
 
-// Chartable reports whether a panel from this entry can plot anything; string families cannot.
+// Chartable reports whether a panel drawn from this entry can show anything.
+//
+// A string family is a constant 1 carrying its value in a label: plotting it
+// draws a flat line that says nothing. It belongs in a table, and the renderer
+// is told so rather than left to infer it from the metric name.
 func (e CatalogEntry) Chartable() bool {
 	return e.Kind != string(kindString)
 }
@@ -81,7 +102,11 @@ const (
 	kindUnknown metricKind = "unknown"
 )
 
-// ChartType is the widget for this entry, chosen from its declared kind and enums.
+// ChartType is the widget this entry should be drawn with.
+//
+// It is chosen from the DECLARED semantics -- kind, and enum presence -- never
+// from a metric name match. That is what lets a MIB nobody has seen render
+// correctly: an unrecognized counter is still a counter.
 func (e CatalogEntry) ChartType() string {
 	switch metricKind(e.Kind) {
 	case kindString:

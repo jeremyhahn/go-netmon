@@ -32,7 +32,15 @@ type SNMPv3User struct {
 	PrivPassphrase string
 }
 
-// SNMPv3PrivacyRefused says why this process cannot send SNMPv3 authPriv (AES-CFB is refused under fips140=only), or returns "".
+// SNMPv3PrivacyRefused says why this process cannot put an SNMPv3 authPriv
+// message on the wire, or returns "" when it can.
+//
+// Every SNMPv3 privacy protocol a FIPS build offers is AES in CFB128 mode
+// (RFC 3826 and its 192/256-bit extensions). CFB is not part of the Go
+// Cryptographic Module, so under GODEBUG=fips140=only crypto/cipher refuses it
+// whatever the key size and whichever auth protocol is in force. A test whose
+// point is privacy cannot run there; one that only needs a v3 exchange can run
+// at authNoPriv instead.
 func SNMPv3PrivacyRefused() string {
 	if fips140.Enforced() {
 		return "GODEBUG=fips140=only refuses AES-CFB128, the cipher mode of every SNMPv3 privacy protocol (RFC 3826)"
@@ -77,7 +85,11 @@ func NewUSMEngine(user SNMPv3User) (*USMEngine, error) {
 	return &USMEngine{usm: usm, probe: probe}, nil
 }
 
-// Answer decodes one SNMPv3 datagram and encodes the reply; unauthenticated requests get a *USMRejectedError.
+// Answer decodes one SNMPv3 datagram and encodes the reply. An engine
+// discovery probe is answered by the engine itself; any other request must
+// authenticate (and decrypt, at authPriv) under the user's keys, and is then
+// answered with what respond makes of it. A request that does not is
+// refused with a *USMRejectedError.
 func (e *USMEngine) Answer(datagram []byte, respond func(*gosnmp.SnmpPacket) *gosnmp.SnmpPacket) ([]byte, error) {
 	// Read without keys first: discovery probes are unauthenticated, and keyed reads cost a key derivation each.
 	request, err := decodeV3(e.probe, bytes.Clone(datagram))

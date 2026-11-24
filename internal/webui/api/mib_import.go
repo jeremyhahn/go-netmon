@@ -61,7 +61,13 @@ func (e *MIBRefreshError) Error() string {
 
 func (e *MIBRefreshError) Unwrap() error { return e.Err }
 
-// MIBParseError reports a MIB file the parser could not read (stage "file") or finish (stage "module").
+// MIBParseError reports a MIB source file the parser could not turn into a
+// module.
+//
+// Stage separates the two failures that look alike and mean different things:
+// "file" is an upload that is not a MIB this parser can read, which is the
+// caller's input, while "module" is the parser failing to finish a file it had
+// already accepted, which is the server's problem.
 type MIBParseError struct {
 	Stage string
 	Name  string

@@ -11,7 +11,15 @@ import (
 	webuistorage "github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// Page describes the slice a response carries and the sizes of the list it came from.
+// Page describes which slice of a list a response carries, and how big the list
+// it was cut from was.
+//
+// It exists because a paged answer is dishonest without it. A client that
+// receives fifty objects cannot tell whether the module defines fifty or ten
+// thousand, and one that receives fifty matches cannot tell whether its search
+// found fifty or three hundred. Both numbers are reported, so "51-100 of 293
+// matching, 10,539 in the module" is answerable without the client counting
+// anything itself.
 type Page struct {
 	// Total is how many records the endpoint holds before any narrowing: the
 	// module's whole object count, or the whole MIB catalog. It does not move

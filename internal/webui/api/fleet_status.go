@@ -11,7 +11,14 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// DeviceState summarizes a device's health for the fleet view, derived from its status.
+// DeviceState summarizes a device's health for a fleet overview.
+//
+// It is a summary and not a new source of truth: every state is derived from
+// the status the per-device endpoint returns, which travels alongside it. Its
+// job is to make the distinctions a fleet card has to draw explicit, in
+// particular the two that are easy to conflate — a device that has never been
+// polled and a device whose polls fail — rather than leaving each client to
+// rediscover that a zero last_poll_time means the former.
 type DeviceState string
 
 // The states a device can be in, from a fleet view's point of view.
@@ -47,7 +54,13 @@ const (
 	StateUnknown DeviceState = "unknown"
 )
 
-// FleetDeviceStatus is one fleet row: the per-device status nested, plus labeling fields.
+// FleetDeviceStatus is one device's row in the fleet overview.
+//
+// Status is verbatim what GET /api/devices/{id}/status returns for the same
+// device, nested rather than flattened, so the two endpoints cannot drift into
+// describing a device differently. Around it sit only the fields a card needs
+// to label and link the row, all of which come from the device record the fleet
+// listing already read.
 type FleetDeviceStatus struct {
 	ID      int64  `json:"id"`
 	Name    string `json:"name"`
@@ -58,7 +71,12 @@ type FleetDeviceStatus struct {
 	// Enabled is the device record's flag, stated on every row.
 	Enabled bool `json:"enabled"`
 
-	// PollInterval is the device's own interval (absent when inherited); EffectivePollInterval is the one applied.
+	// PollInterval is the device's own interval in seconds, absent when it
+	// inherits the global default, and EffectivePollInterval is the interval it
+	// is polled at either way. They come from the device record this listing
+	// already read, so a fleet view can label every row's schedule without a
+	// request per device — and it can do so for a device the poller has never
+	// heard of, whose Status carries nothing at all.
 	PollInterval          *int `json:"poll_interval,omitempty"`
 	EffectivePollInterval int  `json:"effective_poll_interval"`
 
@@ -71,7 +89,11 @@ type FleetDeviceStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
-// FleetStatusResponse is the body of GET /api/devices/status; Devices is never null.
+// FleetStatusResponse is the body of GET /api/devices/status.
+//
+// Devices is always an array, empty when nothing is configured, so a client can
+// iterate it without a null check. It carries one page when the caller asked
+// for one and the whole fleet otherwise.
 type FleetStatusResponse struct {
 	Devices []FleetDeviceStatus `json:"devices"`
 
@@ -82,7 +104,11 @@ type FleetStatusResponse struct {
 	// Configured is how many devices exist at all, regardless of any filter.
 	Configured int `json:"configured"`
 
-	// Summary counts every configured device by state, ignoring filters.
+	// Summary counts every configured device by state, so a fleet-wide tally
+	// travels as a handful of numbers rather than as the rows behind them. It
+	// ignores the filters deliberately: "12 unreachable" is a statement about
+	// the fleet, and a chip that recounted itself against its own filter would
+	// always read as the number of rows on screen.
 	Summary map[DeviceState]int `json:"summary"`
 }
 

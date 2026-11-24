@@ -60,7 +60,15 @@ func (p *Parser) Close() {
 	gosmi.Exit()
 }
 
-// Reload discards every loaded module and reopens the library, clearing cached failures; for the import path, not polling.
+// Reload discards every loaded module and reopens the library.
+//
+// Loading a module caches its outcome, and a failed lookup is cached like any
+// other. A module imported before the module it IMPORTS therefore keeps
+// resolving to nothing for the life of the process, however many times it is
+// re-imported: the file on disk is right, the cache is not.
+//
+// This is the way out. It costs a re-read of every module the next time one is
+// needed, so it belongs on the import path and nowhere near polling.
 func (p *Parser) Reload() {
 	gosmiLibrary.Lock()
 	defer gosmiLibrary.Unlock()
@@ -127,13 +135,20 @@ type ParseReport struct {
 	// Module is the module the report is about.
 	Module string
 
-	// Unresolved names the objects discarded for having no OID.
+	// Unresolved names the objects that came out with no OID. An object
+	// without one cannot be polled, stored under its OID, or named in a
+	// metric, so it is discarded rather than kept as a record that looks like
+	// an object and behaves like nothing.
 	Unresolved []string
 
-	// MissingImports names the modules this one IMPORTS from that could not be loaded; see Err.
+	// MissingImports names the modules this one IMPORTS from that could not
+	// be loaded. The module is still parsed; see Err.
 	MissingImports []string
 
-	// Untyped names kept objects whose type did not resolve; they have no Type, Units, DisplayHint or EnumValues.
+	// Untyped names the objects that were kept but whose type did not
+	// resolve, nearly always because the module defining it is one of
+	// MissingImports. They poll, but have no Type, Units, DisplayHint or
+	// EnumValues.
 	Untyped []string
 }
 
@@ -151,7 +166,22 @@ func (p *Parser) ParseModule(moduleName string) ([]*mib.OIDMetadata, error) {
 	return objects, err
 }
 
-// ParseModuleWithReport parses a module and reports the objects dropped for having no OID (unresolved IMPORTS, duplicate phantoms).
+// ParseModuleWithReport parses a module and also reports what it discarded.
+//
+// An object with no OID is dropped. gosmi produces them in two situations, and
+// keeping them served neither:
+//
+//   - A module whose IMPORTS did not resolve yields objects that parse but hang
+//     off a parent identifier gosmi never found. Every one comes out with an
+//     empty OID, and storing them made an unusable module report "imported, 6
+//     objects" -- indistinguishable from one that simply has little in it.
+//   - A module with a malformed IMPORTS list can yield each object twice, once
+//     resolved and once not. KNGeneric-MIB names OBJECT-TYPE in two IMPORTS
+//     clauses and produced 80 usable objects alongside 79 phantoms, so every
+//     count shown for it was roughly double the truth.
+//
+// The report is what keeps the drop from being silent, which is the failure the
+// stored phantoms were standing in for.
 func (p *Parser) ParseModuleWithReport(
 	moduleName string,
 ) ([]*mib.OIDMetadata, *ParseReport, error) {
@@ -803,7 +833,11 @@ func (p *Parser) parseTable(node gosmi.SmiNode, moduleName string) *mib.TableInf
 	return table
 }
 
-// LoadModuleFromFile loads a MIB module from a file, which must be named for the module it declares.
+// LoadModuleFromFile loads a MIB module from a file path.
+//
+// gosmi resolves a module by filename, so the file has to be named for the
+// module it declares: KNGeneric-MIB-20200526.MIB fails to load a module that
+// calls itself KNGeneric-MIB, however valid the contents.
 func (p *Parser) LoadModuleFromFile(path string) (*mib.ModuleInfo, error) {
 	gosmiLibrary.Lock()
 	defer gosmiLibrary.Unlock()

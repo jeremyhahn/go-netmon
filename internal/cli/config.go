@@ -14,7 +14,12 @@ import (
 	"github.com/jeremyhahn/go-netmon/pkg/client"
 )
 
-// ConfigCommandTimeout is the default for configuration commands, sized for an import; --timeout wins.
+// ConfigCommandTimeout is how long a configuration command waits by default.
+//
+// It is far longer than the timeout every other command uses because importing
+// a bundle re-parses every MIB module it carries, which for a full catalog is
+// minutes rather than seconds. An explicit --timeout still wins: this is the
+// default, not a floor.
 const ConfigCommandTimeout = 15 * time.Minute
 
 // TerminalOutputError reports an export that would have written a compressed

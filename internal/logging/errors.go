@@ -2,7 +2,11 @@ package logging
 
 import "strconv"
 
-// LevelError reports a logging.level with no slog mapping, for callers that skip config validation.
+// LevelError reports a logging.level the package cannot map to a slog level.
+//
+// The accepted set is the one config.Config.Validate enforces, so a
+// configuration that loads cleanly can never produce this error; it exists for
+// callers that build a LoggingConfig themselves.
 type LevelError struct {
 	Level string
 }
@@ -29,7 +33,10 @@ func (e *OutputError) Error() string {
 	return "logging: unsupported output " + strconv.Quote(e.Output) + ": must be one of: stdout, file"
 }
 
-// FilePathError reports logging.output "file" without a path; there is no default.
+// FilePathError reports that logging.output is "file" but no path was given.
+//
+// There is no default: a log that silently lands somewhere the operator did not
+// choose is worse than a startup failure that says which key to set.
 type FilePathError struct{}
 
 func (e *FilePathError) Error() string {

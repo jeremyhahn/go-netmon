@@ -1,4 +1,18 @@
-// Command netmon-backup backs up and restores a deployed go-netmon stack; the checks live in internal/backup.
+// Command netmon-backup backs up and restores a deployed go-netmon stack.
+//
+// It is a separate binary from netmon rather than a set of subcommands under it.
+// netmon is a client of the management API: every one of its commands talks HTTP
+// to a running stack, and its persistent flags (--server, --timeout) describe
+// that conversation. This tool is the opposite kind of thing. It drives the
+// container runtime and the local filesystem, it deliberately stops the stack,
+// and the case it exists for is the one where nothing is running and the API
+// cannot be reached at all. Folding it in would put destructive host-level
+// commands behind flags that mean nothing to them, and would make the binary a
+// disaster recovery depends on carry the whole API client with it.
+//
+// The command layer holds no logic. Every check that decides what gets
+// overwritten lives in internal/backup, so there is no path to the destructive
+// parts that goes around them.
 package main
 
 import (

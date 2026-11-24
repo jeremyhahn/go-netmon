@@ -175,7 +175,10 @@ type snmpProbe struct {
 	Community   string
 	Port        int
 
-	// SNMPv3.
+	// SNMPv3. Testing a v3 device is the case that most needs a test: a
+	// community string is either right or wrong, but v3 has a user, two
+	// protocols and two passphrases, and the failure for every wrong
+	// combination looks the same from the poller.
 	Username     string
 	AuthProtocol string
 	AuthPassword string

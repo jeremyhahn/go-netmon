@@ -20,7 +20,10 @@ var keyPageBytes = enclave.LockedSize(enclave.RootKeyBytes)
 // page more while it mints the next KEK.
 const sealerKeyPages = 3
 
-// LockedCost is the locked memory opening an n-byte secret holds: plaintext pages plus the data key's page; absent costs 0.
+// LockedCost is the locked memory, in bytes, that opening an n-byte secret
+// holds: its plaintext rounded up to whole pages, and the data key's page.
+// Sealing it holds no more, and is charged the same. An absent secret costs
+// nothing.
 func LockedCost(n int) int64 {
 	if n <= 0 {
 		return 0
@@ -72,7 +75,10 @@ func (b *LockedBudget) Fits(cost int64) error {
 	return &LockedMemoryError{Limit: b.limit.Bytes, Need: LimitFor(cost)}
 }
 
-// Acquire waits for cost bytes and holds them until the idempotent release; it fails at once for a cost that can never fit.
+// Acquire waits until cost bytes of the budget are free and holds them until
+// release is called; release is idempotent. It returns ctx's error if ctx ends
+// first, and a LockedMemoryError at once for a cost the budget can never
+// admit, rather than waiting for ever.
 func (b *LockedBudget) Acquire(ctx context.Context, cost int64) (release func(), err error) {
 	if b.sem == nil || cost <= 0 {
 		return func() {}, nil

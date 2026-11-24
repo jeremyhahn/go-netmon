@@ -20,13 +20,40 @@ type Device struct {
 	Port        int       `json:"port"`
 	CreatedAt   time.Time `json:"created_at"`
 
-	// PollInterval is the poll interval in seconds; nil inherits global.default_poll_interval.
+	// PollInterval is how often this device is polled, in seconds. It is
+	// absent on a device that inherits global.default_poll_interval, which is
+	// every device created before the field existed and every device an
+	// operator has not given a schedule of its own.
+	//
+	// It is a pointer rather than a count because "inherit the default" and
+	// "explicitly the same number the default happens to be today" are
+	// different configurations: the first tracks the default when it changes,
+	// the second does not. A magic zero could not tell them apart, and zero is
+	// not a schedule anyway — see ValidatePollInterval.
 	PollInterval *int `json:"poll_interval,omitempty"`
 
-	// Enabled reports whether the device is polled; nil means enabled. Read it through EnabledOf.
+	// Enabled reports whether this device is polled at all. It is absent on
+	// every device created before the field existed, and absent means
+	// enabled: a store written by an earlier version must not wake up with its
+	// whole fleet switched off. Read it through EnabledOf.
+	//
+	// A pointer for the same reason as PollInterval: a plain bool's zero value
+	// is false, so a record that never mentioned the field would decode as a
+	// device an operator had disabled.
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// SNMPv3 credentials, empty for v1/v2c; stored in clear text like Community (docs/operations/security-posture.md).
+	// SNMPv3 credentials. Empty on a v1 or v2c device, which authenticates
+	// with Community instead.
+	//
+	// These are stored because the poller cannot ask for them: it reads its
+	// whole device list from this service, and a v3 device without a username
+	// reaches the agent and is refused with "unknown username". Selecting v3
+	// while these could not be recorded produced exactly that — a device the
+	// UI showed as configured and the poller could never authenticate.
+	//
+	// They are as sensitive as Community and are held the same way, which is
+	// to say in clear text in this store. See
+	// docs/operations/security-posture.md.
 	Username     string `json:"username,omitempty"`
 	AuthProtocol string `json:"auth_protocol,omitempty"`
 	AuthPassword string `json:"auth_password,omitempty"`

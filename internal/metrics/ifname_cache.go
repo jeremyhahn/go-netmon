@@ -109,7 +109,11 @@ func ExtractTableIndex(oid string) string {
 	return ""
 }
 
-// ConvertSNMPResultsWithInterfaceNames names samples by raw instance OID; use ConvertSNMPResultsWithTableIndexes for export.
+// ConvertSNMPResultsWithInterfaceNames converts SNMP results to samples with interface names.
+//
+// It has no access to MIB metadata, so every sample is named after its raw
+// instance OID. Use ConvertSNMPResultsWithTableIndexes, which resolves names
+// against the MIB store, for anything exported to Prometheus.
 func ConvertSNMPResultsWithInterfaceNames(
 	deviceName string,
 	results []*snmp.Result,

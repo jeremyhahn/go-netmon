@@ -18,11 +18,22 @@ type Config struct {
 	MIBModules []MIBModule      `yaml:"mib_modules"`
 	Logging    LoggingConfig    `yaml:"logging"`
 
-	// Alarms are evaluated by the web UI and ignored by the poller; both read this file.
+	// Alarms are the conditions an operator wants to be told about. They are
+	// read by the web UI, which evaluates them and rings the bell; the poller
+	// ignores them. Both processes read this one file on purpose -- two copies
+	// drift, and a pair disagreeing about anything in here is a fault nobody
+	// can see.
 	Alarms []AlarmRule `yaml:"alarms"`
 }
 
-// AlarmRule is one alarm condition, written as a PromQL expression.
+// AlarmRule is one condition worth telling an operator about.
+//
+// It is a PromQL expression rather than a threshold on a named metric, and
+// that is the point: the metrics worth alarming on include the families the
+// poller DERIVES and the OIDs no MIB describes, and a rule that had to name a
+// MIB object could reach neither. It is also the form an operator already
+// knows, so a rule can be tried in Prometheus's own console before it is
+// written down here.
 type AlarmRule struct {
 	// Name identifies the rule and is what the reader sees first.
 	Name string `yaml:"name"`
@@ -49,7 +60,13 @@ type AlarmRule struct {
 // file too and ignores this section, the same way the web UI ignores the
 // poller's devices.
 type WebUIConfig struct {
-	// StreamInterval is how often, in seconds, the web UI pushes metric updates to every connected browser.
+	// StreamInterval is how often the web UI pushes a round of metric updates
+	// to every connected browser, in seconds.
+	//
+	// It is a server setting rather than a dashboard control on purpose: one
+	// hub serves every open browser, so a viewer who could change it would be
+	// changing it for all of them. What a viewer controls is their own
+	// browser's refresh, which never leaves their browser.
 	StreamInterval int `yaml:"stream_interval"`
 
 	// ListenAddress is where the web UI binds; PrometheusURL and PollerURL are
@@ -81,16 +98,60 @@ type PrometheusConfig struct {
 	BatchSize      int    `yaml:"batch_size"`
 	FlushInterval  int    `yaml:"flush_interval"` // seconds
 
-	// EmitMetricCatalog designates this collector as the fleet's single catalog publisher; defaults to false.
+	// EmitMetricCatalog designates this collector as the one that publishes
+	// the metric catalog -- the series that tell a dashboard what every
+	// metric means, so the UI needs no MIBs of its own.
+	//
+	// Exactly one collector writing a fleet must have it. The catalog carries
+	// no device label, so every collector would write the *same* series: the
+	// first write to land sets a sample's timestamp and a second arriving
+	// behind it is rejected out of order, since out_of_order_time_window is 0
+	// by default. That needs more than one collector to appear at all, so it
+	// would work in development and fail intermittently in production.
+	//
+	// It is configuration rather than an election because a designated
+	// emitter needs no coordination protocol, no leader lease and no reliance
+	// on how the receiver treats duplicate samples. A single-collector
+	// deployment sets it and is done.
+	//
+	// Defaults to FALSE, and the default is the whole point: designation has
+	// to be a decision somebody made.
+	//
+	// It defaulted to true, on the reasoning that a single collector is the
+	// common deployment and one publishing no catalog leaves every dashboard
+	// blank. That is fail-open. Every shard whose configuration predates this
+	// field becomes an emitter the moment it is upgraded, which is exactly
+	// the condition that cannot be allowed -- and because the catalog shares
+	// a buffer with device telemetry, a rejected catalog write can delay or
+	// reject device samples too. The failure is not a blank dashboard; it is
+	// dropped measurements.
+	//
+	// Failing closed costs a fresh install its catalog until somebody sets
+	// this, and that omission is loud rather than silent: no catalog series
+	// exist at all, and MetricCatalogNotBeingPublished in
+	// deploy/rules/catalog.yml fires within fifteen minutes.
 	EmitMetricCatalog *bool `yaml:"emit_metric_catalog"`
 }
 
-// CatalogEmissionEnabled reports whether this collector publishes the metric catalog; unset means no.
+// CatalogEmissionEnabled reports whether this collector should publish the
+// metric catalog.
+//
+// A configuration that does not say does not emit. See EmitMetricCatalog: an
+// unstated default that turns every upgraded shard into an emitter is the one
+// outcome this must not have.
 func (c PrometheusConfig) CatalogEmissionEnabled() bool {
 	return c.EmitMetricCatalog != nil && *c.EmitMetricCatalog
 }
 
-// APIConfig contains API server settings; unknown keys are ignored.
+// APIConfig contains API server settings.
+//
+// It once also carried enable_cors and jwt_secret. Nothing ever read either:
+// there is no JWT dependency in the module, no authentication middleware, and
+// the CLI sends no credential, so jwt_secret described an authentication layer
+// that was never built. A secret-shaped setting nobody reads is worse than an
+// absent one — it reads as though the API is protected. Both are removed.
+// Config files still carrying the keys load unchanged, because the
+// decoder ignores unknown fields.
 type APIConfig struct {
 	ListenAddress string `yaml:"listen_address"`
 }
@@ -129,7 +190,13 @@ type Device struct {
 	ModuleFilters map[string]ModuleFilter `yaml:"module_filters,omitempty"`
 }
 
-// ModuleFilter narrows one MIB module's polled objects by OID or name regex; excludes win; also the control API wire format.
+// ModuleFilter narrows the objects polled from one MIB module for one device.
+//
+// Patterns are regular expressions matched against an object's OID or name.
+// Excludes are applied before includes, so an object matching both is excluded.
+// It carries JSON tags as well as YAML because it is both a configuration key
+// and the wire format the web UI pushes to the poller's control API. One type
+// for both keeps a filter meaning the same thing wherever it is written down.
 type ModuleFilter struct {
 	IncludeOIDs  []string `yaml:"include_oids,omitempty" json:"include_oids,omitempty"`
 	ExcludeOIDs  []string `yaml:"exclude_oids,omitempty" json:"exclude_oids,omitempty"`

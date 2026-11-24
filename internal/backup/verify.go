@@ -2,7 +2,11 @@ package backup
 
 import "strconv"
 
-// Archive is a backup directory whose integrity has been proved; restores accept only an Archive. The caller closes it.
+// Archive is a backup directory whose integrity has been proved.
+//
+// Nothing in this package restores from a directory it has not been handed as an
+// Archive, so "verified" is a property of the type rather than of remembering to
+// call something first. The caller closes it.
 type Archive struct {
 	// Dir is the absolute backup directory.
 	Dir string
@@ -15,7 +19,23 @@ type Archive struct {
 // Close releases the archive's root.
 func (a *Archive) Close() error { return a.root.Close() }
 
-// Verify checks the checksum list (complete, manifest included), each member's size and digest, and decompresses each member before returning an Archive.
+// Verify proves a backup directory is intact and returns it as an Archive.
+//
+// It reads and never writes, and it runs to completion before a restore is
+// allowed to touch anything: a damaged archive must not get as far as stopping
+// the stack, let alone as far as emptying a volume it cannot then refill.
+//
+// Three passes, each catching what the last cannot:
+//
+//   - checksums.sha256 covers every file including the manifest, so a manifest
+//     edited to match a tampered member is still caught, and a file added to the
+//     archive after the fact is caught because the list must also be complete.
+//   - each member's recorded size and digest prove the bytes are the bytes that
+//     were written.
+//   - each member is decompressed end to end and its entries counted, which
+//     proves those bytes are a readable archive of the recorded shape. A member
+//     truncated at write time passes every cheaper check and fails halfway
+//     through overwriting a live volume.
 func (s *Service) Verify(dir string) (*Archive, error) {
 	resolved, err := ResolveDir("backup archive", dir)
 	if err != nil {

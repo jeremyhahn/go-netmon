@@ -6,7 +6,17 @@ import (
 	"strings"
 )
 
-// DisplayHint is a parsed RFC 2579 DISPLAY-HINT, integer or octet-string grammar; immutable.
+// DisplayHint is a parsed DISPLAY-HINT clause from a TEXTUAL-CONVENTION.
+//
+// RFC 2579 defines two grammars, chosen by the underlying base type:
+//
+//   - Integer types take a single specifier: "d" (decimal), "d-N" (decimal
+//     with N implied fraction digits), "x" (hex), "o" (octal), "b" (binary).
+//   - Octet-string types take a sequence of specifiers, each consuming a run
+//     of octets and rendering them in one format, optionally followed by a
+//     separator character.
+//
+// A parsed hint is immutable and safe to share between goroutines.
 type DisplayHint struct {
 	// Integer form.
 	IntFormat   byte // 'd', 'x', 'o' or 'b'; zero when this is an octet hint.
@@ -43,7 +53,8 @@ func (h *DisplayHint) IsOctetHint() bool {
 	return len(h.Octets) > 0
 }
 
-// ParseDisplayHint parses a DISPLAY-HINT; isInteger selects the grammar.
+// ParseDisplayHint parses a DISPLAY-HINT string. isInteger selects which of the
+// two grammars applies, since "d" is valid in both and means different things.
 func ParseDisplayHint(hint string, isInteger bool) (*DisplayHint, error) {
 	if hint == "" {
 		return nil, &DisplayHintError{Hint: hint, Reason: "empty"}
@@ -190,7 +201,9 @@ func formatScaledDecimal(value int64, decimals int) string {
 	return sign + digits[:split] + "." + digits[split:]
 }
 
-// FormatOctets renders bytes by an octet-string DISPLAY-HINT, repeating the last specifier (RFC 2579).
+// FormatOctets renders a byte slice according to an octet-string DISPLAY-HINT.
+// Octets beyond what the specifiers consume are rendered by repeating the last
+// specifier, which is how RFC 2579 handles values longer than the hint.
 func (h *DisplayHint) FormatOctets(value []byte) string {
 	if len(h.Octets) == 0 {
 		return string(value)

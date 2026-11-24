@@ -89,7 +89,10 @@ type MIBLoader interface {
 	// It is the explicit reload: what an import or a re-import performs.
 	LoadModule(moduleName string) error
 
-	// EnsureModuleCurrent parses a module only if the store lacks a copy at least as new as its file; for startup.
+	// EnsureModuleCurrent parses a module only if the store does not already
+	// hold a copy at least as new as the file it came from. It is a startup
+	// operation: the store outlives the process, so a restart should pay for
+	// what has changed and nothing else.
 	EnsureModuleCurrent(moduleName string) error
 
 	GetParser() interface{}  // Returns *parser.Parser (actual concrete type)
@@ -116,7 +119,12 @@ type MIBDetail struct {
 	Objects     []MIBObject `json:"objects"`
 }
 
-// MIBObject is a single MIB object with the enum labels, DISPLAY-HINT and units needed to render values.
+// MIBObject represents a single MIB object.
+//
+// Beyond identity, it carries the metadata a client needs to render a raw SNMP
+// value as text — the enumeration labels, the DISPLAY-HINT and the units — so
+// the CLI and the web UI can format values without a second round trip or a
+// private copy of the MIB.
 type MIBObject struct {
 	OID         string `json:"oid"`
 	Name        string `json:"name"`
@@ -135,7 +143,16 @@ type MIBObject struct {
 	IsIndex     bool             `json:"is_index,omitempty"`
 	TableOID    string           `json:"table_oid,omitempty"`
 
-	// Index names a table entry's INDEX columns in order; their lowercased names are a series' identity labels.
+	// Index names the columns of a conceptual row's INDEX clause, in INDEX
+	// order. It is present only on a table entry, so it costs a few entries per
+	// module rather than a field on every object.
+	//
+	// It is what lets a client tell a series' genuine index labels from the
+	// enrichment labels the exporter attaches beside them — ifName, ifDescr and
+	// the rest. The exporter labels a sample with the lowercased name of each
+	// INDEX column (internal/metrics/table_index_cache.go), so a client holding
+	// this list knows exactly which labels are the row's identity and needs no
+	// list of label names to ignore.
 	Index []string `json:"index,omitempty"`
 }
 
@@ -189,7 +206,10 @@ type Config struct {
 	// Logger receives the server's diagnostics. A nil Logger discards them.
 	Logger *slog.Logger
 
-	// AlarmRules are the conditions to watch; an empty set still builds an evaluator.
+	// AlarmRules are the conditions to watch for. An empty set builds an
+	// evaluator that fires nothing, which is different from no evaluator at
+	// all: the first is an operator who has written no rules, the second is a
+	// build with no bell.
 	AlarmRules []alarm.Rule
 
 	// StartupProgress is told how far the stored-MIB load has got, module by
@@ -197,7 +217,15 @@ type Config struct {
 	// binary wants.
 	StartupProgress mib.LoadProgress
 
-	// Assets is the static UI tree rooted at "index.html"; nil serves no UI.
+	// Assets is the static asset tree the UI is served from, rooted so that
+	// the landing page is "index.html".
+	//
+	// It is a dependency rather than something this package reaches for,
+	// because the assets are compiled into the binary (internal/webui) and
+	// the binary is what decides to serve them. A nil Assets serves no UI at
+	// all -- deliberately, since the alternative is a fallback to some path on
+	// disk, and a path on disk is the bug this replaced: the UI used to work
+	// only when the process happened to be running from a source checkout.
 	Assets fs.FS
 }
 
@@ -247,7 +275,11 @@ func NewServer(cfg Config) (*Server, error) {
 // The caller runs its evaluation loop; the server only serves what it holds.
 func (s *Server) Alarms() *alarm.Evaluator { return s.alarms }
 
-// RefreshCatalog re-reads the metric catalog after a MIB is imported, reimported or deleted.
+// RefreshCatalog re-reads the metric catalog.
+//
+// Called when something has changed what it can describe -- a MIB imported,
+// reimported or deleted -- so the next dashboard describes the metrics that
+// module produces instead of waiting out the refresh interval.
 func (s *Server) RefreshCatalog(ctx context.Context) {
 	if s.catalog != nil {
 		s.catalog.Refresh(ctx)
@@ -255,6 +287,10 @@ func (s *Server) RefreshCatalog(ctx context.Context) {
 }
 
 // RunCatalogRefresh keeps the held metric catalog warm until ctx is done.
+//
+// The caller runs it, as it runs the alarm evaluator, so that what has a
+// lifetime is started by whatever owns that lifetime rather than by the
+// constructor.
 func (s *Server) RunCatalogRefresh(ctx context.Context) {
 	if s.catalog != nil {
 		s.catalog.Run(ctx)
@@ -388,7 +424,20 @@ func (s *Server) routes() {
 	}
 }
 
-// Listen binds addr without serving, so readiness can be reported between bind and serve; ctx governs only the bind.
+// Listen binds addr without serving on it.
+//
+// Binding is separated from serving because the moment the socket accepts is
+// the moment the service becomes usable, and that moment has to be observable
+// from outside the process: it is what the readiness notification to systemd
+// reports. A caller that binds and then serves can say "ready" exactly once,
+// between the two, with nothing left in the startup path that could still fail.
+//
+// It also moves the one startup failure worth failing the service for — the
+// port is already taken — to a returned error, rather than leaving it to
+// surface as a serve error minutes into a start.
+//
+// ctx governs the bind itself, not the listener's lifetime: a bind that cannot
+// complete is abandoned with the context, and the returned listener outlives it.
 func (s *Server) Listen(ctx context.Context, addr string) (net.Listener, error) {
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", addr)
@@ -398,7 +447,10 @@ func (s *Server) Listen(ctx context.Context, addr string) (net.Listener, error) 
 	return listener, nil
 }
 
-// Serve serves the API on a bound listener until ctx is canceled; Serve closes the listener.
+// Serve serves the API on an already-bound listener until ctx is canceled.
+//
+// The shutdown below closes the listener, so a caller that hands one over must
+// not close it itself.
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	// Start the WebSocket hub
 	go s.hub.Run(ctx)

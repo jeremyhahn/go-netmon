@@ -14,7 +14,13 @@ import (
 // maxDefaultNumericColumns bounds the varying numeric columns a table shows by default.
 const maxDefaultNumericColumns = 4
 
-// Table is one indexed group of a device's metrics: rows share index labels, each metric is a column.
+// Table is one indexed group of a device's metrics: the rows share an index,
+// and each metric over that index is a column.
+//
+// A table exists because the metrics agree on their INDEX LABELS, not because
+// anyone declared one. That is what lets a MIB nobody has seen render as a
+// table: the catalog says snmp_ifOperStatus and snmp_ifHCInOctets are both
+// indexed by ifindex, so they are two columns of the same rows.
 type Table struct {
 	// ID is stable across regenerations so a renderer can key selection and
 	// column choices on it.
@@ -22,13 +28,19 @@ type Table struct {
 
 	Module string `json:"module,omitempty"`
 
-	// IndexLabels are the labels whose tuples are the rows, in INDEX-clause order.
+	// IndexLabels are the labels whose distinct tuples are the rows, in
+	// INDEX-clause order. Order is part of the meaning.
 	IndexLabels []string `json:"index_labels"`
 
 	Columns []TableColumn `json:"columns"`
 }
 
-// TableColumn is one metric drawn as a table column; the panel holds its metadata.
+// TableColumn is one metric drawn as a column of a table.
+//
+// It carries no metadata of its own beyond what the column decision needs: the
+// panel it refers to already holds the title, unit, enum decode and query, and
+// duplicating those here would give them two homes and one of them would go
+// stale.
 type TableColumn struct {
 	// PanelID is the panel this column draws, and where its title, unit and
 	// enum decode live.
@@ -40,13 +52,27 @@ type TableColumn struct {
 	// to understand why a column is shown.
 	Kind string `json:"kind,omitempty"`
 
-	// ValueLabel is the label holding this column's reading when it is not the sample, as for info metrics.
+	// ValueLabel is where this column's reading is when it is not the sample.
+	//
+	// An info metric's sample is ALWAYS 1 and its words are in a label:
+	// snmp_ifalias_info{ifindex="1",value="uplink"} 1. Judging such a column by
+	// its sample finds one distinct value on every row, marks it uniform, and
+	// summarizes it as "1" -- so the column carrying each row's NAME is the
+	// first one dropped from a table whose whole purpose is naming rows.
 	ValueLabel string `json:"value_label,omitempty"`
 
-	// Varies says whether rows disagree; a uniform column moves to the summary line with Value rather than being hidden.
+	// Varies says whether the rows disagree about this column's value.
+	//
+	// A column identical on every row is not hidden: it moves to the table's
+	// summary line, carrying Value. Hiding would make a column's absence ambiguous
+	// (uniform, deselected, or not reported). When a value stops being uniform the
+	// column moves from the summary into the table.
 	Varies bool `json:"varies"`
 
-	// Value is what every row reads when uniform; empty when the column varies.
+	// Value is what every row reads, when they all read the same. Empty when
+	// the column varies. It is what the summary line shows, and it is on the
+	// column rather than in a separate list so that a column moving between
+	// the two places is one field changing, not a row moving between arrays.
 	Value string `json:"value,omitempty"`
 
 	// Default says the column is shown before anyone chooses. Identity and

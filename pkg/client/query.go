@@ -5,7 +5,13 @@ import (
 	"strconv"
 )
 
-// ListQuery narrows a list request on the server; a zero ListQuery sends no parameters.
+// ListQuery narrows a list request on the server instead of in the caller.
+//
+// It exists because the alternative is to download a list to throw most of it
+// away: asking for three of CISCO-ENTITY-VENDORTYPE-OID-MIB's 10,539 objects
+// used to transfer 1.6 MiB. Every field is optional, and a zero ListQuery sends
+// no parameters at all, so a caller that wants the whole list still gets
+// exactly the request it made before this existed.
 type ListQuery struct {
 	// Search keeps only the records whose text contains it, ignoring case.
 	// Which text is searched depends on the record: an object's name, OID or
@@ -21,7 +27,12 @@ type ListQuery struct {
 	Offset int
 }
 
-// Page describes the slice a response carried and the full list size; sent only for narrowed requests (see pageOrAll).
+// Page describes which slice of a list a response carried and how big the list
+// it was cut from was, so a caller can render "51-100 of 293" without counting
+// anything itself.
+//
+// The server sends it only for a request that narrowed something; see
+// pageOrAll for what a caller should do when it is absent.
 type Page struct {
 	// Total is how many records exist before any narrowing: the module's whole
 	// object count, or the whole MIB catalog. A search does not move it.

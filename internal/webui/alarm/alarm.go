@@ -1,4 +1,22 @@
-// Package alarm evaluates PromQL alarm rules; a rule fires once per series its expression returns.
+// Package alarm evaluates the conditions an operator wants to be told about.
+//
+// The dashboard shows what a device is doing. An alarm is the other question --
+// is anything wrong right now -- and until this existed the answer was 72
+// transient toast notifications, each of which said something once and then
+// vanished. A reader who was not looking at the screen at that moment had no
+// way to find out.
+//
+// A rule is a PromQL expression with a name and a severity. It fires when the
+// expression returns anything, which is Prometheus's own definition and means a
+// rule is written the same way it would be written in a Prometheus rules file.
+// One rule can fire many times at once -- once per series the expression
+// returns -- because "interface Gi0/0/2 is down" and "interface Gi0/0/5 is
+// down" are two things to fix.
+//
+// Nothing here knows what SNMP is, and nothing here knows what a MIB is. That
+// is deliberate: the metrics an operator wants to alarm on include the ones the
+// poller derives and the ones no MIB describes, and a rule that had to name a
+// MIB object could not reach them.
 package alarm
 
 import (
@@ -14,7 +32,11 @@ import (
 // collector's own types.
 const DeviceLabel = "device"
 
-// Severity orders alarms by urgency; it is a string in config files.
+// Severity orders alarms by how much they want the reader's attention.
+//
+// It is a string on the wire because an operator writes it in a config file,
+// and ordered here because a bell showing thirty alarms has to put the worst
+// one at the top.
 type Severity string
 
 // The severities a rule may declare.
@@ -62,11 +84,20 @@ type Rule struct {
 	Summary     string
 	Description string
 
-	// For is how long the expression must return a series before the alarm is raised; zero fires at once.
+	// For is how long the expression must return a series before the alarm is
+	// raised. It is what separates a condition from a blip: an interface that
+	// bounces for one poll is not something to wake anyone for. Zero means
+	// fire on the first evaluation.
 	For time.Duration
 }
 
-// Alarm is one firing series of a rule, identified by rule and labels so Since survives evaluations.
+// Alarm is one firing instance of a rule.
+//
+// A rule that returns forty series produces forty alarms, and they are separate
+// because they are separately actionable. Identity is the rule plus the series'
+// labels, so an alarm that stays up keeps the same ID and therefore the same
+// Since across evaluations -- which is what lets a reader see how long
+// something has been broken.
 type Alarm struct {
 	ID       string   `json:"id"`
 	Rule     string   `json:"rule"`
@@ -92,7 +123,13 @@ type Alarm struct {
 	Since time.Time `json:"since"`
 }
 
-// Snapshot is one evaluation's result, including how many rules could not be evaluated.
+// Snapshot is one evaluation's whole answer.
+//
+// It carries what could NOT be found out as well as what could, because those
+// are different states and a list of alarms alone cannot tell them apart. A
+// bell showing nothing because nothing is wrong and a bell showing nothing
+// because no rule could be evaluated look identical, and only one of them
+// means the fleet is healthy.
 type Snapshot struct {
 	// Alarms are what is firing, worst first.
 	Alarms []Alarm
@@ -104,6 +141,10 @@ type Snapshot struct {
 }
 
 // Sample is one series a rule's expression returned.
+//
+// It is the shape the Prometheus client already produces, restated here so this
+// package depends on nothing: an evaluator that imported the API layer could
+// not be tested without one.
 type Sample struct {
 	Labels map[string]string
 	Value  float64

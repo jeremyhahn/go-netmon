@@ -123,7 +123,24 @@ func (ix *oidIndex) lookup(oid string) (client.MIBObject, string, bool) {
 	return client.MIBObject{}, "", false
 }
 
-// Describe names a series MIB-browser style, e.g. ifInOctets[10], and returns value metadata; ok is false when no MIB defines it.
+// Describe names a series the way a MIB browser would and returns the metadata
+// needed to format its value, e.g. "ifInOctets[10]" for a sample of
+// .1.3.6.1.2.1.2.2.1.10.10.
+//
+// It takes the whole label set because the instance is a label, not part of the
+// name: the exporter names a metric after the MIB object and puts the row index
+// in labels, so snmp_ifInOctets alone says nothing about which interface a
+// sample belongs to. The exact instance comes from the "oid" label, which names
+// the object; the row's identity comes from the index labels beside it, which
+// the exporter has already decoded -- "203.0.113.218" rather than the 4.203.0.113.218
+// the OID carries. Which labels those are is read from the MIB's INDEX clause
+// and not guessed, so the enrichment labels the exporter adds alongside them --
+// ifname, ifdescr, ifalias and the rest -- are never mistaken for part of the
+// row.
+//
+// The reported ok is false when the series is not OID-derived or when no loaded
+// MIB defines it; the label is then the series' full PromQL identity, so a
+// caller can render every row without a second code path.
 func (ix *oidIndex) Describe(labels map[string]string) (string, *mib.OIDMetadata, bool) {
 	if ix == nil {
 		return formatSeries(labels), nil, false

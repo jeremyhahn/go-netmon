@@ -19,7 +19,13 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/promname"
 )
 
-// MIBSeriesEstimate is how many Prometheus series enabling a MIB on a device would add.
+// MIBSeriesEstimate answers the question that has to be asked before a MIB is
+// enabled on a device: how many Prometheus series will it add?
+//
+// Object count is the wrong number. Every pollable column costs one series per
+// table row, so a module offering 624 pollable objects produced 31,836 series
+// on a live router — a 51x multiplier that comes entirely from table instances.
+// Series is the number that decides whether a device can carry the MIB.
 type MIBSeriesEstimate struct {
 	MIB         string `json:"mib"`
 	Device      string `json:"device"`

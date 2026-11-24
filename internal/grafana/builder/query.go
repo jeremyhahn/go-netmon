@@ -128,7 +128,12 @@ func (qb *QueryBuilder) BuildGaugeQuery(oid *mib.OIDMetadata, useDeviceVariable 
 	return qb.BuildScalarQuery(oid, useDeviceVariable)
 }
 
-// BuildTableQuery builds a query for the given columns of one table using a whole-name __name__ alternation.
+// BuildTableQuery builds a query for the given columns of one table.
+//
+// Several columns still need a __name__ alternation, because PromQL has no
+// other way to name more than one metric in a single selector. It is an
+// alternation of whole names rather than a prefix pattern, so Prometheus
+// resolves it against the name index instead of scanning every series.
 func (qb *QueryBuilder) BuildTableQuery(_ string, columns []*mib.OIDMetadata) string {
 	if len(columns) == 0 {
 		return ""
@@ -348,7 +353,13 @@ func (qb *QueryBuilder) isOctetCounter(oid *mib.OIDMetadata) bool {
 		strings.Contains(name, "hcout")
 }
 
-// ObjectMetricName returns the Prometheus metric name of a MIB object; an empty prefix means the exporter's own.
+// ObjectMetricName returns the Prometheus metric name of a MIB object, for
+// callers outside this package that need to name a series without building a
+// whole query. An empty prefix means the exporter's own.
+//
+// It takes the object's name rather than its OID because that is what the
+// exporter names a metric after. An OID alone cannot answer the question: it
+// takes the loaded MIBs to say which object an OID belongs to.
 func ObjectMetricName(objectName, prefix string) string {
 	return promname.NameWithPrefix(prefix, objectName)
 }

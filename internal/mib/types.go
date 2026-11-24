@@ -68,7 +68,10 @@ type OIDMetadata struct {
 	ChartType     string `json:"chart_type,omitempty"`
 }
 
-// IndexColumn describes one INDEX column for decoding: resolved type, SMI base type, IMPLIED and fixed octet width.
+// IndexColumn describes one column of a conceptual row's INDEX clause,
+// carrying everything an index decoder needs to split an OID suffix into
+// values: the resolved type, its SMI base type, whether the column is IMPLIED
+// and, for fixed-width strings, the octet count.
 type IndexColumn struct {
 	Name string `json:"name"`
 	OID  string `json:"oid,omitempty"`
@@ -80,9 +83,12 @@ type IndexColumn struct {
 	// example "Integer32", "OctetString" or "ObjectIdentifier". Decoders
 	// key off this rather than Type, which may name any textual convention.
 	BaseType string `json:"base_type,omitempty"`
-	// Implied is true only for the final column of an IMPLIED row.
+	// Implied is true only for the final index column of an IMPLIED row,
+	// whose value fills the rest of the OID with no length prefix.
 	Implied bool `json:"implied,omitempty"`
-	// FixedLength is the octet count of a fixed-SIZE string index, else zero.
+	// FixedLength is the octet count of a string index with a fixed SIZE
+	// constraint, and zero otherwise. A fixed-width string index carries no
+	// length prefix, so the decoder needs the width to split it.
 	FixedLength int `json:"fixed_length,omitempty"`
 }
 
@@ -100,7 +106,17 @@ type ModuleInfo struct {
 	Tags         map[string]string `json:"tags,omitempty"`
 }
 
-// LoadProgress reports a bulk module load's progress; a nil LoadProgress reports nowhere.
+// LoadProgress reports how far a bulk module load has got: how many modules
+// are done, how many there are in total, and the one just finished.
+//
+// It exists because the load it reports on is minutes long and happens before
+// the service can answer anything. Without it, "still parsing" and "wedged and
+// never going to serve" are the same observation from outside the process, and
+// the two have already been confused on a production appliance.
+//
+// Reporting is the caller's business: a service under systemd turns this into
+// the unit's status line, a test counts the calls, and a nil LoadProgress
+// reports nowhere.
 type LoadProgress func(done, total int, module string)
 
 // TableInfo contains information about an SNMP table
@@ -113,7 +129,9 @@ type TableInfo struct {
 	Columns     []string `json:"columns"` // Column OIDs
 	EntryOID    string   `json:"entry_oid"`
 
-	// IndexColumns carries Indexes with resolved types; Implied reports whether INDEX ends with an IMPLIED column.
+	// IndexColumns carries the same indexes as Indexes but with their
+	// resolved types; Implied reports whether the row's INDEX clause ends
+	// with an IMPLIED column.
 	IndexColumns []IndexColumn `json:"index_columns,omitempty"`
 	Implied      bool          `json:"implied,omitempty"`
 }

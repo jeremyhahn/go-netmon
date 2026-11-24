@@ -14,7 +14,14 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/snmp"
 )
 
-// TableIndexCache holds the immutable, lock-free MIB-derived index plus per-device friendly names behind a mutex.
+// TableIndexCache holds the MIB-derived metadata that names and labels the
+// samples of a poll, plus the friendly names observed while polling.
+//
+// The MIB-derived half is rebuilt whenever the set of loaded MIB modules
+// changes and published as one immutable mibIndex (see Refresh), so the poll
+// path reads it without taking a lock. The friendly names are the other half:
+// they are learned from SNMP responses rather than from MIBs, are written on
+// every poll, and so stay behind a mutex.
 type TableIndexCache struct {
 	storage *storage.Storage
 
@@ -41,7 +48,9 @@ type statusColumnInfo struct {
 	ColumnID  string // Last part of column OID (e.g., "2" for ifDescr)
 	LabelName string // Lowercased name for label (e.g., "ifname", "ifdescr")
 
-	// Meta is the type, DISPLAY-HINT and enumeration labelValue renders with, built with the index.
+	// Meta is what labelValue needs to render the column's values: the
+	// declared type, the DISPLAY-HINT and the enumeration. It is built once
+	// when the index is built, so the poll path allocates nothing to format.
 	Meta *mib.OIDMetadata
 }
 
@@ -74,7 +83,11 @@ type TableIndexInfo struct {
 	IndexOIDs  []string // OIDs of index columns
 	IndexTypes []string // Types of index columns (Integer32, IpAddress, etc.)
 
-	// IndexColumns describes each index column from the MIB; empty for learned tables, which fall back to IndexTypes.
+	// IndexColumns is the MIB-declared description of each index column:
+	// resolved type, base type, IMPLIED flag and fixed width. It is empty
+	// for tables discovered by the OID learner and for metadata stored
+	// before index column types were recorded, in which case the decoder
+	// falls back to IndexTypes and the index name heuristic.
 	IndexColumns []mib.IndexColumn
 }
 
@@ -121,7 +134,17 @@ func (c *TableIndexCache) objectNames() *objectNameIndex {
 	return c.index().names
 }
 
-// Refresh rebuilds the MIB-derived index from the store and publishes it with one pointer store; safe during polling.
+// Refresh rebuilds the MIB-derived index from what the MIB store holds now and
+// publishes it.
+//
+// This is what makes a module loaded after the cache was constructed usable.
+// Without it the index describes only the modules that happened to be in the
+// store at construction, every object of every module loaded since resolves to
+// no MIB definition, and its samples fall back to raw-OID metric names with no
+// index labels -- correct, lossless, and unusable.
+//
+// It is safe to call while devices are polling: the sweep builds a whole new
+// index off to the side and installs it with one pointer store.
 func (c *TableIndexCache) Refresh() error {
 	c.buildMu.Lock()
 	defer c.buildMu.Unlock()
@@ -418,7 +441,13 @@ func (c *TableIndexCache) CacheFriendlyNames(deviceName string, results []*snmp.
 	c.publishFriendlyNames(deviceName, polled)
 }
 
-// ExtractIndexLabels returns an OID's index values as Prometheus labels, plus cached friendly names (e.g. ifindex, ifname).
+// ExtractIndexLabels extracts index values from an OID and returns them as Prometheus labels
+// Also adds friendly name labels if available in cache
+// For example: OID ".1.3.6.1.2.1.2.2.1.10.5" with index ["ifIndex"] returns {"ifindex": "5"}
+// If friendly names are cached, also returns {"ifname": "GigabitEthernet0/0", "ifdescr": "..."}
+// For BGP: OID "1.3.6.1.4.1.9.9.187.1.2.8.1.1.1.4.203.0.113.218.1.1" with indexes
+// ["cbgpPeer2Type", "cbgpPeer2RemoteAddr", "cbgpPeer2RemoteAddrType", "cbgpPeer2AddrFamilyAfi", "cbgpPeer2AddrFamilySafi"]
+// returns labels for peer address, AFI, SAFI, etc.
 func (c *TableIndexCache) ExtractIndexLabels(deviceName, oid string) map[string]string {
 	return c.extractIndexLabels(c.index(), deviceName, oid)
 }
@@ -770,7 +799,15 @@ func normalizeOID(oid string) string {
 	return oid
 }
 
-// ConvertStatusColumnsToInfoMetrics emits constant-1 info metrics carrying status text in a value label, with the device's tags.
+// ConvertStatusColumnsToInfoMetrics creates info metrics for status columns (both string and enum).
+// These metrics have constant value 1.0 with the status value as a "value" label.
+// Example: snmp_ifdescr_info{device="router1", ifindex="3", value="GigabitEthernet0/0"} 1
+// Example: snmp_cbgppeer2state_info{device="router1", cbgppeer2remoteaddr="198.51.100.101", value="established"} 1
+//
+// extraLabels are the device's configured tags. They are attached here exactly
+// as they are to ordinary readings: an info metric is what dashboards and
+// federation join against, so it has to be selectable by the same tags as the
+// series being joined to it.
 func ConvertStatusColumnsToInfoMetrics(
 	deviceName string,
 	results []*snmp.Result,

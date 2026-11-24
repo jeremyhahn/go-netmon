@@ -1,4 +1,7 @@
-// Command netmon is the CLI to go-netmon's management API.
+// Command netmon is the command-line interface to go-netmon.
+//
+// It manages devices, profiles and MIBs, and displays live metrics, through
+// the same management API the web UI uses.
 package main
 
 import (

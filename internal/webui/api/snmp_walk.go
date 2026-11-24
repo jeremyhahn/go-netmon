@@ -14,7 +14,20 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// Walking a device's OID tree with its stored credentials, naming OIDs from imported MIBs where known.
+// Walking a device's OID tree.
+//
+// Answering "what does this box actually expose?" needed net-snmp on the host,
+// or a throwaway program written against internal packages. Neither is portable
+// and neither uses the credentials already stored for the device, which for
+// SNMPv3 is most of the difficulty.
+//
+// A walk is the tool for two questions that come up constantly: whether a MIB is
+// worth importing, since a module the device does not implement produces
+// nothing; and why a polled object is empty, since the device answering
+// NoSuchObject looks exactly like the poller not asking.
+//
+// Names are resolved from the imported MIBs where they are known and left as
+// raw OIDs where they are not, so a walk is useful before any MIB is imported.
 
 // WalkDefaultRoot is where a walk starts when the caller names no subtree. It
 // is the whole internet subtree: everything standard and every vendor's own,

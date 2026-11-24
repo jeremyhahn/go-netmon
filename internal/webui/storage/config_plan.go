@@ -13,14 +13,22 @@ const (
 	ConfigActionDelete = "delete"
 )
 
-// ConfigPlan is what importing a document would do, computed from stored configuration.
+// ConfigPlan is what importing a document would do to this instance.
+//
+// It is computed from the configuration actually stored, never from what a
+// previous run reported, so a plan shown to an operator describes the machine in
+// front of them.
 type ConfigPlan struct {
 	Profiles []ConfigChange `json:"profiles"`
 	Devices  []ConfigChange `json:"devices"`
 	Counts   ConfigCounts   `json:"counts"`
 }
 
-// ConfigChange is one record an import would create, update or delete; updates carry the differing fields.
+// ConfigChange is one record an import would create, update or delete.
+//
+// An update carries the fields that differ. A create or a delete carries Detail
+// instead: listing every field of a record that is wholly arriving or wholly
+// going does not tell an operator anything the record's own summary does not.
 type ConfigChange struct {
 	Action string `json:"action"`
 	Name   string `json:"name"`

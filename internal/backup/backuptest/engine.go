@@ -1,4 +1,19 @@
-// Package backuptest implements backup.Docker in process, with volumes as directories confined to one root.
+// Package backuptest provides a real, in-process implementation of
+// backup.Docker.
+//
+// It is not a stub. Volumes are directories, exporting one produces a genuine
+// tar stream and importing one genuinely empties the destination and unpacks
+// into it, so a test drives the same code paths a deployment does: the ownership
+// checks, the manifest, the integrity passes and the restore gates all see real
+// answers. What it does not do is talk to a daemon, which is what makes the
+// tests fast and what makes them incapable of reaching a live stack.
+//
+// Every mutation it makes goes through a backup.Root anchored on the directory
+// it was constructed with. A test that hands it t.TempDir() cannot make it write
+// anywhere else, whatever the code under test asks for. That property is the
+// reason this exists in Go at all: the shell test harness it replaces translated
+// a container's "find /dst -mindepth 1 -delete" into a delete on the host, and a
+// mistaken path there was a delete aimed at the operator's filesystem.
 package backuptest
 
 import (
@@ -49,7 +64,10 @@ type service struct {
 	binds   []backup.Bind
 }
 
-// Engine implements backup.Docker against directories under one root; construct it with NewEngine.
+// Engine implements backup.Docker against directories under one root.
+//
+// The zero value is not usable; construct one with NewEngine. It is safe for
+// concurrent use, which matters only because tests run under the race detector.
 type Engine struct {
 	mu             sync.Mutex
 	root           *backup.Root
@@ -69,7 +87,10 @@ type Engine struct {
 	OnImport func(ctx context.Context, volume string) error
 }
 
-// NewEngine returns an engine whose volumes live under dir, which must exist.
+// NewEngine returns an engine whose volumes live under dir.
+//
+// dir must exist; in a test it is t.TempDir(), which is what confines everything
+// the engine does to that test's own scratch space.
 func NewEngine(dir string) (*Engine, error) {
 	root, err := backup.Ensure("test docker engine", dir)
 	if err != nil {

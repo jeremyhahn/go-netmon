@@ -332,7 +332,15 @@ func NewPrometheusExporter(remoteWriteURL string, batchSize int, flushInterval t
 	return exporter, nil
 }
 
-// RefreshMIBMetadata rebuilds the name and table index metadata from the exporter's MIB store; a no-op without one.
+// RefreshMIBMetadata rebuilds the metric name index and table index metadata
+// from the MIB store the exporter was constructed with.
+//
+// The caller is whoever loaded MIB modules into that store: the exporter has no
+// way to notice that the store grew, and until it is told, every object of
+// every newly loaded module falls back to a raw-OID metric name.
+//
+// An exporter constructed without a MIB store has no MIB-derived state and
+// refreshing it is a no-op rather than an error.
 func (e *PrometheusExporter) RefreshMIBMetadata() error {
 	if e.tableIndexCache == nil {
 		return nil
@@ -340,7 +348,9 @@ func (e *PrometheusExporter) RefreshMIBMetadata() error {
 	return e.tableIndexCache.Refresh()
 }
 
-// Export queues samples for the sender; ctx is unused but required by Exporter.
+// Export queues metrics for sending to Prometheus.
+// The context is unused: Export does not perform the write. It stays in the
+// signature because Exporter requires it.
 func (e *PrometheusExporter) Export(_ context.Context, samples []*Sample) error {
 	if len(samples) == 0 {
 		return nil
@@ -760,7 +770,13 @@ func (e *PrometheusExporter) LastSuccessfulFlush() (time.Time, bool) {
 	return time.Unix(0, nanos), true
 }
 
-// BufferedSamples returns the number of accepted, undelivered samples (e.backlog).
+// BufferedSamples returns the number of samples currently buffered and
+// awaiting flush.
+// Both halves are counted: samples still accumulating towards a batch, and
+// batches already handed to the sender and awaiting a write. A caller asking
+// how much is undelivered means both, and counting only the first would report
+// zero while a whole backlog waited behind a failing endpoint.
+// It is e.backlog, which is the one definition of the quantity.
 func (e *PrometheusExporter) BufferedSamples() int {
 	return e.backlog()
 }
@@ -814,7 +830,17 @@ func (e *PrometheusExporter) ForgetDevice(deviceName string) {
 	}
 }
 
-// SendCatalog delivers the catalog synchronously, outside the sample buffer, stopping at the first failed chunk.
+// SendCatalog delivers the metric catalog without touching the sample buffer.
+//
+// The catalog never shares a batch with device telemetry, so a rejected catalog
+// write can never delay or discard measurements, and it stays out of the
+// buffer's size accounting.
+//
+// Delivery is synchronous and the error is the delivery's: the caller learns
+// whether Prometheus took it, not whether it was queued. Chunks are sent in
+// order and the first failure stops the rest, because a half-written catalog
+// is worse than one that is a refresh behind. send bounds each request by
+// series count and encoded size.
 func (e *PrometheusExporter) SendCatalog(ctx context.Context, samples []*Sample) error {
 	_, err := e.send(ctx, samples)
 	return err

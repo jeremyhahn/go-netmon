@@ -33,17 +33,32 @@ const (
 	// must never be what makes a request time out.
 	PollerSyncBudget = 5 * time.Second
 
-	// FleetStatusBudget caps a whole fleet request, above PollerRequestTimeout.
+	// FleetStatusBudget caps an entire bulk fleet request, which is one call to
+	// the poller's device listing however large the fleet is. It exceeds
+	// PollerRequestTimeout so the poller client's own deadline and retries are
+	// what expire first; if the poller never answers, every configured device
+	// still gets a row saying so, on time.
 	FleetStatusBudget = 8 * time.Second
 
 	// HandlerBudget caps the outbound work one request may do. It is the
 	// widest any single handler is allowed to be.
 	HandlerBudget = 10 * time.Second
 
-	// ServerWriteTimeout exceeds HandlerBudget so a handler has time to write its response.
+	// ServerWriteTimeout is the connection's write deadline. It exceeds
+	// HandlerBudget so that a handler which spends its entire budget still has
+	// time to serialize and write its response instead of having the
+	// connection closed underneath it.
 	ServerWriteTimeout = 15 * time.Second
 
-	// ConfigImportBudget caps a configuration import, outside the chain; the import handler extends its own write deadline.
+	// ConfigImportBudget caps a configuration import, and is deliberately
+	// outside the chain above.
+	//
+	// An import parses every MIB module the bundle carries, which on a restore
+	// of a full catalog is a few hundred modules and minutes of work, not the
+	// seconds every other endpoint is held to. Widening ServerWriteTimeout for
+	// it would widen it for everything, so the import handler extends its own
+	// connection deadline to this instead and the rest of the server keeps the
+	// tight budget it needs.
 	ConfigImportBudget = 10 * time.Minute
 
 	// ServerReadTimeout bounds reading a request, including its body.

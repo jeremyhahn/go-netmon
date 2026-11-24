@@ -1,4 +1,22 @@
-// Package sdnotify reports service state to systemd over NOTIFY_SOCKET, for Type=notify readiness.
+// Package sdnotify reports service state to systemd over the socket named by
+// NOTIFY_SOCKET.
+//
+// It exists because a Type=simple unit is "active" the instant the process
+// forks. The web UI parses its MIB catalog before it binds :8080, so for
+// minutes after a restart systemd reported a healthy service that refused
+// every connection — a state indistinguishable, from the outside, from a
+// process wedged and never going to serve. A deploy was read as hung and
+// rolled back on that signal.
+//
+// With Type=notify the unit is not active until the process says so, and the
+// process says so after the listener is bound. There is no separate health
+// check to keep in step: the readiness signal is emitted from the one place
+// that knows the socket is accepting.
+//
+// systemd's protocol is a datagram of newline-separated VAR=value pairs sent
+// to a unixgram socket. That is small enough to implement here rather than
+// take a dependency for, and doing so keeps the notification path free of any
+// code the service does not otherwise run.
 package sdnotify
 
 import (
@@ -12,12 +30,24 @@ import (
 // under `go run`, in a container and in every test.
 const SocketEnv = "NOTIFY_SOCKET"
 
-// Notifier sends state messages to the service manager; with no socket, or nil, it does nothing.
+// Notifier sends state messages to the service manager.
+//
+// A Notifier with no socket — the process is not running under systemd — is
+// usable and does nothing, and so is a nil *Notifier. Callers therefore never
+// branch on whether they are supervised: a service that reports readiness does
+// it the same way in both cases, and the one that is not listened to is the
+// one that costs nothing.
 type Notifier struct {
 	conn *net.UnixConn
 }
 
-// New returns a Notifier for NOTIFY_SOCKET; unset discards messages, set but unusable is an error.
+// New returns a Notifier for the socket named by NOTIFY_SOCKET.
+//
+// An unset variable yields a Notifier that discards what it is told. A variable
+// that is set but unusable is an error: systemd set it, so something is
+// listening, and silently dropping READY=1 in that case is exactly the failure
+// this package exists to prevent — the service would hang in "activating" until
+// TimeoutStartSec killed it.
 func New() (*Notifier, error) {
 	addr := os.Getenv(SocketEnv)
 	if addr == "" {
@@ -60,7 +90,13 @@ func (n *Notifier) Ready() error {
 	return n.send("READY=1")
 }
 
-// Status sets the service's one-line status, with newlines replaced by spaces.
+// Status sets the one-line description the service manager shows for this
+// service — `systemctl status` prints it, and it is the only thing a process
+// that has not finished starting can say to somebody who is looking at it.
+//
+// Newlines are replaced with spaces: the protocol is newline-separated
+// VAR=value pairs, so a status carrying one would be read as a second, unknown
+// assignment and the rest of the text silently dropped.
 func (n *Notifier) Status(text string) error {
 	return n.send("STATUS=" + strings.NewReplacer("\n", " ", "\r", " ").Replace(text))
 }

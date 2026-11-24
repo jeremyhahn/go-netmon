@@ -7,9 +7,38 @@ import (
 	"sync"
 )
 
-// Each query is diffed once per round and the frame shared; a delta names its base sequence, and other clients get a snapshot.
+// Sending what changed, once, to everyone who is up to date.
+//
+// A subscribed query is re-read on every round and its result is usually the
+// same one it read last time, because a device is polled every 30 to 60 seconds
+// and the round is five. When it does change, usually one series in it moved
+// and the rest did not -- a panel of forty interfaces where one is passing
+// traffic sends forty readings to say so.
+//
+// The diff is computed ONCE per query per round, against the previous result,
+// and the same frame is sent to every client that holds that previous result.
+// Diffing per client would be the same work multiplied by the number of people
+// looking, which is exactly backwards: the readings are identical for all of
+// them and it is only what each has already SEEN that differs.
+//
+// What makes that safe is the sequence number. Every result a query has ever
+// produced has one, and a delta names the sequence it must be applied to. A
+// client at that sequence can take the delta; a client at any other sequence --
+// new, behind, or one frame short of an answer that never arrived -- is sent
+// the whole reading instead. There is no path by which a client applies a delta
+// to something other than what it was computed against, so there is no path by
+// which it renders a stale value as a current one.
 
-// SnapshotInterval is how many changed frames a query may send as deltas before one is sent whole.
+// SnapshotInterval is how many changed frames a query may send as deltas before
+// one is sent whole.
+//
+// It bounds drift that nothing else would catch. A client whose sequence is
+// somehow right while its contents are not -- a rendering bug, a frame the
+// browser accepted and mishandled -- would otherwise never be corrected, since
+// every subsequent frame would be a delta it believes it can apply. Twenty
+// changed frames on a 30-second poll interval is a full reading roughly every
+// ten minutes, which is cheap and is the only thing standing between a subtle
+// client-side bug and a panel that is wrong for as long as the page is open.
 const SnapshotInterval = 20
 
 // queryState is what one query last read, and what that reading is called.
@@ -31,7 +60,11 @@ type Delta struct {
 	// overwrites its own copy of each by label set.
 	Changed []MetricValue `json:"changed,omitempty"`
 
-	// Removed are series no longer in the reading, carried as full label sets.
+	// Removed are series that are no longer in the reading -- an interface
+	// that went away, a table row that was deleted. They carry their full
+	// label set rather than a key, because a key would be a second identity
+	// scheme that the server and the browser would have to agree on
+	// character for character, in two languages, forever.
 	Removed []map[string]string `json:"removed,omitempty"`
 }
 

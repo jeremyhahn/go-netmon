@@ -11,9 +11,21 @@ import (
 )
 
 // DefaultInterval is how often the rules are evaluated.
+//
+// Slower than the dashboard's five-second tick and for a different reason: an
+// alarm is a condition that has held, not a reading, and every rule costs a
+// Prometheus query whether or not anything is wrong. Fifteen seconds is well
+// inside the shortest poll interval a device here uses, so no state change can
+// be missed for longer than one poll.
 const DefaultInterval = 15 * time.Second
 
-// Evaluator runs the rules and holds what is firing; rule sets are swapped whole and readers never lock.
+// Evaluator runs the rules and holds what is currently firing.
+//
+// The rule set is swapped whole rather than edited, so a reload cannot be
+// observed half-applied: an evaluation either uses the rules before it or the
+// rules after it. Readers of the firing set take a snapshot pointer and never
+// hold a lock, because the bell is polled by every open browser and the
+// evaluation loop must not wait on any of them.
 type Evaluator struct {
 	query    QueryFunc
 	interval time.Duration
@@ -54,7 +66,12 @@ func New(query QueryFunc, rules []Rule, logger *slog.Logger) *Evaluator {
 	return e
 }
 
-// Reload replaces the rule set; an evaluation in flight finishes with its original rules.
+// Reload replaces the rule set.
+//
+// It is the whole of hot reload: the config file is re-read elsewhere, and the
+// rules it yielded arrive here. Swapping the pointer means an evaluation in
+// flight finishes against the rules it started with rather than seeing a set
+// that is half old and half new.
 func (e *Evaluator) Reload(rules []Rule) {
 	set := make([]Rule, len(rules))
 	copy(set, rules)
@@ -69,6 +86,10 @@ func (e *Evaluator) Reload(rules []Rule) {
 }
 
 // RuleCount is how many rules are loaded.
+//
+// Zero rules and zero alarms are not the same answer: the first is nothing
+// being watched and the second is nothing being wrong, and a bell that shows
+// the same thing for both is a bell that lies.
 func (e *Evaluator) RuleCount() int {
 	if rules := e.rules.Load(); rules != nil {
 		return len(*rules)
@@ -76,7 +97,10 @@ func (e *Evaluator) RuleCount() int {
 	return 0
 }
 
-// Firing returns current alarms, worst first; the slice is immutable.
+// Firing is what is wrong right now, worst first.
+//
+// The slice is never modified after publication, so callers may read it
+// without copying and without a lock.
 func (e *Evaluator) Firing() []Alarm {
 	return e.Snapshot().Alarms
 }
@@ -90,7 +114,12 @@ func (e *Evaluator) Snapshot() Snapshot {
 	return Snapshot{}
 }
 
-// EvaluateOnce runs every rule once and publishes the result; Run calls it on each tick.
+// EvaluateOnce runs every rule a single time and publishes the result.
+//
+// It is what a test drives, and what Run calls on its own tick. Exported so a
+// caller can force an evaluation -- a browser opened seconds after a reload
+// should not have to wait a full interval to see the rules that were just
+// loaded.
 func (e *Evaluator) EvaluateOnce(ctx context.Context) {
 	e.evaluate(ctx)
 }

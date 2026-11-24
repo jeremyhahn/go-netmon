@@ -35,9 +35,15 @@ func AllComponents() []Component {
 }
 
 // ConfigFiles lists the repository files the config component carries.
+//
+// They are data in the operational sense: the stack behaves differently if they
+// change.
 func ConfigFiles() []string { return []string{"config.yaml", "prometheus.yml"} }
 
-// ReferenceFiles lists files recorded for provenance only; they are never restored.
+// ReferenceFiles lists files recorded in a backup for provenance only.
+//
+// They are never restored. Overwriting the deployment definition beneath a
+// running deployment is a deployment action, not a data restore.
 func ReferenceFiles() []string { return []string{"docker-compose.yml"} }
 
 // Volume reports the compose volume a component's data lives in, or the empty
@@ -90,7 +96,11 @@ func (c Component) Valid() bool {
 	return false
 }
 
-// ParseComponents parses a comma-separated list, refusing unknown names.
+// ParseComponents turns a comma-separated list into components, refusing any
+// name this tool does not know.
+//
+// An unknown name is fatal rather than ignored: silently dropping a typo in
+// --only would back up, or restore, something other than what was asked for.
 func ParseComponents(list string) ([]Component, error) {
 	var out []Component
 	for _, raw := range strings.Split(list, ",") {

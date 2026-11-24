@@ -14,7 +14,11 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/webui/storage"
 )
 
-// MIBAssignmentView is a MIB with how it is polled, the MIB's fields flattened in.
+// MIBAssignmentView is a MIB together with how it is polled.
+//
+// The MIB's own fields are flattened into the object, so a client that only
+// knows about the MIB keeps working while a newer one can read the assignment
+// and show whether the module is enabled without a request per MIB.
 type MIBAssignmentView struct {
 	storage.MIB
 	Assignment storage.MIBAssignment `json:"assignment"`

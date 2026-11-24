@@ -22,7 +22,18 @@ var configKeyPrefixes = []string{
 	PrefixNameIndex + "profile:",
 }
 
-// PlanImportConfig reports what importing doc would change, treating pending modules as present, without changing anything.
+// PlanImportConfig reports what importing doc would change, without changing
+// anything.
+//
+// It is the read-only half of ImportConfig and runs the same validation, so a
+// document that survives a dry run is a document the apply will accept for the
+// same reasons.
+//
+// pending names modules the caller is about to import — the source files an
+// export bundle carries — so that a dry run against a fresh instance describes
+// the import that will actually happen rather than failing on modules that are
+// a few seconds away from existing. Nothing else treats them as present: the
+// apply re-checks the catalog for real, after those modules have been imported.
 func (s *Storage) PlanImportConfig(ctx context.Context, doc *Config, pending []string) (*ConfigPlan, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -34,7 +45,18 @@ func (s *Storage) PlanImportConfig(ctx context.Context, doc *Config, pending []s
 	return prepared.plan, nil
 }
 
-// ImportConfig replaces this instance's configuration with doc in one all-or-nothing batch, deleting what doc omits.
+// ImportConfig replaces this instance's configuration with doc.
+//
+// Replace, not merge: a device, profile or assignment the document does not
+// contain is deleted. That is the semantic the operator chose, and it is why
+// every caller of this method has to have obtained an explicit confirmation
+// first.
+//
+// The whole change lands in one store batch, so it is all-or-nothing: a failure
+// at any point leaves the previous configuration exactly as it was, and no
+// reader can observe a half-applied fleet. Validation runs to completion before
+// the batch is opened, so a document that is going to be rejected is rejected
+// having read nothing but its own fields.
 func (s *Storage) ImportConfig(ctx context.Context, doc *Config) (*ConfigPlan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

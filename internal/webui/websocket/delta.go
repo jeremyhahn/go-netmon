@@ -54,7 +54,17 @@ func fingerprint(metrics []MetricValue) uint64 {
 	return sum ^ (uint64(len(metrics)) * 0x9E3779B97F4A7C15)
 }
 
-// SteadyRoundsBeforeBackoff is how many unchanged rounds a query reads before it is re-queried at half rate.
+// SteadyRoundsBeforeBackoff is how many consecutive rounds a query must read
+// the same thing before it is re-queried at half rate.
+//
+// The tick is 5 seconds and no device here is polled faster than 30, so most
+// rounds ask Prometheus a question whose answer cannot have changed. Backing
+// off halves that.
+//
+// It only ever applies to a reading that has already held still for this many
+// rounds, so a value that is moving is never delayed: the cost falls entirely
+// on values that have demonstrably stopped. When one does change, the query
+// returns to every round immediately.
 const SteadyRoundsBeforeBackoff = 6
 
 // steadyQueryRounds tracks how long each query has read the same thing.

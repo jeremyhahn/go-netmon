@@ -6,7 +6,11 @@ import (
 	"strings"
 )
 
-// RestoreOptions selects what a restore applies; every zero value is the safe choice.
+// RestoreOptions selects what a restore applies and how far it is allowed to go.
+//
+// Every field's zero value is the safe choice: no restore happens without Apply,
+// a safety backup is taken unless it is refused, a project mismatch is fatal, and
+// a populated MIB source tree is left alone.
 type RestoreOptions struct {
 	// From is the backup directory to restore.
 	From string
@@ -57,7 +61,15 @@ type restorePlan struct {
 	treeState  treeState
 }
 
-// Restore verifies the archive and ownership, takes a safety backup, then replaces a deployment's data with a backup's.
+// Restore replaces a deployment's data with a backup's.
+//
+// It is built so that every way it can fail leaves the current data intact. The
+// archive is verified in full before any Docker call; the backup's compose
+// project must match the target; the target must hold no container this compose
+// file did not create and no volume without its label; nothing happens without
+// Apply; the current state is preserved first; and the one destination that is
+// not a Docker volume - the MIB source tree in the operator's own working copy -
+// needs its own opt-in on top of Apply.
 func (s *Service) Restore(ctx context.Context, opts RestoreOptions) (*RestoreResult, error) {
 	archive, err := s.Verify(opts.From)
 	if err != nil {

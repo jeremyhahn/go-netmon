@@ -6,7 +6,24 @@ import (
 	"github.com/jeremyhahn/go-netmon/internal/mib"
 )
 
-// Whether a module can produce anything: a registry of OBJECT IDENTIFIERs never will; one with unresolved imports needs the missing module.
+// Whether a module can produce anything at all.
+//
+// A MIB can be imported, assigned and polled and still yield nothing, and until
+// this the only way to find out was an empty dashboard. Two kinds of module do
+// it, and they need different advice:
+//
+//   - A registry module defines only OBJECT IDENTIFIER assignments — names in a
+//     vendor's tree, with nothing measurable under them. ATEN-PRODUCTS-MIB says
+//     so in its own header: "this file only provides a product-level
+//     description". CISCO-PRODUCTS-MIB is 2888 of them. No amount of polling
+//     will produce a series, and nothing is wrong.
+//
+//   - A module whose imports did not resolve parses "successfully" and comes out
+//     with no usable OIDs, because the parent identifier its objects hang off
+//     came from a module that is not in the store. That is fixable: import the
+//     missing module.
+//
+// The distinction is what makes the warning worth showing rather than a shrug.
 
 // MIBPollability reports whether a module has anything worth polling.
 type MIBPollability struct {

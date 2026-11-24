@@ -1,4 +1,14 @@
-// Package credential keeps secrets sealed in go-enclave protected memory, decrypted only inside Secret.Use; Default builds the sealer.
+// Package credential keeps secrets in go-enclave protected memory.
+//
+// A Secret holds its material sealed: encrypted on the heap under a key the
+// process keeps in locked memory, and decrypted into a locked enclave only for
+// the duration of Secret.Use. Nothing in this package keeps the plaintext in a
+// Go string or an ordinary []byte.
+//
+// The package depends on go-enclave's interfaces (Sealed, ByteAccess) and
+// declares the one it needs of a sealer, Sealer. The concrete go-enclave sealer
+// is constructed in exactly one place, Default; everything else receives a
+// Sealer by injection.
 package credential
 
 import (
@@ -125,7 +135,11 @@ var openSealed = func(ctx context.Context, s enclave.Sealed) (enclave.ByteAccess
 	return s.Open(ctx)
 }
 
-// UseAll opens every secret against budget and calls fn with the plaintexts in order (nil for nil); valid only during fn.
+// UseAll opens every secret and calls fn with their plaintexts, in order, a
+// nil secret as nil. The opens hold their LockedCost against budget, waiting
+// until it is free, for as long as fn runs; so many callers can share an
+// RLIMIT_MEMLOCK that holds only a few of them at once. The plaintexts are
+// valid only until fn returns, as for Use.
 func UseAll(ctx context.Context, budget *LockedBudget, secrets []*Secret, fn func(plaintexts [][]byte) error) error {
 	var cost int64
 	for _, s := range secrets {

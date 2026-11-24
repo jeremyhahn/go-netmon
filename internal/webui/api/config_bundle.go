@@ -30,7 +30,12 @@ const (
 	maxBundleFileBytes  = maxUploadSize
 )
 
-// ConfigBundle is a configuration document and its MIB sources, keyed by ConfigMIB.File; empty for a bare document.
+// ConfigBundle is a configuration document together with the MIB source files it
+// depends on.
+//
+// MIBFiles is keyed by the document's ConfigMIB.File path. It is empty for a
+// bare document, which is a valid thing to import as long as the target already
+// holds every module the configuration references.
 type ConfigBundle struct {
 	Config   *storage.Config
 	MIBFiles map[string][]byte
@@ -55,7 +60,13 @@ func (e *BundleEntryError) Error() string {
 	return "config bundle: entry " + strconv.Quote(e.Entry) + ": " + e.Reason
 }
 
-// BundleChecksumError reports a MIB source file whose contents do not match the document; fatal.
+// BundleChecksumError reports a MIB source file whose contents do not match what
+// the document says they should be.
+//
+// It is fatal rather than a warning: importing a module from a file that is not
+// the file the configuration was exported against would give the target a
+// different set of objects under the same module name, which is exactly the
+// silent under-collection this feature exists to prevent.
 type BundleChecksumError struct {
 	Module string
 	Entry  string

@@ -56,7 +56,11 @@ func NewClient(device *config.Device, timeout time.Duration, retries int) (*Clie
 	return client, nil
 }
 
-// NewClientWithCredentials creates a client that borrows creds sealed by SealCredentials; their owner destroys them.
+// NewClientWithCredentials creates an SNMP client for a device whose
+// credentials have already been sealed out of it by SealCredentials.
+//
+// The client borrows creds: it opens them for each request and never destroys
+// them. Their owner destroys them once the client is no longer used.
 func NewClientWithCredentials(
 	device *config.Device, creds *Credentials, timeout time.Duration, retries int,
 ) (*Client, error) {
@@ -198,7 +202,17 @@ func (c *Client) Connect() error {
 	})
 }
 
-// Close closes the connection under a read lock, interrupting a request in flight.
+// Close closes the SNMP connection.
+//
+// It takes a read lock, not a write lock. Closing the socket is precisely how a
+// request already in flight is interrupted, so waiting for that request to
+// finish before closing defeats the purpose — and against a device that never
+// answers, that wait is the full timeout × retries budget. Holding the control
+// path behind it is what let one dead device stall device registration and
+// status lookups for every other device.
+//
+// Concurrent readers are exactly the in-flight requests being interrupted; the
+// read lock is there to exclude Connect from swapping the socket underneath.
 func (c *Client) Close() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -232,7 +246,14 @@ func (c *Client) Get(oid string) (*Result, error) {
 	}, nil
 }
 
-// GetMultiple performs a GET for several OIDs, halving the request on tooBig until the device answers.
+// GetMultiple performs an SNMP GET for multiple OIDs.
+//
+// An agent that cannot fit the whole response in one PDU answers tooBig: an
+// empty response carrying an error status, not a transport error. When that
+// happens the request is split in half and each half retried, which converges
+// on whatever the device can actually answer without needing to know its limit
+// in advance. Treating tooBig as success is how a device silently returns no
+// scalars at all while every poll still reports success.
 func (c *Client) GetMultiple(oids []string) ([]*Result, error) {
 	return c.GetMultipleContext(context.Background(), oids)
 }
@@ -393,7 +414,8 @@ func (c *Client) bulkWalker() (walker, string) {
 	return c.conn.BulkWalk, "BULKWALK"
 }
 
-// BulkWalk walks with GETBULK, or plain WALK on SNMPv1.
+// BulkWalk performs an SNMP BULKWALK (optimized walk using GETBULK), falling
+// back to a plain walk on SNMPv1, which has no GETBULK.
 func (c *Client) BulkWalk(rootOID string, walkFn func(*Result) error) error {
 	return c.call(context.Background(), func() error {
 		walk, op := c.bulkWalker()
@@ -412,7 +434,8 @@ func (c *Client) WalkAll(rootOID string) ([]*Result, error) {
 	return results, err
 }
 
-// BulkWalkAll bulk-walks and returns all results, or plain-walks on SNMPv1.
+// BulkWalkAll performs an SNMP BULKWALK and returns all results, falling back
+// to a plain walk on SNMPv1.
 func (c *Client) BulkWalkAll(rootOID string) ([]*Result, error) {
 	return c.BulkWalkAllContext(context.Background(), rootOID)
 }

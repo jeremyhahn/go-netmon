@@ -9,7 +9,11 @@ import (
 // a caller does about them differs, and the poll result they travel in is the
 // only record an operator gets of a cycle that collected nothing.
 
-// UnreachableError reports a poll the device answered nothing to, with what was attempted and skipped.
+// UnreachableError reports a poll in which the device answered nothing.
+//
+// It carries what was attempted and what was skipped because attempting it
+// would have been pointless, so the poll it fails is still an honest record of
+// what the poller did.
 type UnreachableError struct {
 	Device   string
 	Attempts int   // operations tried, none of which the device answered
@@ -56,7 +60,15 @@ func (e *IntervalError) Error() string {
 		"; it must be positive (set poll_interval on the device or default_poll_interval globally)"
 }
 
-// DeviceExistsError reports adding a device name already polled; RegisterDevice treats it as success.
+// DeviceExistsError reports an attempt to add a device under a name the poller
+// already polls.
+//
+// It is a type rather than a formatted string because the answer depends
+// entirely on who asked. AddDevice is a create, and a create that finds the
+// name taken has failed. A registration push is a statement of what the poller
+// should be polling, and one that finds the device already registered has
+// nothing to do -- so RegisterDevice catches this and reports success. Neither
+// caller can tell the two apart from a message.
 type DeviceExistsError struct {
 	Device string
 }

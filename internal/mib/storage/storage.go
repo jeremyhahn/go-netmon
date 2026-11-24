@@ -26,10 +26,16 @@ const (
 	PrefixTable  = "tbl:"
 	PrefixName   = "name:"
 
-	// PrefixModuleOID indexes "midx:<module>:<oid key>" -> "<oid key>" for per-module lookups.
+	// PrefixModuleOID indexes a module's OID keys as
+	// "midx:<module>:<oid key>" -> "<oid key>", where the OID key is the
+	// suffix of the record's primary "oid:" key. It makes a per-module
+	// lookup cost O(module) instead of O(store).
 	PrefixModuleOID = "midx:"
 
-	// PrefixModuleIndexed marks a module whose index was built by a full scan, "midxdone:<module>".
+	// PrefixModuleIndexed marks a module whose index has been built from a
+	// full scan, as "midxdone:<module>". It only matters for a module with
+	// no OIDs at all, which is indistinguishable from an unindexed module
+	// by the index alone.
 	PrefixModuleIndexed = "midxdone:"
 )
 
@@ -84,7 +90,10 @@ func moduleIndexedKey(module string) []byte {
 	return []byte(PrefixModuleIndexed + module)
 }
 
-// StoreOID stores OID metadata, its name mapping and its module index entry in one batch.
+// StoreOID stores OID metadata, its name mapping, and its module index entry.
+//
+// All three keys are written in one batch so a reader never sees a record
+// without its index entry.
 func (s *Storage) StoreOID(meta *mib.OIDMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,7 +128,15 @@ func (s *Storage) StoreOID(meta *mib.OIDMetadata) error {
 	return nil
 }
 
-// DeleteObject removes the record stored for meta under whichever key it used, including OID-less objects.
+// DeleteObject removes the record stored for meta, whichever key it was stored
+// under.
+//
+// DeleteOID cannot reach an object that has no numeric OID. Those are keyed by
+// module and name -- groups, notifications, and anything a module defines that
+// resolved to no identifier -- so deleting by an empty OID looks up a key that
+// was never written, finds nothing, and leaves the record in place. Reloading a
+// module therefore accumulated one orphan per such object, every time, and no
+// re-import could clear them because the clear had the same blind spot.
 func (s *Storage) DeleteObject(meta *mib.OIDMetadata) error {
 	if meta == nil {
 		return nil
@@ -176,7 +193,15 @@ func (s *Storage) GetOIDByName(module, name string) (*mib.OIDMetadata, error) {
 	return s.getOIDLocked(oidKey)
 }
 
-// ListOIDs lists all OIDs under a whole-sub-identifier prefix (empty means all); use ListModuleOIDs for one module.
+// ListOIDs lists all OIDs, optionally restricted to a subtree.
+//
+// The prefix matches whole sub-identifiers: "1.3.6.1.2.1.2" selects that node
+// and everything beneath it, but not the sibling subtree "1.3.6.1.2.1.20". A
+// plain string prefix would match both. An empty prefix returns every OID.
+//
+// Use ListModuleOIDs to select the objects of one module: filtering the result
+// of ListOIDs("") deserializes the whole store to answer a question about a
+// fraction of it.
 func (s *Storage) ListOIDs(oidPrefix string) ([]*mib.OIDMetadata, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -214,7 +239,12 @@ func (s *Storage) listOIDsLocked(oidPrefix string) ([]*mib.OIDMetadata, error) {
 	return oids, nil
 }
 
-// ListModuleOIDs returns every object of one module via the module index; an empty name is an error.
+// ListModuleOIDs returns every object belonging to one module.
+//
+// The module index answers this without touching the rest of the store, so the
+// cost tracks the size of the module rather than the size of the store. An
+// unknown module yields no objects and no error; an empty module name is a
+// programming error and is reported as one.
 func (s *Storage) ListModuleOIDs(module string) ([]*mib.OIDMetadata, error) {
 	if module == "" {
 		return nil, &ModuleRequiredError{Op: "ListModuleOIDs"}
@@ -578,7 +608,11 @@ func (s *Storage) ListTables(module string) ([]*mib.TableInfo, error) {
 	return tables, nil
 }
 
-// GetPollableOIDs returns all pollable OIDs for a module; an empty module means every module.
+// GetPollableOIDs returns all pollable OIDs for a module.
+//
+// An empty module means every module, mirroring ListOIDs(""). Matching on
+// Module == "" instead would never hit, because every stored OID carries a
+// module name, so callers asking for everything would get nothing.
 func (s *Storage) GetPollableOIDs(module string) ([]*mib.OIDMetadata, error) {
 	oids, err := s.moduleOrAllOIDs(module)
 	if err != nil {

@@ -7,7 +7,12 @@ import (
 	"strings"
 )
 
-// DefaultMIBMountTarget is the container path the MIB source tree is bind-mounted at.
+// DefaultMIBMountTarget is the container path the MIB source tree is
+// bind-mounted at.
+//
+// It is the contract between the images and config.yaml's mib.paths. The host
+// path is whatever the compose file says it is, and is read back out of the
+// rendered compose file rather than assumed.
 const DefaultMIBMountTarget = "/app/mibs"
 
 // systemDirs are directories a MIB source tree must never resolve to.

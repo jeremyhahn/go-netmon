@@ -65,7 +65,11 @@ func New(cfg *config.MIBConfig) (*Loader, error) {
 	}, nil
 }
 
-// SetProgress installs a reporter told after each module of a bulk load; call it before Load, from Load's goroutine.
+// SetProgress installs a reporter told after each module of a bulk load.
+//
+// Call it before Load, from the goroutine that will call Load: it is for a
+// startup path that has somewhere to report progress to, and a loader already
+// serving requests is past the point where anything would listen.
 func (l *Loader) SetProgress(p mib.LoadProgress) {
 	l.progress = p
 }
@@ -78,7 +82,11 @@ func (l *Loader) report(done, total int, module string) {
 	}
 }
 
-// Load loads the configured auto-load MIBs; EnsureModule adds modules devices need later.
+// Load loads all configured MIBs.
+//
+// The auto-load list is a bootstrap, not a limit: it is what the poller holds
+// before it has been told which devices exist. Modules a device turns out to
+// need are brought in afterwards by EnsureModule.
 func (l *Loader) Load() error {
 	log.Println("Loading MIB modules...")
 
@@ -112,7 +120,12 @@ func (l *Loader) Load() error {
 	return nil
 }
 
-// Revision returns a monotonic counter of store changes by this loader; safe for concurrent use.
+// Revision returns a counter that increases every time this loader changes what
+// the MIB store holds. It never decreases and is safe to read concurrently.
+//
+// Two reads returning the same value mean the store's module set is unchanged
+// between them, which is all a consumer needs to skip rebuilding state derived
+// from it.
 func (l *Loader) Revision() uint64 {
 	return l.revision.Load()
 }
@@ -122,7 +135,20 @@ func (l *Loader) HasModule(moduleName string) bool {
 	return l.storedModule(moduleName) != nil
 }
 
-// EnsureModule loads moduleName unless the store already holds it; it does not check the file on disk (see EnsureModuleCurrent).
+// EnsureModule loads moduleName unless the store already holds it.
+//
+// This is what lets a device poll a MIB that was assigned to it after the
+// process started: assignment reaches the poller as a module name, and the
+// module's objects have to be in the store before any of them can be selected.
+// A module that is already there is left alone — reparsing it would cost tens
+// of milliseconds and produce the same objects.
+//
+// It deliberately does not look at the file on disk. Once this process has
+// parsed anything, gosmi holds the outcome for the life of the process and only
+// Parser.Reload clears it, so a stale-file check here would reparse into the
+// cached result and stamp the store as current — burying the operator's edit
+// rather than picking it up. Startup, where the cache is empty, is the one
+// place that check is sound, and EnsureModuleCurrent is where it lives.
 func (l *Loader) EnsureModule(moduleName string) error {
 	// The common case is a module that is already present, and answering that
 	// without the lock is what keeps one slow parse from serializing every
@@ -143,7 +169,18 @@ func (l *Loader) EnsureModule(moduleName string) error {
 	return l.loadModule(moduleName)
 }
 
-// EnsureModuleCurrent loads moduleName unless the stored copy is at least as new as its file; startup only, before anything else is parsed.
+// EnsureModuleCurrent loads moduleName unless the store already holds a copy at
+// least as new as the file it was parsed from. It is a startup operation and
+// must be called before this process has parsed anything else.
+//
+// The store outlives the process, so unchanged modules are not reparsed on
+// restart. A MIB file edited on disk still takes effect on the next start: a
+// file written since the parse that produced the stored copy is parsed again.
+//
+// The precondition is gosmi's: loading a module caches its outcome for the life
+// of the process (Parser.Reload undoes that), so once anything has been parsed
+// a changed file does not imply a reparse reads it. At startup the cache is
+// empty, so the check is sound there.
 func (l *Loader) EnsureModuleCurrent(moduleName string) error {
 	if l.moduleIsCurrent(moduleName) {
 		return nil

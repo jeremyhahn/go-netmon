@@ -33,7 +33,26 @@ func cachedHint(hint string, isInteger bool) *DisplayHint {
 	return parsed
 }
 
-// FormatValue renders a raw SNMP value for display: enum label(n), TimeTicks as a duration, DISPLAY-HINT, text or hex; never an error.
+// FormatValue renders a raw SNMP value as text for display in the CLI, the web
+// UI, or a metric label, using the OID's MIB metadata to decide how.
+//
+// The rules, in order:
+//
+//   - An enumerated value renders as its label with the number in parentheses,
+//     e.g. "up(1)", matching the convention users know from snmpwalk.
+//   - TimeTicks render as a duration, e.g. "12d 3h 14m 7s".
+//   - A DISPLAY-HINT, when present, drives the rendering: MAC addresses become
+//     "00:1b:21:3c:4d:5e", DateAndTime becomes an RFC 3339 timestamp.
+//   - Octet strings with no hint render as text when their content is text,
+//     and as colon-separated hex otherwise; see FormatOctets.
+//   - Anything else renders as its natural Go representation.
+//
+// Units are not appended; call FormatValueWithUnits for that. A nil meta -- no
+// loaded MIB describes the object -- falls back to the content rule for octet
+// strings and the natural representation otherwise. A nil meta or an
+// unrecognized value always yields something printable rather than an error,
+// because this sits on a display path where a bad value must not break a whole
+// table of good ones.
 func FormatValue(meta *OIDMetadata, value any) string {
 	if value == nil {
 		return ""
@@ -92,7 +111,12 @@ func FormatValue(meta *OIDMetadata, value any) string {
 	return fmt.Sprintf("%v", value)
 }
 
-// EnumLabel renders value as its enumeration label, or the number; the text is part of series identity.
+// EnumLabel renders value using an enumeration's labels, falling back to the
+// decimal number when the enumeration does not define it.
+//
+// Unlike FormatValue this returns the bare label with no "(n)" suffix, because
+// it feeds Prometheus label values where the rendered text is part of the
+// series identity — changing it would orphan existing series.
 func EnumLabel(enumValues map[int64]string, value int64) string {
 	if name, ok := enumValues[value]; ok {
 		return name
@@ -100,7 +124,9 @@ func EnumLabel(enumValues map[int64]string, value int64) string {
 	return strconv.FormatInt(value, 10)
 }
 
-// FormatValueWithUnits renders a value with the OID's UNITS clause appended when declared.
+// FormatValueWithUnits renders a value and appends the OID's UNITS clause when
+// one is declared, e.g. "1500 octets". Values that already carry their unit in
+// the rendering, such as durations and enumerations, are left alone.
 func FormatValueWithUnits(meta *OIDMetadata, value any) string {
 	formatted := FormatValue(meta, value)
 	if meta == nil || meta.Units == "" || formatted == "" {
@@ -132,7 +158,26 @@ func formatOctetString(meta *OIDMetadata, octets []byte) string {
 	return FormatOctets(octets)
 }
 
-// FormatOctets renders a hint-less OCTET STRING as text when printable (trailing NULs ignored), else colon hex; never empty.
+// FormatOctets renders an OCTET STRING that carries no DISPLAY-HINT, deciding
+// between text and hex from the content alone. This is the only information
+// available for the binary objects vendors routinely define without a hint:
+// engine IDs, opaque cookies, packed address blobs, protocol error codes.
+//
+// The rule:
+//
+//   - Trailing NUL octets are padding, not content. Agents commonly pad a
+//     fixed-width string field, and such a value is still text.
+//   - What remains is text when every octet is printable ASCII or one of the
+//     whitespace controls that legitimately appear in multi-line values such
+//     as sysDescr. A NUL anywhere but the tail is content, and content that
+//     cannot be shown makes the whole value binary.
+//   - Anything else renders as colon-separated hex over the original octets,
+//     padding included, matching how the rest of the codebase shows binary.
+//
+// A value that was non-empty on the wire never renders as empty. An empty
+// rendering is indistinguishable from "the agent returned no value", which is
+// how cbgpPeer2LastError -- a two-octet BGP error code and subcode -- showed
+// nothing at all for the value {0x04, 0x00}, "Hold Timer Expired".
 func FormatOctets(octets []byte) string {
 	if len(octets) == 0 {
 		return ""
