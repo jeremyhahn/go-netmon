@@ -195,7 +195,7 @@ func (s *Service) assertVolumeOwned(ctx context.Context, volume string) error {
 	return nil
 }
 
-// reportUnmanagedVolumes names unlabelled look-alike volumes; nothing acts on them.
+// reportUnmanagedVolumes names unlabeled look-alike volumes; nothing acts on them.
 func (s *Service) reportUnmanagedVolumes(ctx context.Context) {
 	names, err := s.cfg.Docker.VolumeNames(ctx)
 	if err != nil {

@@ -775,7 +775,7 @@ func TestPoller_ConcurrentPolling(t *testing.T) {
 	}
 }
 
-// TestPoller_ContextCancellation checks cancelling Start's context stops polling and Stop stays safe.
+// TestPoller_ContextCancellation checks canceling Start's context stops polling and Stop stays safe.
 func TestPoller_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
